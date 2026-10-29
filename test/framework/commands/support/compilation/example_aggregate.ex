@@ -1,6 +1,6 @@
-defmodule Commanded.Commands.ExampleAggregate do
-  alias Commanded.Commands.ExampleAggregate
-  alias Commanded.Commands.ExampleCommand
+defmodule Decree.Commands.ExampleAggregate do
+  alias Decree.Commands.ExampleAggregate
+  alias Decree.Commands.ExampleCommand
 
   defstruct [:id]
 

@@ -1,9 +1,9 @@
-defmodule Commanded.HaltingRouter do
-  use Commanded.Commands.Router
+defmodule Decree.HaltingRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.HaltingMiddleware
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.Middleware.Commands.{CommandHandler, CounterAggregateRoot, IncrementCount}
+  alias Decree.HaltingMiddleware
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.Middleware.Commands.{CommandHandler, CounterAggregateRoot, IncrementCount}
 
   middleware CommandAuditMiddleware
   middleware HaltingMiddleware

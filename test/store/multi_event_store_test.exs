@@ -1,8 +1,8 @@
-defmodule EventStore.MultiEventStoreTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.MultiEventStoreTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{Config, EventData, EventFactory, RecordedEvent, Storage, UUID}
-  alias EventStore.Snapshots.SnapshotData
+  alias Decree.Store.{Config, EventData, EventFactory, RecordedEvent, Storage, UUID}
+  alias Decree.Store.Snapshots.SnapshotData
 
   setup do
     reset_event_store!(SecondEventStore)

@@ -1,9 +1,9 @@
-defmodule Commanded.Middleware.TenantRouter do
-  use Commanded.Commands.Router
+defmodule Decree.Middleware.TenantRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.Middleware.Tenant
-  alias Commanded.Middleware.Tenant.Commands.RegisterTenant
-  alias Commanded.Middleware.TenantMiddleware
+  alias Decree.Middleware.Tenant
+  alias Decree.Middleware.Tenant.Commands.RegisterTenant
+  alias Decree.Middleware.TenantMiddleware
 
   middleware(TenantMiddleware)
 

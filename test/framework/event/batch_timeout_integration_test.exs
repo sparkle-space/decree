@@ -1,4 +1,4 @@
-defmodule Commanded.Event.BatchTimeoutIntegrationTest do
+defmodule Decree.Event.BatchTimeoutIntegrationTest do
   @moduledoc """
   Integration tests for batch timeout functionality.
 
@@ -7,10 +7,10 @@ defmodule Commanded.Event.BatchTimeoutIntegrationTest do
 
   use ExUnit.Case, async: false
 
-  alias Commanded.Application.Config
-  alias Commanded.Event.Handler
-  alias Commanded.EventStore.Subscription
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Application.Config
+  alias Decree.Event.Handler
+  alias Decree.EventStore.Subscription
+  alias Decree.Helpers.EventFactory
 
   setup do
     # Configure mock adapter once per test
@@ -24,8 +24,8 @@ defmodule Commanded.Event.BatchTimeoutIntegrationTest do
   end
 
   defmodule CounterHandler do
-    use Commanded.Event.Handler,
-      application: Commanded.DefaultApp,
+    use Decree.Event.Handler,
+      application: Decree.DefaultApp,
       name: __MODULE__,
       batch_size: 10,
       batch_timeout: 100
@@ -268,11 +268,11 @@ defmodule Commanded.Event.BatchTimeoutIntegrationTest do
       # 1. Clear buffer and timer FIRST
       # 2. Then call handle_batch
       # If crash happens during handle_batch, buffer is already safe
-      # EventStore will redeliver (not acked), and handler can reprocess idempotently
+      # Decree.Store will redeliver (not acked), and handler can reprocess idempotently
       #
-      # Note: We rely on existing Commanded infrastructure for crash recovery:
+      # Note: We rely on existing Decree infrastructure for crash recovery:
       # - Supervision trees (tested in supervision tests)
-      # - EventStore redelivery (tested in EventStore)
+      # - Decree.Store redelivery (tested in Decree.Store)
       # - Timer cleanup (BEAM VM guarantee)
     end
   end

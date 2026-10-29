@@ -1,17 +1,17 @@
-defmodule Commanded.Commands.CompositeRouterTest do
+defmodule Decree.Commands.CompositeRouterTest do
   use ExUnit.Case
 
-  alias Commanded.Commands.Composite.{
+  alias Decree.Commands.Composite.{
     CompositeCompositeRouter,
     ExampleCompositeRouter,
     UnregisteredCommand
   }
 
-  alias Commanded.Commands.ExecutionResult
-  alias Commanded.DefaultApp
-  alias Commanded.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount, WithdrawMoney}
-  alias Commanded.ExampleDomain.MoneyTransfer.Commands.TransferMoney
-  alias Commanded.UUID
+  alias Decree.Commands.ExecutionResult
+  alias Decree.DefaultApp
+  alias Decree.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount, WithdrawMoney}
+  alias Decree.ExampleDomain.MoneyTransfer.Commands.TransferMoney
+  alias Decree.UUID
 
   describe "composite router" do
     setup do
@@ -68,22 +68,22 @@ defmodule Commanded.Commands.CompositeRouterTest do
 
     test "should fail to compile when duplicate commands registered" do
       assert_raise RuntimeError,
-                   "duplicate registration for Commanded.ExampleDomain.MoneyTransfer.Commands.TransferMoney command, registered in both Commanded.Commands.Composite.MoneyTransferRouter and DuplicateMoneyTransferRouter",
+                   "duplicate registration for Decree.ExampleDomain.MoneyTransfer.Commands.TransferMoney command, registered in both Decree.Commands.Composite.MoneyTransferRouter and DuplicateMoneyTransferRouter",
                    fn ->
                      Code.eval_string("""
-                       alias Commanded.ExampleDomain.{MoneyTransfer,TransferMoneyHandler}
-                       alias Commanded.ExampleDomain.MoneyTransfer.Commands.TransferMoney
-                       alias Commanded.Commands.Composite.MoneyTransferRouter
+                       alias Decree.ExampleDomain.{MoneyTransfer,TransferMoneyHandler}
+                       alias Decree.ExampleDomain.MoneyTransfer.Commands.TransferMoney
+                       alias Decree.Commands.Composite.MoneyTransferRouter
 
                        defmodule DuplicateMoneyTransferRouter do
-                         use Commanded.Commands.Router
+                         use Decree.Commands.Router
 
                          identify MoneyTransfer, by: :transfer_uuid
                          dispatch TransferMoney, to: TransferMoneyHandler, aggregate: MoneyTransfer
                        end
 
                        defmodule ExampleCompositeRouter do
-                         use Commanded.Commands.CompositeRouter
+                         use Decree.Commands.CompositeRouter
 
                          router MoneyTransferRouter
                          router DuplicateMoneyTransferRouter

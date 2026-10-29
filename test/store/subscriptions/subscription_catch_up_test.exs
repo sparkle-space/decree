@@ -1,8 +1,8 @@
-defmodule EventStore.Subscriptions.SubscriptionCatchUpTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionCatchUpTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, RecordedEvent, UUID}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   describe "catch-up subscription" do

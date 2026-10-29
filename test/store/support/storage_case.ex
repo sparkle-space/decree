@@ -1,10 +1,10 @@
-defmodule EventStore.StorageCase do
+defmodule Decree.Store.StorageCase do
   use ExUnit.CaseTemplate
 
-  alias EventStore.{Config, Serializer, Storage}
+  alias Decree.Store.{Config, Serializer, Storage}
 
   setup_all do
-    config = Config.parsed(TestEventStore, :eventstore)
+    config = Config.parsed(TestEventStore, :decree)
     serializer = Serializer.serializer(TestEventStore, config)
     postgrex_config = Config.default_postgrex_opts(config)
     correlation_id_type = Keyword.get(config, :correlation_id_type, "uuid")
@@ -41,26 +41,26 @@ defmodule EventStore.StorageCase do
   # Restore a dump of pre-migration database schema to run the test suite using
   # a migrated database.
   defp restore_migration_database_dump(config) do
-    EventStore.Storage.Database.drop(config)
-    :ok = EventStore.Storage.Database.create(config)
+    Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = EventStore.Storage.Database.restore(config, "test/fixture/eventstore.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore.dump")
   end
 
   defp migrate_eventstore(config) do
-    EventStore.Tasks.Migrate.exec(config, quiet: true)
+    Decree.Store.Tasks.Migrate.exec(config, quiet: true)
   end
 
   defp init_eventstores do
     for event_store <- event_stores() do
       config = event_store.config()
 
-      EventStore.Tasks.Create.exec(config, quiet: true)
-      EventStore.Tasks.Init.exec(config, quiet: true)
+      Decree.Store.Tasks.Create.exec(config, quiet: true)
+      Decree.Store.Tasks.Init.exec(config, quiet: true)
     end
   end
 
   defp event_stores do
-    Application.fetch_env!(:eventstore, :event_stores)
+    Application.fetch_env!(:decree, :event_stores)
   end
 end

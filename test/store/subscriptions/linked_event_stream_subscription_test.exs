@@ -1,7 +1,7 @@
-defmodule EventStore.Subscriptions.LinkedEventSubscriptionFsmTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.LinkedEventSubscriptionFsmTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, ProcessHelper, UUID}
+  alias Decree.Store.{EventFactory, ProcessHelper, UUID}
   alias TestEventStore, as: EventStore
 
   describe "subscription to linked event stream" do

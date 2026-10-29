@@ -1,4 +1,4 @@
-defmodule Commanded.Event.ErrorAggregate do
+defmodule Decree.Event.ErrorAggregate do
   @moduledoc false
 
   defstruct [:uuid]
@@ -30,7 +30,7 @@ defmodule Commanded.Event.ErrorAggregate do
     end
   end
 
-  alias Commanded.Event.ErrorAggregate
+  alias Decree.Event.ErrorAggregate
   alias Commands.{RaiseError, RaiseException}
   alias Events.{ErrorEvent, ExceptionEvent}
 

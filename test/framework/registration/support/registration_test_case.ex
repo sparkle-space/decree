@@ -1,8 +1,8 @@
-defmodule Commanded.RegistrationTestCase do
-  import Commanded.SharedTestCase
+defmodule Decree.RegistrationTestCase do
+  import Decree.SharedTestCase
 
   define_tests do
-    alias Commanded.Registration.{RegisteredServer, RegisteredSupervisor}
+    alias Decree.Registration.{RegisteredServer, RegisteredSupervisor}
 
     setup do
       supervisor = start_supervised!(RegisteredSupervisor)
@@ -75,8 +75,8 @@ defmodule Commanded.RegistrationTestCase do
       test "should return a valid child_spec", %{registry: registry, registry_meta: registry_meta} do
         assert registry.supervisor_child_spec(registry_meta, RegisteredSupervisor, "child") ==
                  %{
-                   id: Commanded.Registration.RegisteredSupervisor,
-                   start: {Commanded.Registration.RegisteredSupervisor, :start_link, ["child"]},
+                   id: Decree.Registration.RegisteredSupervisor,
+                   start: {Decree.Registration.RegisteredSupervisor, :start_link, ["child"]},
                    type: :supervisor
                  }
       end

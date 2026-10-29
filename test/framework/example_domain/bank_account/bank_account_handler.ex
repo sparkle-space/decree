@@ -1,13 +1,13 @@
-defmodule Commanded.ExampleDomain.BankAccount.BankAccountHandler do
+defmodule Decree.ExampleDomain.BankAccount.BankAccountHandler do
   @moduledoc false
 
-  use Commanded.Event.Handler,
-    application: Commanded.ExampleDomain.BankApp,
+  use Decree.Event.Handler,
+    application: Decree.ExampleDomain.BankApp,
     name: __MODULE__,
     start_from: :origin
 
-  alias Commanded.Event.Handler
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.Event.Handler
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
 
   @impl Handler
   def after_start(_state) do

@@ -1,11 +1,11 @@
-defmodule Commanded.Aggregates.AggregateLifespanTest do
+defmodule Decree.Aggregates.AggregateLifespanTest do
   use ExUnit.Case
 
-  alias Commanded.Aggregates.{Aggregate, DefaultLifespanRouter, LifespanAggregate, LifespanRouter}
-  alias Commanded.Aggregates.LifespanAggregate.{Command, Event}
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.EventStore.RecordedEvent
-  alias Commanded.{Registration, UUID}
+  alias Decree.Aggregates.{Aggregate, DefaultLifespanRouter, LifespanAggregate, LifespanRouter}
+  alias Decree.Aggregates.LifespanAggregate.{Command, Event}
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.EventStore.RecordedEvent
+  alias Decree.{Registration, UUID}
 
   describe "aggregate lifespan" do
     setup do
@@ -17,7 +17,7 @@ defmodule Commanded.Aggregates.AggregateLifespanTest do
       )
 
       {:ok, ^aggregate_uuid} =
-        Commanded.Aggregates.Supervisor.open_aggregate(
+        Decree.Aggregates.Supervisor.open_aggregate(
           DefaultApp,
           LifespanAggregate,
           aggregate_uuid

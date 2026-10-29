@@ -1,10 +1,10 @@
-defmodule Commanded.Commands.Composite.ExampleCompositeRouter do
+defmodule Decree.Commands.Composite.ExampleCompositeRouter do
   @moduledoc false
 
-  use Commanded.Commands.CompositeRouter
+  use Decree.Commands.CompositeRouter
 
-  alias Commanded.Commands.Composite.BankAccountRouter
-  alias Commanded.Commands.Composite.MoneyTransferRouter
+  alias Decree.Commands.Composite.BankAccountRouter
+  alias Decree.Commands.Composite.MoneyTransferRouter
 
   router(BankAccountRouter)
   router(MoneyTransferRouter)

@@ -1,4 +1,4 @@
-defmodule EventStore.Wait do
+defmodule Decree.Store.Wait do
   def until(fun), do: until(1_000, fun)
 
   def until(0, fun), do: fun.()

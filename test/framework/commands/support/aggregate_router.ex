@@ -1,9 +1,9 @@
-defmodule Commanded.Commands.AggregateRouter do
+defmodule Decree.Commands.AggregateRouter do
   @moduledoc false
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.AggregateRoot
-  alias Commanded.Commands.AggregateRoot.{Command, Command2}
+  alias Decree.Commands.AggregateRoot
+  alias Decree.Commands.AggregateRoot.{Command, Command2}
 
   dispatch Command, to: AggregateRoot, identity: :uuid
   dispatch Command2, to: AggregateRoot, function: :custom_function_name, identity: :uuid

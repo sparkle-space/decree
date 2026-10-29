@@ -1,7 +1,7 @@
-defmodule EventStore.MonitoredServerTest do
+defmodule Decree.Store.MonitoredServerTest do
   use ExUnit.Case
 
-  alias EventStore.{MonitoredServer, ObservedServer, ProcessHelper, Wait}
+  alias Decree.Store.{MonitoredServer, ObservedServer, ProcessHelper, Wait}
 
   describe "monitored server" do
     test "should start process" do

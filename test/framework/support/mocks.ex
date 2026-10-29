@@ -1,4 +1,4 @@
-Mox.defmock(Commanded.EventStore.Adapters.Mock, for: Commanded.EventStore.Adapter)
-Mox.defmock(Commanded.Commands.MockRouter, for: Commanded.Commands.Router)
-Mox.defmock(Commanded.Application.Mock, for: Commanded.Application)
-Mox.defmock(Commanded.Serialization.TypeProvider.Mock, for: Commanded.EventStore.TypeProvider)
+Mox.defmock(Decree.EventStore.Adapters.Mock, for: Decree.EventStore.Adapter)
+Mox.defmock(Decree.Commands.MockRouter, for: Decree.Commands.Router)
+Mox.defmock(Decree.Application.Mock, for: Decree.Application)
+Mox.defmock(Decree.Serialization.TypeProvider.Mock, for: Decree.EventStore.TypeProvider)

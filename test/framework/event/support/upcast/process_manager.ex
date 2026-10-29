@@ -1,4 +1,4 @@
-defmodule Commanded.Event.Upcast.ProcessManager do
+defmodule Decree.Event.Upcast.ProcessManager do
   defmodule Ok do
     defstruct [:id]
   end
@@ -11,13 +11,13 @@ defmodule Commanded.Event.Upcast.ProcessManager do
   end
 
   defmodule Router do
-    use Commanded.Commands.Router
+    use Decree.Commands.Router
 
     dispatch(Ok, to: Aggregate, identity: :id)
   end
 
   defmodule Application do
-    use Commanded.Application, otp_app: :commanded
+    use Decree.Application, otp_app: :decree
 
     router(Router)
   end
@@ -25,10 +25,10 @@ defmodule Commanded.Event.Upcast.ProcessManager do
   @derive Jason.Encoder
   defstruct []
 
-  alias Commanded.Event.Upcast.Events.{EventFour, EventOne, EventThree, EventTwo, Stop}
-  alias Commanded.UUID
+  alias Decree.Event.Upcast.Events.{EventFour, EventOne, EventThree, EventTwo, Stop}
+  alias Decree.UUID
 
-  use Commanded.ProcessManagers.ProcessManager,
+  use Decree.ProcessManagers.ProcessManager,
     application: Application,
     name: "UpcastProcessManager"
 

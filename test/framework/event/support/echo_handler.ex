@@ -1,11 +1,11 @@
-defmodule Commanded.Event.EchoHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.MockedApp,
+defmodule Decree.Event.EchoHandler do
+  use Decree.Event.Handler,
+    application: Decree.MockedApp,
     name: __MODULE__
 
-  alias Commanded.Event.ReplyEvent
+  alias Decree.Event.ReplyEvent
 
-  @impl Commanded.Event.Handler
+  @impl Decree.Event.Handler
   def handle(%ReplyEvent{} = event, metadata) do
     %ReplyEvent{reply_to: reply_to} = event
 

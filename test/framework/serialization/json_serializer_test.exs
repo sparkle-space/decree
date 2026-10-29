@@ -1,8 +1,8 @@
-defmodule Commanded.Serialization.JsonSerializerTest do
+defmodule Decree.Serialization.JsonSerializerTest do
   use ExUnit.Case
 
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.Serialization.JsonSerializer
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.Serialization.JsonSerializer
 
   @serialized_event_json "{\"account_number\":\"ACC123\",\"initial_balance\":1000}"
 

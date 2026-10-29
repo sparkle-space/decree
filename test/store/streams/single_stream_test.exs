@@ -1,8 +1,8 @@
-defmodule EventStore.Streams.SingleStreamTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Streams.SingleStreamTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventData, EventFactory, UUID}
-  alias EventStore.Streams.Stream
+  alias Decree.Store.{EventData, EventFactory, UUID}
+  alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
   @subscription_name "test_subscription"
@@ -232,7 +232,7 @@ defmodule EventStore.Streams.SingleStreamTest do
         )
 
       assert_receive {:events, [received_event | _]}
-      assert received_event.event_type == "Elixir.EventStore.EventFactory.Event"
+      assert received_event.event_type == "Elixir.Decree.Store.EventFactory.Event"
     end
   end
 

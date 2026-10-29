@@ -1,7 +1,7 @@
-defmodule EventStore.Notifications.NotificationsSupervisorTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Notifications.NotificationsSupervisorTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, Notifications, PubSub, Wait}
+  alias Decree.Store.{EventFactory, Notifications, PubSub, Wait}
 
   describe "notifications supervisor" do
     setup do
@@ -19,10 +19,10 @@ defmodule EventStore.Notifications.NotificationsSupervisorTest do
     end
 
     test "hibernate processes after inactivity" do
-      listener_pid = Module.concat([ES, EventStore.Notifications.Listener]) |> Process.whereis()
+      listener_pid = Module.concat([ES, Decree.Store.Notifications.Listener]) |> Process.whereis()
 
       publisher_name_pid =
-        Module.concat([ES, EventStore.Notifications.Publisher]) |> Process.whereis()
+        Module.concat([ES, Decree.Store.Notifications.Publisher]) |> Process.whereis()
 
       # Listener processes should be hibernated after inactivity
       Wait.until(fn ->

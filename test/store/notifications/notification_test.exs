@@ -1,4 +1,4 @@
-defmodule EventStore.Notifications.NotificationTest do
+defmodule Decree.Store.Notifications.NotificationTest do
   use ExUnit.Case, async: true
-  doctest EventStore.Notifications.Notification
+  doctest Decree.Store.Notifications.Notification
 end

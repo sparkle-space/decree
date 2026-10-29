@@ -1,4 +1,4 @@
-defmodule Commanded.Projections.Events do
+defmodule Decree.Projections.Events do
   defmodule AnEvent do
     defstruct [:pid, name: "AnEvent"]
   end

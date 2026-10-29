@@ -1,16 +1,16 @@
-defmodule Commanded.Commands.Composite.BankAccountRouter do
+defmodule Decree.Commands.Composite.BankAccountRouter do
   @moduledoc false
 
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.ExampleDomain.{
+  alias Decree.ExampleDomain.{
     BankAccount,
     DepositMoneyHandler,
     OpenAccountHandler,
     WithdrawMoneyHandler
   }
 
-  alias Commanded.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount, WithdrawMoney}
+  alias Decree.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount, WithdrawMoney}
 
   identify BankAccount, by: :account_number
 

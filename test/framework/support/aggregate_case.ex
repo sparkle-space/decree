@@ -1,11 +1,11 @@
-defmodule Commanded.AggregateCase do
+defmodule Decree.AggregateCase do
   @moduledoc """
   This module defines the test case to be used by aggregate tests.
   """
 
   use ExUnit.CaseTemplate
 
-  alias Commanded.Aggregate.Multi
+  alias Decree.Aggregate.Multi
 
   using opts do
     quote do

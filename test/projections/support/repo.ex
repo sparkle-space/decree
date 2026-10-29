@@ -1,5 +1,5 @@
-defmodule Commanded.Projections.Repo do
+defmodule Decree.Projections.Repo do
   use Ecto.Repo,
-    otp_app: :commanded_ecto_projections,
+    otp_app: :decree,
     adapter: Ecto.Adapters.Postgres
 end

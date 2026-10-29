@@ -1,9 +1,9 @@
-defmodule Commanded.Commands.IdentityAggregatePrefixFunRouter do
+defmodule Decree.Commands.IdentityAggregatePrefixFunRouter do
   @moduledoc false
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.{IdentityAggregate, IdentityAggregatePrefixFunRouter}
-  alias Commanded.Commands.IdentityAggregate.IdentityCommand
+  alias Decree.Commands.{IdentityAggregate, IdentityAggregatePrefixFunRouter}
+  alias Decree.Commands.IdentityAggregate.IdentityCommand
 
   identify IdentityAggregate,
     by: :uuid,

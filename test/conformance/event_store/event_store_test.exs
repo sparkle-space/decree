@@ -1,4 +1,4 @@
-defmodule Commanded.EventStore.Adapters.EventStore.EventStoreTest do
+defmodule Decree.EventStore.Adapters.EventStore.EventStoreTest do
   use ExUnit.Case
 
   setup do
@@ -8,7 +8,7 @@ defmodule Commanded.EventStore.Adapters.EventStore.EventStoreTest do
   end
 
   test "should configure event store in application" do
-    assert {Commanded.EventStore.Adapters.EventStore, %{event_store: TestEventStore}} =
-             Commanded.Application.event_store_adapter(EventStoreApplication)
+    assert {Decree.EventStore.Adapters.EventStore, %{event_store: TestEventStore}} =
+             Decree.Application.event_store_adapter(EventStoreApplication)
   end
 end

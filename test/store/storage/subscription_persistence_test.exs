@@ -1,7 +1,7 @@
-defmodule EventStore.Storage.SubscriptionPersistenceTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.SubscriptionPersistenceTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.Storage
+  alias Decree.Store.Storage
 
   @all_stream "$all"
   @subscription_name "test_subscription"

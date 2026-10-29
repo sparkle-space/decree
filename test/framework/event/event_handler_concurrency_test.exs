@@ -1,8 +1,8 @@
-defmodule Commanded.Event.EventHandlerConcurrencyTest do
+defmodule Decree.Event.EventHandlerConcurrencyTest do
   use ExUnit.Case
 
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.Event.{ConcurrencyEvent, ConcurrentEventHandler, Mapper, PartitionEventHandler}
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.Event.{ConcurrencyEvent, ConcurrentEventHandler, Mapper, PartitionEventHandler}
 
   setup do
     true = Process.register(self(), :test)
@@ -35,7 +35,7 @@ defmodule Commanded.Event.EventHandlerConcurrencyTest do
                  {{ConcurrentEventHandler,
                    [
                      index: ^index,
-                     application: Commanded.DefaultApp,
+                     application: Decree.DefaultApp,
                      name: ConcurrentEventHandler,
                      concurrency: 5
                    ]}, pid, :worker, [ConcurrentEventHandler]}
@@ -72,8 +72,8 @@ defmodule Commanded.Event.EventHandlerConcurrencyTest do
       |> Enum.each(fn {config, index} ->
         assert config == [
                  index: index,
-                 application: Commanded.DefaultApp,
-                 name: Commanded.Event.ConcurrentEventHandler,
+                 application: Decree.DefaultApp,
+                 name: Decree.Event.ConcurrentEventHandler,
                  concurrency: 5
                ]
       end)

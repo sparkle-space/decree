@@ -1,6 +1,6 @@
-defmodule Commanded.LocalRegistryTest do
-  alias Commanded.Registration.LocalRegistry
-  alias Commanded.RegistrationTestCase
+defmodule Decree.LocalRegistryTest do
+  alias Decree.Registration.LocalRegistry
+  alias Decree.RegistrationTestCase
 
   use RegistrationTestCase, registry: LocalRegistry
 

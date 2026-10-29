@@ -1,12 +1,12 @@
-defmodule Commanded.Event.HandlerInitTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.HandlerInitTest do
+  use Decree.MockEventStoreCase
 
   import Mox
 
-  alias Commanded.DefaultApp
-  alias Commanded.Event.{EchoHandler, Handler, InitHandler, ReplyEvent, RuntimeConfigHandler}
-  alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
-  alias Commanded.Helpers.{EventFactory, Wait}
+  alias Decree.DefaultApp
+  alias Decree.Event.{EchoHandler, Handler, InitHandler, ReplyEvent, RuntimeConfigHandler}
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.Helpers.{EventFactory, Wait}
 
   describe "event handler `init/1` callback" do
     setup do
@@ -30,9 +30,9 @@ defmodule Commanded.Event.HandlerInitTest do
       assert_handler_application(handler2, Module.concat([DefaultApp, :tenant2]))
       assert_handler_application(handler3, Module.concat([DefaultApp, :tenant3]))
 
-      assert_handler_name(handler1, "Commanded.Event.RuntimeConfigHandler.tenant1")
-      assert_handler_name(handler2, "Commanded.Event.RuntimeConfigHandler.tenant2")
-      assert_handler_name(handler3, "Commanded.Event.RuntimeConfigHandler.tenant3")
+      assert_handler_name(handler1, "Decree.Event.RuntimeConfigHandler.tenant1")
+      assert_handler_name(handler2, "Decree.Event.RuntimeConfigHandler.tenant2")
+      assert_handler_name(handler3, "Decree.Event.RuntimeConfigHandler.tenant3")
     end
 
     test "should be called on restart if the process crashes" do

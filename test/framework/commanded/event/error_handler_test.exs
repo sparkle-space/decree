@@ -1,8 +1,8 @@
-defmodule Commanded.Event.ErrorHandlerTest do
+defmodule Decree.Event.ErrorHandlerTest do
   use ExUnit.Case
 
-  alias Commanded.Event.ErrorHandler
-  alias Commanded.Event.FailureContext
+  alias Decree.Event.ErrorHandler
+  alias Decree.Event.FailureContext
 
   defmodule Event do
     defstruct [:id]

@@ -1,12 +1,12 @@
-defmodule Commanded.Event.DefaultEventHandlerErrorHandlingTest do
+defmodule Decree.Event.DefaultEventHandlerErrorHandlingTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
-  alias Commanded.Event.DefaultErrorEventHandler
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.BankRouter
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.UUID
+  alias Decree.DefaultApp
+  alias Decree.Event.DefaultErrorEventHandler
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.BankRouter
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.UUID
 
   setup do
     start_supervised!(CommandAuditMiddleware)

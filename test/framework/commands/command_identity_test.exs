@@ -1,10 +1,10 @@
-defmodule Commanded.Commands.CommandIdentityTest do
+defmodule Decree.Commands.CommandIdentityTest do
   use ExUnit.Case
 
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.BankApp
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.UUID
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.BankApp
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.UUID
 
   setup do
     start_supervised!(CommandAuditMiddleware)

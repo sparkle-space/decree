@@ -1,11 +1,11 @@
-defmodule Commanded.Projections.RuntimeConfigProjectorTest do
+defmodule Decree.Projections.RuntimeConfigProjectorTest do
   use ExUnit.Case
 
-  alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
-  alias Commanded.EventStore.RecordedEvent
-  alias Commanded.Projections.Events.AnEvent
-  alias Commanded.Projections.{Projection, ProjectionAssertions, Repo, RuntimeConfigProjector}
-  alias Commanded.UUID
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.RecordedEvent
+  alias Decree.Projections.Events.AnEvent
+  alias Decree.Projections.{Projection, ProjectionAssertions, Repo, RuntimeConfigProjector}
+  alias Decree.UUID
 
   import Mox
   import ProjectionAssertions

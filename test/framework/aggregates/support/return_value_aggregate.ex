@@ -1,4 +1,4 @@
-defmodule Commanded.Aggregates.ReturnValue do
+defmodule Decree.Aggregates.ReturnValue do
   defmodule Command do
     defstruct [:id, :fun]
   end

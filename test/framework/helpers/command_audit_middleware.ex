@@ -1,7 +1,7 @@
-defmodule Commanded.Helpers.CommandAuditMiddleware do
+defmodule Decree.Helpers.CommandAuditMiddleware do
   @moduledoc false
 
-  @behaviour Commanded.Middleware
+  @behaviour Decree.Middleware
 
   defmodule AuditLog do
     @moduledoc false

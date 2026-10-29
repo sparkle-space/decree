@@ -1,5 +1,5 @@
-defmodule Commanded.PubSub.LocalPubSubTest do
-  alias Commanded.PubSub.{LocalPubSub, PubSubTestCase}
+defmodule Decree.PubSub.LocalPubSubTest do
+  alias Decree.PubSub.{LocalPubSub, PubSubTestCase}
 
   use PubSubTestCase, pubsub: LocalPubSub
 

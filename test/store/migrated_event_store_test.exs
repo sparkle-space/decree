@@ -8,11 +8,11 @@ defmodule Snapshot do
   defstruct [:data, version: "1"]
 end
 
-defmodule EventStore.MigratedEventStoreTest do
+defmodule Decree.Store.MigratedEventStoreTest do
   use ExUnit.Case
 
-  alias EventStore.RecordedEvent
-  alias EventStore.Snapshots.SnapshotData
+  alias Decree.Store.RecordedEvent
+  alias Decree.Store.Snapshots.SnapshotData
 
   @moduletag :migration
 
@@ -124,13 +124,13 @@ defmodule EventStore.MigratedEventStoreTest do
   end
 
   defp recreate_database(config) do
-    EventStore.Storage.Database.drop(config)
-    :ok = EventStore.Storage.Database.create(config)
+    Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = EventStore.Storage.Database.restore(config, "test/fixture/eventstore_seed.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore_seed.dump")
   end
 
   defp migrate_eventstore(config) do
-    EventStore.Tasks.Migrate.exec(config, quiet: true)
+    Decree.Store.Tasks.Migrate.exec(config, quiet: true)
   end
 end

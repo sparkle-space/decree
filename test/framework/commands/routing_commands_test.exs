@@ -1,35 +1,35 @@
-defmodule Commanded.Commands.RoutingCommandsTest do
+defmodule Decree.Commands.RoutingCommandsTest do
   use ExUnit.Case
 
-  alias Commanded.Commands.AggregateRoot.{Command, Command2}
+  alias Decree.Commands.AggregateRoot.{Command, Command2}
 
-  alias Commanded.Commands.{
+  alias Decree.Commands.{
     AggregateRouter,
     IdentityAggregateRouter,
     IdentityFunctionRouter,
     UnregisteredCommand
   }
 
-  alias Commanded.Commands.IdentityAggregate.IdentityCommand
-  alias Commanded.Commands.IdentityAggregatePrefixFunRouter
-  alias Commanded.Commands.IdentityFunctionAggregate.IdentityFunctionCommand
-  alias Commanded.{DefaultApp, EventStore}
+  alias Decree.Commands.IdentityAggregate.IdentityCommand
+  alias Decree.Commands.IdentityAggregatePrefixFunRouter
+  alias Decree.Commands.IdentityFunctionAggregate.IdentityFunctionCommand
+  alias Decree.{DefaultApp, EventStore}
 
-  alias Commanded.ExampleDomain.{
+  alias Decree.ExampleDomain.{
     BankAccount,
     DepositMoneyHandler,
     OpenAccountHandler,
     WithdrawMoneyHandler
   }
 
-  alias Commanded.ExampleDomain.BankAccount.Commands.{
+  alias Decree.ExampleDomain.BankAccount.Commands.{
     CloseAccount,
     DepositMoney,
     OpenAccount,
     WithdrawMoney
   }
 
-  alias Commanded.UUID
+  alias Decree.UUID
 
   @dispatch_opts [application: DefaultApp]
 
@@ -41,7 +41,7 @@ defmodule Commanded.Commands.RoutingCommandsTest do
 
   describe "routing to command handler" do
     defmodule CommandHandlerRouter do
-      use Commanded.Commands.Router
+      use Decree.Commands.Router
 
       # Put the :to option at the end and ensure the dispatch still works
       dispatch OpenAccount,
@@ -170,13 +170,13 @@ defmodule Commanded.Commands.RoutingCommandsTest do
 
   test "should ensure identity field is present" do
     assert_raise RuntimeError,
-                 "Commanded.ExampleDomain.BankAccount aggregate identity is missing the `by` option",
+                 "Decree.ExampleDomain.BankAccount aggregate identity is missing the `by` option",
                  fn ->
                    Code.eval_string("""
-                     alias Commanded.ExampleDomain.BankAccount
+                     alias Decree.ExampleDomain.BankAccount
 
                      defmodule DuplicateRouter do
-                       use Commanded.Commands.Router
+                       use Decree.Commands.Router
 
                        identify BankAccount, prefix: "account-"
                      end
@@ -186,13 +186,13 @@ defmodule Commanded.Commands.RoutingCommandsTest do
 
   test "should prevent duplicate identity for an aggregate" do
     assert_raise RuntimeError,
-                 "Commanded.ExampleDomain.BankAccount aggregate has already been identified by: `:account_number`",
+                 "Decree.ExampleDomain.BankAccount aggregate has already been identified by: `:account_number`",
                  fn ->
                    Code.eval_string("""
-                     alias Commanded.ExampleDomain.BankAccount
+                     alias Decree.ExampleDomain.BankAccount
 
                      defmodule DuplicateRouter do
-                       use Commanded.Commands.Router
+                       use Decree.Commands.Router
 
                        identify BankAccount, by: :account_number
                        identify BankAccount, by: :duplicate
@@ -203,18 +203,18 @@ defmodule Commanded.Commands.RoutingCommandsTest do
 
   test "should prevent duplicate registrations for a command" do
     assert_raise ArgumentError,
-                 "Command `Commanded.ExampleDomain.BankAccount.Commands.OpenAccount` has already been registered in router `DuplicateRouter`",
+                 "Command `Decree.ExampleDomain.BankAccount.Commands.OpenAccount` has already been registered in router `DuplicateRouter`",
                  fn ->
                    Code.eval_string("""
-                     alias Commanded.ExampleDomain.BankAccount
-                     alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
+                     alias Decree.ExampleDomain.BankAccount
+                     alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
 
                      defmodule Handler do
                        def handle(%BankAccount{}, %OpenAccount{}), do: []
                      end
 
                      defmodule DuplicateRouter do
-                       use Commanded.Commands.Router
+                       use Decree.Commands.Router
 
                        dispatch OpenAccount, to: Handler, aggregate: BankAccount, identity: :account_number
                        dispatch OpenAccount, to: Handler, aggregate: BankAccount, identity: :account_number
@@ -231,11 +231,11 @@ defmodule Commanded.Commands.RoutingCommandsTest do
                  """,
                  fn ->
                    Code.eval_string("""
-                     alias Commanded.ExampleDomain.BankAccount
-                     alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
+                     alias Decree.ExampleDomain.BankAccount
+                     alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
 
                      defmodule InvalidRouter do
-                       use Commanded.Commands.Router
+                       use Decree.Commands.Router
 
                        dispatch OpenAccount, to: InvalidHandler, aggregate: BankAccount, id: :account_number
                      end
@@ -246,11 +246,11 @@ defmodule Commanded.Commands.RoutingCommandsTest do
   test "should show a helpful message when required :to argument is missing" do
     assert_raise RuntimeError, "dispatch missing required parameter: :to", fn ->
       Code.eval_string("""
-        alias Commanded.ExampleDomain.BankAccount
-        alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
+        alias Decree.ExampleDomain.BankAccount
+        alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
 
         defmodule InvalidRouter do
-          use Commanded.Commands.Router
+          use Decree.Commands.Router
 
           dispatch OpenAccount, identity: BankAccount
         end
@@ -259,7 +259,7 @@ defmodule Commanded.Commands.RoutingCommandsTest do
   end
 
   defmodule MultiCommandRouter do
-    use Commanded.Commands.Router
+    use Decree.Commands.Router
 
     dispatch [OpenAccount, CloseAccount],
       to: OpenAccountHandler,
@@ -282,7 +282,7 @@ defmodule Commanded.Commands.RoutingCommandsTest do
   end
 
   defmodule MultiCommandHandlerRouter do
-    use Commanded.Commands.Router
+    use Decree.Commands.Router
 
     dispatch [OpenAccount, CloseAccount],
       to: OpenAccountHandler,

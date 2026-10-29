@@ -1,8 +1,8 @@
-defmodule EventStore.Subscriptions.SubscriptionAcknowledgementTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionAcknowledgementTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, ProcessHelper, Storage, Wait}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, ProcessHelper, Storage, Wait}
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   describe "subscription acknowledgement" do

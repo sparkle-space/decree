@@ -1,8 +1,8 @@
-defmodule EventStore.Storage.LinkEventsTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.LinkEventsTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, RecordedEvent, UUID}
-  alias EventStore.Storage.{Appender, CreateStream}
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.Storage.{Appender, CreateStream}
 
   test "link single event to new stream", context do
     {:ok, stream1_uuid, stream1_id} = create_stream(context)

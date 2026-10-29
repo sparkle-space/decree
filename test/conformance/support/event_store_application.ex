@@ -1,8 +1,8 @@
 defmodule EventStoreApplication do
-  use Commanded.Application,
-    otp_app: :commanded_eventstore_adapter,
+  use Decree.Application,
+    otp_app: :decree,
     event_store: [
-      adapter: Commanded.EventStore.Adapters.EventStore,
+      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: TestEventStore
     ]
 end

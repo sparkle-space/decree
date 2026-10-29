@@ -1,5 +1,5 @@
-defmodule Commanded.PubSub.PubSubTestCase do
-  import Commanded.SharedTestCase
+defmodule Decree.PubSub.PubSubTestCase do
+  import Decree.SharedTestCase
 
   define_tests do
     describe "pub/sub" do

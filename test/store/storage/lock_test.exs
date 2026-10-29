@@ -1,9 +1,9 @@
-defmodule EventStore.Storage.LockTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.LockTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.ProcessHelper
-  alias EventStore.Storage.Lock
-  alias EventStore.Wait
+  alias Decree.Store.ProcessHelper
+  alias Decree.Store.Storage.Lock
+  alias Decree.Store.Wait
 
   test "acquire exclusive subscription lock", %{postgrex_config: postgrex_config, schema: schema} do
     conn = start_supervised!({Postgrex, postgrex_config})

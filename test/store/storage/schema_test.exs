@@ -1,7 +1,7 @@
-defmodule EventStore.Storage.SchemaTest do
+defmodule Decree.Store.Storage.SchemaTest do
   use ExUnit.Case
 
-  alias EventStore.Storage.Schema
+  alias Decree.Store.Storage.Schema
 
   setup do
     config =

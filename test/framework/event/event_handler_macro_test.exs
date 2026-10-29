@@ -1,11 +1,11 @@
-defmodule Commanded.Event.EventHandlerMacroTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.EventHandlerMacroTest do
+  use Decree.MockEventStoreCase
 
-  alias Commanded.Event.IgnoredEvent
-  alias Commanded.ExampleDomain.BankAccount.AccountBalanceHandler
-  alias Commanded.ExampleDomain.BankAccount.Events.{BankAccountOpened, MoneyDeposited}
-  alias Commanded.Helpers.{EventFactory, Wait}
-  alias Commanded.MockedApp
+  alias Decree.Event.IgnoredEvent
+  alias Decree.ExampleDomain.BankAccount.AccountBalanceHandler
+  alias Decree.ExampleDomain.BankAccount.Events.{BankAccountOpened, MoneyDeposited}
+  alias Decree.Helpers.{EventFactory, Wait}
+  alias Decree.MockedApp
 
   describe "event handler" do
     setup do
@@ -46,8 +46,8 @@ defmodule Commanded.Event.EventHandlerMacroTest do
     # A bit of an odd duck test, but it works :)
     assert_raise CompileError, fn ->
       defmodule ConflictingHandlers do
-        use Commanded.Event.Handler,
-          application: Commanded.ExampleDomain.BankApp,
+        use Decree.Event.Handler,
+          application: Decree.ExampleDomain.BankApp,
           name: __MODULE__
 
         @impl true
@@ -64,9 +64,9 @@ defmodule Commanded.Event.EventHandlerMacroTest do
   end
 end
 
-defmodule Commanded.Event.EventHandlerMacroTest.ConflictingOptions do
-  use Commanded.Event.Handler,
-    application: Commanded.ExampleDomain.BankApp,
+defmodule Decree.Event.EventHandlerMacroTest.ConflictingOptions do
+  use Decree.Event.Handler,
+    application: Decree.ExampleDomain.BankApp,
     name: __MODULE__,
     concurrency: 2,
     batch_size: 10

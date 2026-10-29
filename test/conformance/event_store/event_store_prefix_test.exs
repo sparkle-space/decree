@@ -1,9 +1,9 @@
-defmodule Commanded.EventStore.Adapters.EventStore.EventStorePrefixTest do
-  use Commanded.EventStore.EventStorePrefixTestCase,
-    event_store: Commanded.EventStore.Adapters.EventStore
+defmodule Decree.EventStore.Adapters.EventStore.EventStorePrefixTest do
+  use Decree.EventStore.EventStorePrefixTestCase,
+    event_store: Decree.EventStore.Adapters.EventStore
 
-  alias Commanded.EventStore.Adapters.EventStore.Storage
-  alias Commanded.EventStore.EventStoreTestCase
+  alias Decree.EventStore.Adapters.EventStore.Storage
+  alias Decree.EventStore.EventStoreTestCase
 
   setup_all do
     config1 = Storage.config("prefix1")
@@ -28,7 +28,7 @@ defmodule Commanded.EventStore.Adapters.EventStore.EventStorePrefixTest do
   defdelegate start_event_store(config), to: EventStoreTestCase
 
   defp create_init_store!(config) do
-    EventStore.Tasks.Create.exec(config, quiet: true)
-    EventStore.Tasks.Init.exec(config, quiet: true)
+    Decree.Store.Tasks.Create.exec(config, quiet: true)
+    Decree.Store.Tasks.Init.exec(config, quiet: true)
   end
 end

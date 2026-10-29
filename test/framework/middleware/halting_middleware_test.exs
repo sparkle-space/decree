@@ -1,12 +1,12 @@
-defmodule Commanded.Middleware.HaltingMiddlewareTest do
+defmodule Decree.Middleware.HaltingMiddlewareTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
-  alias Commanded.HaltingRouter
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.Middleware.Commands.{IncrementCount, Validate}
-  alias Commanded.UUID
-  alias Commanded.ValidatingRouter
+  alias Decree.DefaultApp
+  alias Decree.HaltingRouter
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.Middleware.Commands.{IncrementCount, Validate}
+  alias Decree.UUID
+  alias Decree.ValidatingRouter
 
   setup do
     start_supervised!(DefaultApp)

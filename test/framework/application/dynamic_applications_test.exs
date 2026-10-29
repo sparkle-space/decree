@@ -1,18 +1,18 @@
-defmodule Commanded.DynamicApplicationsTest do
+defmodule Decree.DynamicApplicationsTest do
   use ExUnit.Case
 
-  alias Commanded.ExampleApplication
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.ReplyHandler
-  alias Commanded.UUID
+  alias Decree.ExampleApplication
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.ReplyHandler
+  alias Decree.UUID
 
   setup_all do
     start_supervised!(CommandAuditMiddleware)
     :ok
   end
 
-  describe "dynamic Commanded applications" do
+  describe "dynamic Decree applications" do
     test "should ensure name is an atom" do
       assert_raise ArgumentError,
                    "expected :name option to be an atom but got: \"invalid\"",
@@ -48,15 +48,15 @@ defmodule Commanded.DynamicApplicationsTest do
     test "should dispatch to named application" do
       {:ok, account_number} = open_account(:example1)
 
-      assert Commanded.EventStore.stream_forward(:example1, account_number) |> length() == 1
+      assert Decree.EventStore.stream_forward(:example1, account_number) |> length() == 1
 
       assert {:error, :stream_not_found} =
-               Commanded.EventStore.stream_forward(:example2, account_number)
+               Decree.EventStore.stream_forward(:example2, account_number)
 
       {:ok, ^account_number} = open_account(:example2, account_number)
 
-      assert Commanded.EventStore.stream_forward(:example1, account_number) |> length() == 1
-      assert Commanded.EventStore.stream_forward(:example2, account_number) |> length() == 1
+      assert Decree.EventStore.stream_forward(:example1, account_number) |> length() == 1
+      assert Decree.EventStore.stream_forward(:example2, account_number) |> length() == 1
     end
 
     test "should error without application name" do

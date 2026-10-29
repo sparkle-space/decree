@@ -1,8 +1,8 @@
-defmodule Commanded.Projections.RuntimeConfigProjector do
-  use Commanded.Projections.Ecto
+defmodule Decree.Projections.RuntimeConfigProjector do
+  use Decree.Projections.Ecto
 
-  alias Commanded.Projections.Events.AnEvent
-  alias Commanded.Projections.Projection
+  alias Decree.Projections.Events.AnEvent
+  alias Decree.Projections.Projection
 
   project %AnEvent{} = event, fn multi ->
     %AnEvent{name: name, pid: pid} = event

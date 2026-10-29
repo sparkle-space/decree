@@ -1,8 +1,8 @@
-defmodule Commanded.Event.EventHandlerStateTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.EventHandlerStateTest do
+  use Decree.MockEventStoreCase
 
-  alias Commanded.Event.StatefulEventHandler
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Event.StatefulEventHandler
+  alias Decree.Helpers.EventFactory
 
   defmodule AnEvent do
     @derive Jason.Encoder

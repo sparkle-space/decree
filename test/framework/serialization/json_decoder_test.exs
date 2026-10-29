@@ -1,7 +1,7 @@
-defmodule Commanded.Serialization.JsonDecoderTest do
+defmodule Decree.Serialization.JsonDecoderTest do
   use ExUnit.Case
 
-  alias Commanded.Serialization.{JsonDecoder, JsonSerializer}
+  alias Decree.Serialization.{JsonDecoder, JsonSerializer}
 
   defmodule ExampleEvent do
     @derive Jason.Encoder

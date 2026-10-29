@@ -1,8 +1,8 @@
-defmodule Commanded.EventStore.EventStoreTestCase do
+defmodule Decree.EventStore.EventStoreTestCase do
   use ExUnit.CaseTemplate
 
-  alias Commanded.EventStore.Adapters.EventStore
-  alias Commanded.EventStore.Adapters.EventStore.Storage
+  alias Decree.EventStore.Adapters.EventStore
+  alias Decree.EventStore.Adapters.EventStore.Storage
 
   setup_all do
     config = Storage.config()
@@ -23,7 +23,7 @@ defmodule Commanded.EventStore.EventStoreTestCase do
   end
 
   def start_event_store(config \\ []) do
-    alias Commanded.EventStore.Adapters.EventStore
+    alias Decree.EventStore.Adapters.EventStore
 
     config = Keyword.put_new(config, :event_store, TestEventStore)
 

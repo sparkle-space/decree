@@ -1,14 +1,14 @@
-defmodule Commanded.Projections.ErrorCallbackTest do
+defmodule Decree.Projections.ErrorCallbackTest do
   use ExUnit.Case
 
-  import Commanded.Projections.ProjectionAssertions
+  import Decree.Projections.ProjectionAssertions
   import ExUnit.CaptureLog
   import Mox
 
-  alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
-  alias Commanded.EventStore.RecordedEvent
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.RecordedEvent
 
-  alias Commanded.Projections.Events.{
+  alias Decree.Projections.Events.{
     AnEvent,
     ErrorEvent,
     ExceptionEvent,
@@ -16,9 +16,9 @@ defmodule Commanded.Projections.ErrorCallbackTest do
     RaiseEvent
   }
 
-  alias Commanded.Projections.Projection
-  alias Commanded.Projections.Repo
-  alias Commanded.UUID
+  alias Decree.Projections.Projection
+  alias Decree.Projections.Repo
+  alias Decree.UUID
 
   setup [:set_mox_global, :stub_event_store, :verify_on_exit!]
 

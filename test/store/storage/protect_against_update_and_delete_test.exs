@@ -1,7 +1,7 @@
-defmodule EventStore.Storage.ProtectAgainstUpdateAndDeleteTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.ProtectAgainstUpdateAndDeleteTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.Config
+  alias Decree.Store.Config
 
   describe "event store table protection" do
     test "cannot delete from `events`, `streams`, and `stream_events` tables", %{conn: conn} do

@@ -1,9 +1,9 @@
-defmodule Commanded.Commands.Composite.CompositeCompositeRouter do
+defmodule Decree.Commands.Composite.CompositeCompositeRouter do
   @moduledoc false
 
-  use Commanded.Commands.CompositeRouter
+  use Decree.Commands.CompositeRouter
 
-  alias Commanded.Commands.Composite.ExampleCompositeRouter
+  alias Decree.Commands.Composite.ExampleCompositeRouter
 
   router(ExampleCompositeRouter)
 end

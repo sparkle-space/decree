@@ -1,3 +1,3 @@
 defmodule SchemaEventStore do
-  use EventStore, otp_app: :eventstore, schema: "example"
+  use Decree.Store, otp_app: :decree, schema: "example"
 end

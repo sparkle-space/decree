@@ -1,14 +1,14 @@
-defmodule Commanded.Aggregates.AggregateSubscriptionTest do
+defmodule Decree.Aggregates.AggregateSubscriptionTest do
   use ExUnit.Case
 
-  alias Commanded.Aggregates.{Aggregate, ExecutionContext}
-  alias Commanded.Aggregates.Supervisor, as: AggregateSupervisor
-  alias Commanded.DefaultApp
-  alias Commanded.{EventStore, Registration}
-  alias Commanded.ExampleDomain.{BankAccount, OpenAccountHandler}
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited
-  alias Commanded.UUID
+  alias Decree.Aggregates.{Aggregate, ExecutionContext}
+  alias Decree.Aggregates.Supervisor, as: AggregateSupervisor
+  alias Decree.DefaultApp
+  alias Decree.{EventStore, Registration}
+  alias Decree.ExampleDomain.{BankAccount, OpenAccountHandler}
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
+  alias Decree.UUID
 
   setup do
     start_supervised!(DefaultApp)
@@ -95,8 +95,8 @@ defmodule Commanded.Aggregates.AggregateSubscriptionTest do
 
   # Write an event to the aggregate's stream, bypassing the aggregate process
   defp append_event_to_stream(%{account_number: account_number}) do
-    event = %Commanded.EventStore.EventData{
-      event_type: "Elixir.Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited",
+    event = %Decree.EventStore.EventData{
+      event_type: "Elixir.Decree.ExampleDomain.BankAccount.Events.MoneyDeposited",
       data: %MoneyDeposited{
         account_number: account_number,
         transfer_uuid: UUID.uuid4(),

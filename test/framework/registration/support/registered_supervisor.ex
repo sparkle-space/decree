@@ -1,7 +1,7 @@
-defmodule Commanded.Registration.RegisteredSupervisor do
+defmodule Decree.Registration.RegisteredSupervisor do
   use DynamicSupervisor
 
-  alias Commanded.Registration.RegisteredServer
+  alias Decree.Registration.RegisteredServer
 
   def start_link(arg) do
     DynamicSupervisor.start_link(__MODULE__, arg, name: __MODULE__)

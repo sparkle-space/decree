@@ -1,18 +1,18 @@
-defmodule Commanded.MockEventStoreCase do
+defmodule Decree.MockEventStoreCase do
   @moduledoc false
 
   use ExUnit.CaseTemplate
 
   import Mox
 
-  alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
-  alias Commanded.MockedApp
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.MockedApp
 
   using do
     quote do
       import Mox
 
-      alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
+      alias Decree.EventStore.Adapters.Mock, as: MockEventStore
     end
   end
 

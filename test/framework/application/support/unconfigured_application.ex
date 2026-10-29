@@ -1,3 +1,3 @@
-defmodule Commanded.UnconfiguredApplication do
-  use Commanded.Application, otp_app: :commanded
+defmodule Decree.UnconfiguredApplication do
+  use Decree.Application, otp_app: :decree
 end

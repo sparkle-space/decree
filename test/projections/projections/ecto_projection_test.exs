@@ -1,14 +1,14 @@
-defmodule Commanded.Projections.EctoProjectionTest do
+defmodule Decree.Projections.EctoProjectionTest do
   use ExUnit.Case
 
-  import Commanded.Projections.ProjectionAssertions
+  import Decree.Projections.ProjectionAssertions
 
-  alias Commanded.Projections.Events.{AnEvent, AnotherEvent, ErrorEvent, IgnoredEvent}
-  alias Commanded.Projections.Projection
-  alias Commanded.Projections.Repo
+  alias Decree.Projections.Events.{AnEvent, AnotherEvent, ErrorEvent, IgnoredEvent}
+  alias Decree.Projections.Projection
+  alias Decree.Projections.Repo
 
   defmodule Projector do
-    use Commanded.Projections.Ecto, application: TestApplication, name: "Projector"
+    use Decree.Projections.Ecto, application: TestApplication, name: "Projector"
 
     project %AnEvent{name: name}, _metadata, fn multi ->
       Ecto.Multi.insert(multi, :my_projection, %Projection{name: name})
@@ -134,51 +134,51 @@ defmodule Commanded.Projections.EctoProjectionTest do
   end
 
   test "should ensure repo is configured" do
-    repo = Application.get_env(:commanded_ecto_projections, :repo)
+    repo = Application.get_env(:decree, :repo)
 
     try do
-      Application.put_env(:commanded_ecto_projections, :repo, nil)
+      Application.put_env(:decree, :repo, nil)
 
       assert_raise RuntimeError,
-                   "Commanded Ecto projections expects :repo to be configured in environment",
+                   "Decree Ecto projections expects :repo to be configured in environment",
                    fn ->
                      Code.eval_string("""
                      defmodule UnconfiguredProjector do
-                       use Commanded.Projections.Ecto, application: TestApplication, name: "projector"
+                       use Decree.Projections.Ecto, application: TestApplication, name: "projector"
                      end
                      """)
                    end
     after
-      Application.put_env(:commanded_ecto_projections, :repo, repo)
+      Application.put_env(:decree, :repo, repo)
     end
   end
 
   test "should allow to set `:repo` as an option" do
-    repo = Application.get_env(:commanded_ecto_projections, :repo)
+    repo = Application.get_env(:decree, :repo)
 
     try do
-      Application.put_env(:commanded_ecto_projections, :repo, nil)
+      Application.put_env(:decree, :repo, nil)
 
       assert Code.eval_string("""
              defmodule ProjectorConfiguredViaOpts do
-               use Commanded.Projections.Ecto,
+               use Decree.Projections.Ecto,
                  application: TestApplication,
                  name: "projector",
-                 repo: Commanded.Projections.Repo
+                 repo: Decree.Projections.Repo
              end
              """)
     after
-      Application.put_env(:commanded_ecto_projections, :repo, repo)
+      Application.put_env(:decree, :repo, repo)
     end
   end
 
   defmodule UnnamedProjector do
-    use Commanded.Projections.Ecto, application: TestApplication
+    use Decree.Projections.Ecto, application: TestApplication
   end
 
   test "should ensure projection name is present on start" do
     expected_error =
-      "Commanded.Projections.EctoProjectionTest.UnnamedProjector expects :name option"
+      "Decree.Projections.EctoProjectionTest.UnnamedProjector expects :name option"
 
     assert_raise ArgumentError, expected_error, fn ->
       UnnamedProjector.start_link()

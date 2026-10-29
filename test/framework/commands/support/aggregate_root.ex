@@ -1,6 +1,6 @@
-defmodule Commanded.Commands.AggregateRoot do
+defmodule Decree.Commands.AggregateRoot do
   @moduledoc false
-  alias Commanded.Commands.AggregateRoot
+  alias Decree.Commands.AggregateRoot
 
   defmodule Command, do: defstruct(uuid: nil)
   defmodule Command2, do: defstruct(uuid: nil)

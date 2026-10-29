@@ -1,8 +1,8 @@
-defmodule Commanded.Aggregates.BankRouter do
+defmodule Decree.Aggregates.BankRouter do
   @moduledoc false
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.ExampleDomain.{
+  alias Decree.ExampleDomain.{
     BankAccount,
     DepositMoneyHandler,
     OpenAccountHandler,

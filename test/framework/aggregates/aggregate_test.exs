@@ -1,11 +1,11 @@
-defmodule Commanded.Aggregates.AggregateTest do
+defmodule Decree.Aggregates.AggregateTest do
   use ExUnit.Case
 
   import ExUnit.CaptureLog
 
-  alias Commanded.Aggregates.Aggregate
-  alias Commanded.Aggregates.ExecutionContext
-  alias Commanded.{DefaultApp, UUID}
+  alias Decree.Aggregates.Aggregate
+  alias Decree.Aggregates.ExecutionContext
+  alias Decree.{DefaultApp, UUID}
 
   defmodule RaiseException do
     defstruct [:message]
@@ -65,7 +65,7 @@ defmodule Commanded.Aggregates.AggregateTest do
 
       assert captured =~ "(RuntimeError) an exception"
       assert captured =~ "aggregate_test.exs"
-      assert captured =~ "Commanded.Aggregates.AggregateTest.ExampleAggregate.execute/2"
+      assert captured =~ "Decree.Aggregates.AggregateTest.ExampleAggregate.execute/2"
     end
   end
 

@@ -1,8 +1,8 @@
-defmodule EventStore.Subscriptions.SubscriptionLockingTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{Config, EventFactory, Storage, UUID}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{Config, EventFactory, Storage, UUID}
+  alias Decree.Store.Subscriptions.Subscription
 
   @conn TestEventStore.Postgrex
 
@@ -149,7 +149,7 @@ defmodule EventStore.Subscriptions.SubscriptionLockingTest do
 
     conn = start_supervised!({Postgrex, config}, id: :subscription_conn)
 
-    :ok = EventStore.Storage.Lock.try_acquire_exclusive_lock(conn, 1, schema: schema)
+    :ok = Decree.Store.Storage.Lock.try_acquire_exclusive_lock(conn, 1, schema: schema)
 
     [conn2: conn]
   end
@@ -194,7 +194,7 @@ defmodule EventStore.Subscriptions.SubscriptionLockingTest do
 
     Process.send(
       subscription,
-      {EventStore.AdvisoryLocks, :lock_released, lock_ref, :shutdown},
+      {Decree.Store.AdvisoryLocks, :lock_released, lock_ref, :shutdown},
       []
     )
   end

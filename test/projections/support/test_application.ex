@@ -1,8 +1,8 @@
 defmodule TestApplication do
-  use Commanded.Application,
+  use Decree.Application,
     otp_app: :my_app,
     event_store: [
-      adapter: Commanded.EventStore.Adapters.InMemory,
-      serializer: Commanded.Serialization.JsonSerializer
+      adapter: Decree.EventStore.Adapters.InMemory,
+      serializer: Decree.Serialization.JsonSerializer
     ]
 end

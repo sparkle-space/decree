@@ -1,9 +1,9 @@
-defmodule Commanded.ValidatingRouter do
-  use Commanded.Commands.Router
+defmodule Decree.ValidatingRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.Middleware.Commands.{CommandHandler, CounterAggregateRoot, Validate}
-  alias Commanded.ValidationMiddleware
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.Middleware.Commands.{CommandHandler, CounterAggregateRoot, Validate}
+  alias Decree.ValidationMiddleware
 
   middleware CommandAuditMiddleware
   middleware ValidationMiddleware

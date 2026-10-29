@@ -1,7 +1,7 @@
-defmodule Commanded.Commands.ExampleRouter do
-  use Commanded.Commands.Router
+defmodule Decree.Commands.ExampleRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.{ExampleAggregate, ExampleCommand}
+  alias Decree.Commands.{ExampleAggregate, ExampleCommand}
 
   dispatch ExampleCommand, to: ExampleAggregate, identity: :id
 end

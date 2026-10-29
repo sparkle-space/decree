@@ -1,13 +1,13 @@
-defmodule Commanded.ExampleDomain.BankAccount.AccountBalanceHandler do
+defmodule Decree.ExampleDomain.BankAccount.AccountBalanceHandler do
   @moduledoc false
 
-  use Commanded.Event.Handler,
-    application: Commanded.ExampleDomain.BankApp,
+  use Decree.Event.Handler,
+    application: Decree.ExampleDomain.BankApp,
     name: __MODULE__
 
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited
-  alias Commanded.ExampleDomain.BankAccount.Events.MoneyWithdrawn
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
+  alias Decree.ExampleDomain.BankAccount.Events.MoneyWithdrawn
 
   def after_start(_state) do
     with {:ok, _pid} <- Agent.start_link(fn -> 0 end, name: __MODULE__) do

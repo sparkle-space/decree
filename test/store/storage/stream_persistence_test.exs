@@ -1,9 +1,9 @@
-defmodule EventStore.Storage.StreamPersistenceTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.StreamPersistenceTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, UUID}
-  alias EventStore.Storage.{Appender, CreateStream, Stream}
-  alias EventStore.Streams.StreamInfo
+  alias Decree.Store.{EventFactory, UUID}
+  alias Decree.Store.Storage.{Appender, CreateStream, Stream}
+  alias Decree.Store.Streams.StreamInfo
 
   test "create stream", %{conn: conn, schema: schema} do
     stream_uuid = UUID.uuid4()

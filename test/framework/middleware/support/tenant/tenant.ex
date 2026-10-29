@@ -1,4 +1,4 @@
-defmodule Commanded.Middleware.Tenant do
+defmodule Decree.Middleware.Tenant do
   defmodule Commands do
     defmodule RegisterTenant do
       @enforce_keys [:tenant_id, :name]
@@ -13,9 +13,9 @@ defmodule Commanded.Middleware.Tenant do
     end
   end
 
-  alias Commanded.Middleware.Tenant
-  alias Commanded.Middleware.Tenant.Commands.RegisterTenant
-  alias Commanded.Middleware.Tenant.Events.TenantRegistered
+  alias Decree.Middleware.Tenant
+  alias Decree.Middleware.Tenant.Commands.RegisterTenant
+  alias Decree.Middleware.Tenant.Events.TenantRegistered
 
   defstruct [:tenant_id, :name]
 

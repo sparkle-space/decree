@@ -1,12 +1,12 @@
-defmodule Commanded.Projections.InitCallbackTest do
+defmodule Decree.Projections.InitCallbackTest do
   use ExUnit.Case
 
-  alias Commanded.Projections.Repo
+  alias Decree.Projections.Repo
 
   defmodule InitProjector do
-    use Commanded.Projections.Ecto, application: TestApplication, name: "InitProjector"
+    use Decree.Projections.Ecto, application: TestApplication, name: "InitProjector"
 
-    @impl Commanded.Event.Handler
+    @impl Decree.Event.Handler
     def init(config) do
       {reply_to, config} = Keyword.pop(config, :reply_to)
 

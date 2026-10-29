@@ -1,7 +1,7 @@
-defmodule EventStore.Streams.SoftDeleteStreamTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Streams.SoftDeleteStreamTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
   alias TestEventStore, as: EventStore
 
   describe "soft delete stream" do

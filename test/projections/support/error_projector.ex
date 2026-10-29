@@ -1,9 +1,9 @@
 defmodule ErrorProjector do
-  use Commanded.Projections.Ecto, application: TestApplication, name: "ErrorProjector"
+  use Decree.Projections.Ecto, application: TestApplication, name: "ErrorProjector"
 
-  alias Commanded.Event.FailureContext
+  alias Decree.Event.FailureContext
 
-  alias Commanded.Projections.Events.{
+  alias Decree.Projections.Events.{
     AnEvent,
     ErrorEvent,
     RaiseEvent,
@@ -11,7 +11,7 @@ defmodule ErrorProjector do
     InvalidMultiEvent
   }
 
-  alias Commanded.Projections.Projection
+  alias Decree.Projections.Projection
 
   project %AnEvent{name: name, pid: pid} = event, fn multi ->
     send(pid, event)
@@ -41,7 +41,7 @@ defmodule ErrorProjector do
     Ecto.Multi.update_all(multi, :projection, query, set: [name: name])
   end
 
-  @impl Commanded.Event.Handler
+  @impl Decree.Event.Handler
   def error({:error, :failed} = error, %ErrorEvent{} = event, %FailureContext{}) do
     %ErrorEvent{pid: pid} = event
 
@@ -50,7 +50,7 @@ defmodule ErrorProjector do
     :skip
   end
 
-  @impl Commanded.Event.Handler
+  @impl Decree.Event.Handler
   def error({:error, _error} = error, %ExceptionEvent{} = event, %FailureContext{}) do
     %ExceptionEvent{pid: pid} = event
 
@@ -59,7 +59,7 @@ defmodule ErrorProjector do
     :skip
   end
 
-  @impl Commanded.Event.Handler
+  @impl Decree.Event.Handler
   def error({:error, _error} = error, %RaiseEvent{} = event, %FailureContext{}) do
     %RaiseEvent{pid: pid} = event
 
@@ -68,7 +68,7 @@ defmodule ErrorProjector do
     :skip
   end
 
-  @impl Commanded.Event.Handler
+  @impl Decree.Event.Handler
   def error({:error, _error} = error, %InvalidMultiEvent{} = event, %FailureContext{}) do
     %InvalidMultiEvent{pid: pid} = event
 

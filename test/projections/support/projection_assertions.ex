@@ -1,7 +1,7 @@
-defmodule Commanded.Projections.ProjectionAssertions do
+defmodule Decree.Projections.ProjectionAssertions do
   import ExUnit.Assertions
 
-  alias Commanded.Projections.Repo
+  alias Decree.Projections.Repo
 
   def assert_projections(schema, expected) do
     actual = Repo.all(schema) |> pluck(:name)

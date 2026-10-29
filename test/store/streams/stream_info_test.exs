@@ -1,8 +1,8 @@
-defmodule EventStore.Streams.StreamInfoTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Streams.StreamInfoTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, UUID}
-  alias EventStore.Streams.StreamInfo
+  alias Decree.Store.{EventFactory, UUID}
+  alias Decree.Store.Streams.StreamInfo
   alias TestEventStore, as: EventStore
 
   describe "stream info" do
@@ -90,10 +90,10 @@ defmodule EventStore.Streams.StreamInfoTest do
       {:ok, stream2_uuid} = append_events_to_stream(2)
       {:ok, stream3_uuid} = append_events_to_stream(3)
 
-      start_supervised!({TestEventStore, name: :eventstore, enable_hard_deletes: true})
+      start_supervised!({TestEventStore, name: :decree, enable_hard_deletes: true})
 
-      :ok = TestEventStore.delete_stream(stream1_uuid, 1, :soft, name: :eventstore)
-      :ok = TestEventStore.delete_stream(stream2_uuid, 2, :hard, name: :eventstore)
+      :ok = TestEventStore.delete_stream(stream1_uuid, 1, :soft, name: :decree)
+      :ok = TestEventStore.delete_stream(stream2_uuid, 2, :hard, name: :decree)
 
       assert {:error, :stream_deleted} = EventStore.stream_info(stream1_uuid)
       assert {:error, :stream_not_found} = EventStore.stream_info(stream2_uuid)

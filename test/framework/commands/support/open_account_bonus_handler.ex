@@ -1,14 +1,14 @@
-defmodule Commanded.Commands.OpenAccountBonusHandler do
-  alias Commanded.ExampleDomain.BankApp
+defmodule Decree.Commands.OpenAccountBonusHandler do
+  alias Decree.ExampleDomain.BankApp
 
-  use Commanded.Event.Handler,
+  use Decree.Event.Handler,
     application: BankApp,
     name: "OpenAccountBonus"
 
-  alias Commanded.ExampleDomain.BankAccount.Commands.DepositMoney
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.ExampleDomain.BankRouter
-  alias Commanded.UUID
+  alias Decree.ExampleDomain.BankAccount.Commands.DepositMoney
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.ExampleDomain.BankRouter
+  alias Decree.UUID
 
   def handle(%BankAccountOpened{} = command, metadata) do
     %BankAccountOpened{account_number: account_number} = command

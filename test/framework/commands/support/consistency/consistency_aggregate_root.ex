@@ -1,4 +1,4 @@
-defmodule Commanded.Commands.ConsistencyAggregateRoot do
+defmodule Decree.Commands.ConsistencyAggregateRoot do
   @moduledoc false
   @derive Jason.Encoder
   defstruct [:delay]
@@ -28,7 +28,7 @@ defmodule Commanded.Commands.ConsistencyAggregateRoot do
     defstruct [:uuid, :delay]
   end
 
-  alias Commanded.Commands.ConsistencyAggregateRoot
+  alias Decree.Commands.ConsistencyAggregateRoot
 
   def execute(%ConsistencyAggregateRoot{}, %ConsistencyCommand{uuid: uuid, delay: delay}) do
     %ConsistencyEvent{uuid: uuid, delay: delay}

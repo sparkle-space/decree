@@ -1,4 +1,4 @@
-alias Commanded.Projections.Repo
+alias Decree.Projections.Repo
 
 {:ok, _} = Repo.start_link()
 
@@ -14,7 +14,7 @@ end
 
 Ecto.Migrator.up(Repo, 20_170_609_120_000, CreateProjections)
 
-Mox.defmock(Commanded.EventStore.Adapters.Mock, for: Commanded.EventStore.Adapter)
+Mox.defmock(Decree.EventStore.Adapters.Mock, for: Decree.EventStore.Adapter)
 
 ExUnit.start()
 

@@ -1,12 +1,12 @@
-defmodule Commanded.Projections.AfterUpdateCallbackTest do
+defmodule Decree.Projections.AfterUpdateCallbackTest do
   use ExUnit.Case
 
-  alias Commanded.Projections.Events.AnEvent
-  alias Commanded.Projections.Projection
-  alias Commanded.Projections.Repo
+  alias Decree.Projections.Events.AnEvent
+  alias Decree.Projections.Projection
+  alias Decree.Projections.Repo
 
   defmodule Projector do
-    use Commanded.Projections.Ecto,
+    use Decree.Projections.Ecto,
       application: TestApplication,
       name: "Projector"
 

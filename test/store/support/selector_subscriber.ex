@@ -1,4 +1,4 @@
-defmodule EventStore.SelectorSubscriber do
+defmodule Decree.Store.SelectorSubscriber do
   import Integer, only: [is_odd: 1]
 
   defmodule State do
@@ -12,7 +12,7 @@ defmodule EventStore.SelectorSubscriber do
     ]
   end
 
-  alias EventStore.SelectorSubscriber.State
+  alias Decree.Store.SelectorSubscriber.State
 
   def start_link(event_store, stream_uuid, subscription_name, reply_to, delay \\ 0) do
     state = %State{
@@ -69,7 +69,7 @@ defmodule EventStore.SelectorSubscriber do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  def test_selector(%EventStore.RecordedEvent{data: %{event: event}}) when is_odd(event), do: true
+  def test_selector(%Decree.Store.RecordedEvent{data: %{event: event}}) when is_odd(event), do: true
   def test_selector(_recorded_event), do: false
 
   defp processing_delay(%State{delay: 0}), do: :ok

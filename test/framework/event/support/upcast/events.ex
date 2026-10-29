@@ -1,5 +1,5 @@
-defmodule Commanded.Event.Upcast.Events do
-  alias Commanded.Event.Upcaster
+defmodule Decree.Event.Upcast.Events do
+  alias Decree.Event.Upcaster
 
   defmodule EventOne do
     @derive Jason.Encoder

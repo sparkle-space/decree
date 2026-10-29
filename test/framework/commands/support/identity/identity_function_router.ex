@@ -1,9 +1,9 @@
-defmodule Commanded.Commands.IdentityFunctionRouter do
+defmodule Decree.Commands.IdentityFunctionRouter do
   @moduledoc false
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.{IdentityFunctionAggregate, IdentityFunctionRouter}
-  alias Commanded.Commands.IdentityFunctionAggregate.IdentityFunctionCommand
+  alias Decree.Commands.{IdentityFunctionAggregate, IdentityFunctionRouter}
+  alias Decree.Commands.IdentityFunctionAggregate.IdentityFunctionCommand
 
   identify IdentityFunctionAggregate,
     by: &IdentityFunctionRouter.aggregate_identity/1

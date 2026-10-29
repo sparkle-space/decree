@@ -1,19 +1,19 @@
-defmodule Commanded.Commands.CorrelationCasuationTest do
+defmodule Decree.Commands.CorrelationCasuationTest do
   use ExUnit.Case
 
-  import Commanded.Assertions.EventAssertions
+  import Decree.Assertions.EventAssertions
 
-  alias Commanded.Commands.OpenAccountBonusHandler
-  alias Commanded.EventStore
-  alias Commanded.ExampleDomain.BankApp
-  alias Commanded.ExampleDomain.BankAccount.Commands.{OpenAccount, WithdrawMoney}
-  alias Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited
-  alias Commanded.ExampleDomain.BankRouter
-  alias Commanded.ExampleDomain.MoneyTransfer.Commands.TransferMoney
-  alias Commanded.ExampleDomain.TransferMoneyProcessManager
-  alias Commanded.Helpers.CommandAuditMiddleware
-  alias Commanded.Helpers.ProcessHelper
-  alias Commanded.UUID
+  alias Decree.Commands.OpenAccountBonusHandler
+  alias Decree.EventStore
+  alias Decree.ExampleDomain.BankApp
+  alias Decree.ExampleDomain.BankAccount.Commands.{OpenAccount, WithdrawMoney}
+  alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
+  alias Decree.ExampleDomain.BankRouter
+  alias Decree.ExampleDomain.MoneyTransfer.Commands.TransferMoney
+  alias Decree.ExampleDomain.TransferMoneyProcessManager
+  alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.Helpers.ProcessHelper
+  alias Decree.UUID
 
   setup do
     start_supervised!(CommandAuditMiddleware)

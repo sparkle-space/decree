@@ -1,7 +1,7 @@
-defmodule Commanded.Commands.ConsistencyApp do
-  use Commanded.Application, otp_app: :commanded
+defmodule Decree.Commands.ConsistencyApp do
+  use Decree.Application, otp_app: :decree
 
-  alias Commanded.Commands.ConsistencyRouter
+  alias Decree.Commands.ConsistencyRouter
 
   router(ConsistencyRouter)
 end

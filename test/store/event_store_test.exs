@@ -1,8 +1,8 @@
-defmodule EventStore.EventStoreTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.EventStoreTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventData, EventFactory, RecordedEvent, UUID}
-  alias EventStore.Snapshots.SnapshotData
+  alias Decree.Store.{EventData, EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.Snapshots.SnapshotData
   alias TestEventStore, as: EventStore
 
   @all_stream "$all"
@@ -193,7 +193,7 @@ defmodule EventStore.EventStoreTest do
     stream_uuid = UUID.uuid4()
 
     event = %EventData{
-      event_type: "Elixir.EventStore.EventFactory.Event",
+      event_type: "Elixir.Decree.Store.EventFactory.Event",
       data: %EventFactory.Event{
         event: unicode_text
       }

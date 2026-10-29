@@ -1,9 +1,9 @@
-defmodule EventStore.MigrateEventStoreTest do
+defmodule Decree.Store.MigrateEventStoreTest do
   use ExUnit.Case
 
   import ExUnit.CaptureIO
 
-  alias EventStore.Storage.Database
+  alias Decree.Store.Storage.Database
 
   @moduletag :migration
 
@@ -33,9 +33,9 @@ defmodule EventStore.MigrateEventStoreTest do
         |> Enum.sort()
 
       # One migration should succeed, two should be prevented due to already running
-      assert Enum.at(log, 0) =~ "EventStore database migration already in progress."
-      assert Enum.at(log, 1) =~ "EventStore database migration already in progress."
-      assert Enum.at(log, 2) =~ "The EventStore database has been migrated."
+      assert Enum.at(log, 0) =~ "Decree.Store database migration already in progress."
+      assert Enum.at(log, 1) =~ "Decree.Store database migration already in progress."
+      assert Enum.at(log, 2) =~ "The Decree.Store database has been migrated."
 
       assert length(log) == 3
     end
@@ -93,24 +93,24 @@ defmodule EventStore.MigrateEventStoreTest do
   end
 
   defp create_new_database(config) do
-    :ok = EventStore.Storage.Database.drop(config)
-    :ok = EventStore.Storage.Database.create(config)
+    :ok = Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
 
     {:ok, conn} = Postgrex.start_link(config)
 
-    EventStore.Storage.Initializer.run!(conn, config)
+    Decree.Store.Storage.Initializer.run!(conn, config)
 
     :ok = GenServer.stop(conn)
   end
 
   defp restore_pre_migration_event_store(config) do
-    EventStore.Storage.Database.drop(config)
-    :ok = EventStore.Storage.Database.create(config)
+    Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = EventStore.Storage.Database.restore(config, "test/fixture/eventstore.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore.dump")
   end
 
   defp migrate_eventstore(config, opts) do
-    EventStore.Tasks.Migrate.exec(config, opts)
+    Decree.Store.Tasks.Migrate.exec(config, opts)
   end
 end

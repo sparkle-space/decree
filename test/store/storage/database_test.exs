@@ -1,8 +1,8 @@
-defmodule EventStore.Storage.DatabaseTest do
+defmodule Decree.Store.Storage.DatabaseTest do
   use ExUnit.Case
 
-  alias EventStore.Config
-  alias EventStore.Storage.Database
+  alias Decree.Store.Config
+  alias Decree.Store.Storage.Database
 
   setup do
     config =

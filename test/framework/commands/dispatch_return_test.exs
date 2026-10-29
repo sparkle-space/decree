@@ -1,17 +1,17 @@
-defmodule Commanded.Commands.DispatchReturnTest do
+defmodule Decree.Commands.DispatchReturnTest do
   use ExUnit.Case
 
-  alias Commanded.Commands.ExecutionResult
-  alias Commanded.ExampleDomain.{BankAccount, BankApp}
-  alias Commanded.ExampleDomain.BankAccount.Commands.{CloseAccount, DepositMoney, OpenAccount}
+  alias Decree.Commands.ExecutionResult
+  alias Decree.ExampleDomain.{BankAccount, BankApp}
+  alias Decree.ExampleDomain.BankAccount.Commands.{CloseAccount, DepositMoney, OpenAccount}
 
-  alias Commanded.ExampleDomain.BankAccount.Events.{
+  alias Decree.ExampleDomain.BankAccount.Events.{
     BankAccountClosed,
     BankAccountOpened,
     MoneyDeposited
   }
 
-  alias Commanded.Helpers.CommandAuditMiddleware
+  alias Decree.Helpers.CommandAuditMiddleware
 
   setup do
     start_supervised!(BankApp)
@@ -210,7 +210,7 @@ defmodule Commanded.Commands.DispatchReturnTest do
   end
 
   describe "application dispatch return aggregate state" do
-    alias Commanded.Commands.DefaultDispatchReturnApp
+    alias Decree.Commands.DefaultDispatchReturnApp
 
     setup do
       start_supervised!(DefaultDispatchReturnApp)

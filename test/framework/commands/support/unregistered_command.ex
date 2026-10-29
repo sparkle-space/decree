@@ -1,6 +1,6 @@
-defmodule Commanded.Commands.UnregisteredCommand do
+defmodule Decree.Commands.UnregisteredCommand do
   @moduledoc false
-  alias Commanded.UUID
+  alias Decree.UUID
 
   defstruct aggregate_uuid: UUID.uuid4()
 end

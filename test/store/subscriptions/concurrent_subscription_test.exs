@@ -1,10 +1,10 @@
-defmodule EventStore.Subscriptions.ConcurrentSubscriptionTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.ConcurrentSubscriptionTest do
+  use Decree.Store.StorageCase
 
-  import EventStore.SubscriptionHelpers
+  import Decree.Store.SubscriptionHelpers
 
-  alias EventStore.{ProcessHelper, RecordedEvent, UUID}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{ProcessHelper, RecordedEvent, UUID}
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   describe "concurrent subscription" do

@@ -1,8 +1,8 @@
-defmodule Commanded.Event.AppendingEventHandler do
+defmodule Decree.Event.AppendingEventHandler do
   @moduledoc false
 
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__
 
   def after_start(_state) do

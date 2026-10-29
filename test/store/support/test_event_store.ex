@@ -1,3 +1,3 @@
 defmodule TestEventStore do
-  use EventStore, otp_app: :eventstore
+  use Decree.Store, otp_app: :decree
 end

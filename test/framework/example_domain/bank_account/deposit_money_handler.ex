@@ -1,10 +1,10 @@
-defmodule Commanded.ExampleDomain.DepositMoneyHandler do
+defmodule Decree.ExampleDomain.DepositMoneyHandler do
   @moduledoc false
 
-  @behaviour Commanded.Commands.Handler
+  @behaviour Decree.Commands.Handler
 
-  alias Commanded.ExampleDomain.BankAccount
-  alias Commanded.ExampleDomain.BankAccount.Commands.DepositMoney
+  alias Decree.ExampleDomain.BankAccount
+  alias Decree.ExampleDomain.BankAccount.Commands.DepositMoney
 
   def handle(%BankAccount{} = aggregate, %DepositMoney{} = deposit_money) do
     aggregate

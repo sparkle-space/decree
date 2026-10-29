@@ -1,14 +1,14 @@
-defmodule Commanded.Aggregates.ExecuteCommandTest do
+defmodule Decree.Aggregates.ExecuteCommandTest do
   use ExUnit.Case
 
-  import Commanded.Helpers.ProcessHelper, only: [shutdown_aggregate: 3]
+  import Decree.Helpers.ProcessHelper, only: [shutdown_aggregate: 3]
 
-  alias Commanded.Aggregates.{Aggregate, ExecutionContext}
-  alias Commanded.ExampleDomain.{BankAccount, BankApp, OpenAccountHandler}
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.Helpers.Wait
-  alias Commanded.{Registration, UUID}
+  alias Decree.Aggregates.{Aggregate, ExecutionContext}
+  alias Decree.ExampleDomain.{BankAccount, BankApp, OpenAccountHandler}
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.Helpers.Wait
+  alias Decree.{Registration, UUID}
 
   setup do
     start_supervised!(BankApp)
@@ -101,8 +101,8 @@ defmodule Commanded.Aggregates.ExecuteCommandTest do
   end
 
   describe "command dispatch return" do
-    alias Commanded.Aggregates.ReturnValue.Command
-    alias Commanded.Aggregates.ReturnValue.Event
+    alias Decree.Aggregates.ReturnValue.Command
+    alias Decree.Aggregates.ReturnValue.Event
 
     test "should allow `:ok` return value" do
       assert_no_events(fn %Command{} -> :ok end)
@@ -140,7 +140,7 @@ defmodule Commanded.Aggregates.ExecuteCommandTest do
   end
 
   defp assert_event_result(command_fun) do
-    alias Commanded.Aggregates.ReturnValue.Event
+    alias Decree.Aggregates.ReturnValue.Event
 
     id = UUID.uuid4()
 
@@ -149,8 +149,8 @@ defmodule Commanded.Aggregates.ExecuteCommandTest do
   end
 
   defp execute_aggregate_command(id, command_fun) do
-    alias Commanded.Aggregates.ReturnValue.Command
-    alias Commanded.Aggregates.ReturnValue.ExampleAggregate
+    alias Decree.Aggregates.ReturnValue.Command
+    alias Decree.Aggregates.ReturnValue.ExampleAggregate
 
     {:ok, ^id} = open_aggregate(ExampleAggregate, id)
 
@@ -179,6 +179,6 @@ defmodule Commanded.Aggregates.ExecuteCommandTest do
   end
 
   defp open_aggregate(module, id) do
-    Commanded.Aggregates.Supervisor.open_aggregate(BankApp, module, id)
+    Decree.Aggregates.Supervisor.open_aggregate(BankApp, module, id)
   end
 end

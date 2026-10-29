@@ -1,11 +1,11 @@
-defmodule EventStore.Subscriptions.StreamSubscriptionTestCase do
-  import EventStore.SharedStorageTestCase
+defmodule Decree.Store.Subscriptions.StreamSubscriptionTestCase do
+  import Decree.Store.SharedStorageTestCase
 
   define_tests do
-    alias EventStore.{EventFactory, ProcessHelper, RecordedEvent, SubscriptionHelpers}
-    alias EventStore.Storage.{Appender, CreateStream}
-    alias EventStore.Subscriptions.SubscriptionFsm
-    alias EventStore.Wait
+    alias Decree.Store.{EventFactory, ProcessHelper, RecordedEvent, SubscriptionHelpers}
+    alias Decree.Store.Storage.{Appender, CreateStream}
+    alias Decree.Store.Subscriptions.SubscriptionFsm
+    alias Decree.Store.Wait
 
     @event_store TestEventStore
     @conn TestEventStore.Postgrex
@@ -518,12 +518,12 @@ defmodule EventStore.Subscriptions.StreamSubscriptionTestCase do
 
       config =
         @event_store
-        |> EventStore.Config.parsed(:eventstore)
-        |> EventStore.Config.advisory_locks_postgrex_opts()
+        |> Decree.Store.Config.parsed(:decree)
+        |> Decree.Store.Config.advisory_locks_postgrex_opts()
 
       conn = start_supervised!({Postgrex, config})
 
-      EventStore.Storage.Lock.try_acquire_exclusive_lock(conn, 1, schema: schema)
+      Decree.Store.Storage.Lock.try_acquire_exclusive_lock(conn, 1, schema: schema)
 
       [conn2: conn]
     end

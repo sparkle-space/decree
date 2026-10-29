@@ -1,4 +1,4 @@
-defmodule Commanded.Commands.TimeoutAggregateRoot do
+defmodule Decree.Commands.TimeoutAggregateRoot do
   @moduledoc false
   defstruct []
 end

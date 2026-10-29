@@ -1,6 +1,6 @@
-defmodule Commanded.EventStore.Adapters.EventStore.SnapshotTest do
-  use Commanded.EventStore.EventStoreTestCase
+defmodule Decree.EventStore.Adapters.EventStore.SnapshotTest do
+  use Decree.EventStore.EventStoreTestCase
 
-  use Commanded.EventStore.SnapshotTestCase,
-    event_store: Commanded.EventStore.Adapters.EventStore
+  use Decree.EventStore.SnapshotTestCase,
+    event_store: Decree.EventStore.Adapters.EventStore
 end

@@ -1,7 +1,7 @@
-defmodule Commanded.Commands.DispatchConsistencyTest do
+defmodule Decree.Commands.DispatchConsistencyTest do
   use ExUnit.Case
 
-  alias Commanded.Commands.{
+  alias Decree.Commands.{
     ConsistencyAggregateRoot,
     ConsistencyPrefixRouter,
     EventuallyConsistentEventHandler,
@@ -11,9 +11,9 @@ defmodule Commanded.Commands.DispatchConsistencyTest do
     StronglyConsistentProcessManager
   }
 
-  alias Commanded.Commands.ConsistencyApp
-  alias Commanded.EventStore
-  alias Commanded.UUID
+  alias Decree.Commands.ConsistencyApp
+  alias Decree.EventStore
+  alias Decree.UUID
   alias ConsistencyAggregateRoot.ConsistencyCommand
   alias ConsistencyAggregateRoot.NoOpCommand
   alias ConsistencyAggregateRoot.RequestDispatchCommand

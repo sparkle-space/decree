@@ -1,3 +1,3 @@
-defmodule Commanded.Commands.ExampleCommand do
+defmodule Decree.Commands.ExampleCommand do
   defstruct [:id]
 end

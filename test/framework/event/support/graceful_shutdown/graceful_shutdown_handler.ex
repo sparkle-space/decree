@@ -1,6 +1,6 @@
-defmodule Commanded.Event.GracefulShutdownHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.MockedApp,
+defmodule Decree.Event.GracefulShutdownHandler do
+  use Decree.Event.Handler,
+    application: Decree.MockedApp,
     name: __MODULE__
 
   def handle(event, metadata) do

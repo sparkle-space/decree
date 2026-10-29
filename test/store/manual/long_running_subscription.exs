@@ -4,7 +4,7 @@
 #   mix run --no-halt test/manual/long_running_subscription.exs
 #
 
-alias EventStore.{EventData, UUID}
+alias Decree.Store.{EventData, UUID}
 
 defmodule LoggingSubscriber do
   use GenServer
@@ -27,13 +27,13 @@ defmodule LoggingSubscriber do
   def handle_info({:events, events}, subscription) do
     Logger.debug("Received event(s): #{inspect(events)}")
 
-    :ok = EventStore.ack(subscription, events)
+    :ok = Decree.Store.ack(subscription, events)
 
     {:noreply, subscription}
   end
 
   defp subscribe_to_stream(stream_uuid) do
-    with {:ok, subscription} <- EventStore.subscribe_to_stream(stream_uuid, UUID.uuid4(), self()) do
+    with {:ok, subscription} <- Decree.Store.subscribe_to_stream(stream_uuid, UUID.uuid4(), self()) do
       subscription
     end
   end
@@ -65,7 +65,7 @@ defmodule IntervalAppender do
       }
     ]
 
-    :ok = EventStore.append_to_stream(stream_uuid, expected_version, events)
+    :ok = Decree.Store.append_to_stream(stream_uuid, expected_version, events)
 
     Process.send_after(self(), :append_to_stream, interval)
 

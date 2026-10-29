@@ -1,6 +1,6 @@
-defmodule Commanded.Commands.StronglyConsistentProcessManager do
-  use Commanded.ProcessManagers.ProcessManager,
-    application: Commanded.Commands.ConsistencyApp,
+defmodule Decree.Commands.StronglyConsistentProcessManager do
+  use Decree.ProcessManagers.ProcessManager,
+    application: Decree.Commands.ConsistencyApp,
     name: __MODULE__,
     consistency: :strong
 
@@ -9,14 +9,14 @@ defmodule Commanded.Commands.StronglyConsistentProcessManager do
     :uuid
   ]
 
-  alias Commanded.Commands.ConsistencyAggregateRoot.{
+  alias Decree.Commands.ConsistencyAggregateRoot.{
     ConsistencyCommand,
     ConsistencyEvent,
     DispatchRequestedEvent,
     NoOpCommand
   }
 
-  alias Commanded.Commands.StronglyConsistentProcessManager
+  alias Decree.Commands.StronglyConsistentProcessManager
 
   def interested?(%DispatchRequestedEvent{uuid: uuid}), do: {:start, uuid}
   def interested?(%ConsistencyEvent{uuid: uuid}), do: {:continue, uuid}

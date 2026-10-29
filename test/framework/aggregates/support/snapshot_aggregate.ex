@@ -1,4 +1,4 @@
-defmodule Commanded.Aggregates.SnapshotAggregate do
+defmodule Decree.Aggregates.SnapshotAggregate do
   @moduledoc false
   @derive Jason.Encoder
   defstruct [:name, :datetime]
@@ -16,7 +16,7 @@ defmodule Commanded.Aggregates.SnapshotAggregate do
     end
   end
 
-  alias Commanded.Aggregates.SnapshotAggregate
+  alias Decree.Aggregates.SnapshotAggregate
   alias Commands.Create
   alias Events.Created
 
@@ -37,9 +37,9 @@ defmodule Commanded.Aggregates.SnapshotAggregate do
   end
 end
 
-alias Commanded.Aggregates.SnapshotAggregate
+alias Decree.Aggregates.SnapshotAggregate
 
-defimpl Commanded.Serialization.JsonDecoder, for: SnapshotAggregate do
+defimpl Decree.Serialization.JsonDecoder, for: SnapshotAggregate do
   @doc """
   Parse the datetime included in the aggregate state
   """

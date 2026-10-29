@@ -1,9 +1,9 @@
-defmodule EventStore.Streams.AllStreamTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Streams.AllStreamTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, UUID}
-  alias EventStore.Streams.Stream
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, UUID}
+  alias Decree.Store.Streams.Stream
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   @all_stream "$all"

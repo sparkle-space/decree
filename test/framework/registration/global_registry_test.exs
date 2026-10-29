@@ -1,6 +1,6 @@
-defmodule Commanded.GlobalRegistryTest do
-  alias Commanded.Registration.GlobalRegistry
-  alias Commanded.RegistrationTestCase
+defmodule Decree.GlobalRegistryTest do
+  alias Decree.Registration.GlobalRegistry
+  alias Decree.RegistrationTestCase
 
   use RegistrationTestCase, registry: GlobalRegistry
 

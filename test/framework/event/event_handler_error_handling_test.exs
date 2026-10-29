@@ -1,24 +1,24 @@
-defmodule Commanded.Event.EventHandlerErrorHandlingTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.EventHandlerErrorHandlingTest do
+  use Decree.MockEventStoreCase
 
   import ExUnit.CaptureLog
 
-  alias Commanded.Application.Config, as: AppConfig
+  alias Decree.Application.Config, as: AppConfig
 
-  alias Commanded.DefaultApp
+  alias Decree.DefaultApp
 
-  alias Commanded.Event.ErrorAggregate.Events.{
+  alias Decree.Event.ErrorAggregate.Events.{
     ErrorEvent,
     ExceptionEvent,
     InvalidReturnValueEvent
   }
 
-  alias Commanded.Event.ErrorEventHandler
-  alias Commanded.Event.FailureContext
-  alias Commanded.Event.Handler
-  alias Commanded.Event.SimpleErrorEventHandler
-  alias Commanded.Event.ThreeStrikesErrorHandler
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Event.ErrorEventHandler
+  alias Decree.Event.FailureContext
+  alias Decree.Event.Handler
+  alias Decree.Event.SimpleErrorEventHandler
+  alias Decree.Event.ThreeStrikesErrorHandler
+  alias Decree.Helpers.EventFactory
 
   setup do
     handler = start_supervised!(ErrorEventHandler)
@@ -49,14 +49,14 @@ defmodule Commanded.Event.EventHandlerErrorHandlingTest do
       send_error_event(handler)
 
       # Then the first attempt and failure occur
-      assert_receive {[:commanded, :event, :handle, :start], 1, _, %{context: %{}}}
-      assert_receive {[:commanded, :event, :handle, :stop], 2, _, %{context: %{}}}
+      assert_receive {[:decree, :event, :handle, :start], 1, _, %{context: %{}}}
+      assert_receive {[:decree, :event, :handle, :stop], 2, _, %{context: %{}}}
 
       # And then the next one is received up to 2 seconds later
-      assert_receive {[:commanded, :event, :handle, :start], 3, _, %{context: %{failures: 1}}},
+      assert_receive {[:decree, :event, :handle, :start], 3, _, %{context: %{failures: 1}}},
                      2100
 
-      assert_receive {[:commanded, :event, :handle, :stop], 4, _, %{context: %{failures: 1}}},
+      assert_receive {[:decree, :event, :handle, :stop], 4, _, %{context: %{failures: 1}}},
                      2100
     end
 
@@ -65,14 +65,14 @@ defmodule Commanded.Event.EventHandlerErrorHandlingTest do
 
       send_error_event(handler)
 
-      assert_receive {[:commanded, :event, :handle, :start], 1, _, %{context: %{}}}
-      assert_receive {[:commanded, :event, :handle, :stop], 2, _, %{context: %{}}}
+      assert_receive {[:decree, :event, :handle, :start], 1, _, %{context: %{}}}
+      assert_receive {[:decree, :event, :handle, :stop], 2, _, %{context: %{}}}
 
-      assert_receive {[:commanded, :event, :handle, :start], 3, _, %{context: %{attempts: 1}}}
-      assert_receive {[:commanded, :event, :handle, :stop], 4, _, %{context: %{attempts: 1}}}
+      assert_receive {[:decree, :event, :handle, :start], 3, _, %{context: %{attempts: 1}}}
+      assert_receive {[:decree, :event, :handle, :stop], 4, _, %{context: %{attempts: 1}}}
 
-      assert_receive {[:commanded, :event, :handle, :start], 5, _, %{context: %{attempts: 2}}}
-      assert_receive {[:commanded, :event, :handle, :stop], 6, _, %{context: %{attempts: 2}}}
+      assert_receive {[:decree, :event, :handle, :start], 5, _, %{context: %{attempts: 2}}}
+      assert_receive {[:decree, :event, :handle, :stop], 6, _, %{context: %{attempts: 2}}}
 
       assert_receive {:DOWN, ^ref, :process, ^handler, :too_many}
     end
@@ -90,7 +90,7 @@ defmodule Commanded.Event.EventHandlerErrorHandlingTest do
 
       assert captured =~ "(RuntimeError) exception"
       assert captured =~ "error_event_handler.ex"
-      assert captured =~ "Commanded.Event.ErrorEventHandler.handle/2"
+      assert captured =~ "Decree.Event.ErrorEventHandler.handle/2"
     end
 
     test "should include the stack trace in failure context", %{handler: handler, ref: ref} do
@@ -239,9 +239,9 @@ defmodule Commanded.Event.EventHandlerErrorHandlingTest do
     handler_id = :"#{__MODULE__}-handler"
 
     events = [
-      [:commanded, :event, :handle, :start],
-      [:commanded, :event, :handle, :stop],
-      [:commanded, :event, :handle, :exception]
+      [:decree, :event, :handle, :start],
+      [:decree, :event, :handle, :stop],
+      [:decree, :event, :handle, :exception]
     ]
 
     increment = fn n -> {n, n + 1} end

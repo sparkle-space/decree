@@ -1,10 +1,10 @@
-defmodule Commanded.Event.BatchHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+defmodule Decree.Event.BatchHandler do
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__,
     batch_size: 5
 
-  alias Commanded.Event.ReplyEvent
+  alias Decree.Event.ReplyEvent
   require Logger
 
   @impl true

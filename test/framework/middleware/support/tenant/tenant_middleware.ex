@@ -1,8 +1,8 @@
-defmodule Commanded.Middleware.TenantMiddleware do
-  @behaviour Commanded.Middleware
+defmodule Decree.Middleware.TenantMiddleware do
+  @behaviour Decree.Middleware
 
-  alias Commanded.Middleware.Pipeline
-  alias Commanded.Middleware.TenantApp
+  alias Decree.Middleware.Pipeline
+  alias Decree.Middleware.TenantApp
 
   def before_dispatch(%Pipeline{} = pipeline) do
     %Pipeline{command: command} = pipeline

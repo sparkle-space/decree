@@ -1,6 +1,6 @@
-defmodule Commanded.ReplyHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.ExampleApplication,
+defmodule Decree.ReplyHandler do
+  use Decree.Event.Handler,
+    application: Decree.ExampleApplication,
     name: __MODULE__
 
   def handle(event, _metadata) do

@@ -1,7 +1,7 @@
-defmodule EventStore.Notifications.NotifyEventsTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Notifications.NotifyEventsTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{Config, EventFactory}
+  alias Decree.Store.{Config, EventFactory}
   alias TestEventStore, as: EventStore
 
   setup do

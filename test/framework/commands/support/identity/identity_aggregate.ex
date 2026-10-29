@@ -1,4 +1,4 @@
-defmodule Commanded.Commands.IdentityAggregate do
+defmodule Decree.Commands.IdentityAggregate do
   @moduledoc false
   @derive Jason.Encoder
   defstruct uuid: nil

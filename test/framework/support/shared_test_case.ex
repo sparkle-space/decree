@@ -1,4 +1,4 @@
-defmodule Commanded.SharedTestCase do
+defmodule Decree.SharedTestCase do
   defmacro define_tests(do: block) do
     quote do
       defmacro __using__(options) do

@@ -1,8 +1,8 @@
-defmodule EventStore.SubscriptionHelpers do
+defmodule Decree.Store.SubscriptionHelpers do
   import ExUnit.Assertions
 
-  alias EventStore.{EventFactory, RecordedEvent}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, RecordedEvent}
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   def append_to_stream(stream_uuid, event_count, expected_version \\ 0) do

@@ -1,8 +1,8 @@
-defmodule Commanded.Commands.TimeoutRouter do
+defmodule Decree.Commands.TimeoutRouter do
   @moduledoc false
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.{TimeoutAggregateRoot, TimeoutCommand, TimeoutCommandHandler}
+  alias Decree.Commands.{TimeoutAggregateRoot, TimeoutCommand, TimeoutCommandHandler}
 
   dispatch TimeoutCommand,
     to: TimeoutCommandHandler,

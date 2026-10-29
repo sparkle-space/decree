@@ -1,16 +1,16 @@
-defmodule Commanded.Event.EventHandlerBatchTest do
+defmodule Decree.Event.EventHandlerBatchTest do
   use ExUnit.Case, async: true
 
-  alias Commanded.Application.Config
-  alias Commanded.Event.Handler
-  alias Commanded.EventStore.Subscription
+  alias Decree.Application.Config
+  alias Decree.Event.Handler
+  alias Decree.EventStore.Subscription
 
   # Test support code
-  alias Commanded.Helpers.EventFactory
-  alias Commanded.Event.{BatchHandler, ErrorHandlingBatchHandler}
-  alias Commanded.Event.ErrorAggregate.Events.ErrorEvent
-  alias Commanded.Event.EventHandlerBatchTest.MockAdapter
-  alias Commanded.Event.ReplyEvent
+  alias Decree.Helpers.EventFactory
+  alias Decree.Event.{BatchHandler, ErrorHandlingBatchHandler}
+  alias Decree.Event.ErrorAggregate.Events.ErrorEvent
+  alias Decree.Event.EventHandlerBatchTest.MockAdapter
+  alias Decree.Event.ReplyEvent
 
   describe "batch handling" do
     test "should receive events in batches" do

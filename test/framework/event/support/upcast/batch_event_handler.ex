@@ -1,6 +1,6 @@
-defmodule Commanded.Event.Upcast.BatchEventHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+defmodule Decree.Event.Upcast.BatchEventHandler do
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__,
     batch_size: 5
 

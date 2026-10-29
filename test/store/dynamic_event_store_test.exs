@@ -1,7 +1,7 @@
-defmodule EventStore.DynamicEventStoreTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.DynamicEventStoreTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, UUID}
+  alias Decree.Store.{EventFactory, UUID}
 
   describe "dynamic event store" do
     setup do
@@ -12,7 +12,7 @@ defmodule EventStore.DynamicEventStoreTest do
     end
 
     test "should list all running instances" do
-      all_instances = EventStore.all_instances() |> Enum.sort()
+      all_instances = Decree.Store.all_instances() |> Enum.sort()
 
       assert all_instances == [
                {TestEventStore, name: TestEventStore},
@@ -24,7 +24,7 @@ defmodule EventStore.DynamicEventStoreTest do
       stop_supervised!(:eventstore1)
       stop_supervised!(:eventstore2)
 
-      all_instances = EventStore.all_instances() |> Enum.sort()
+      all_instances = Decree.Store.all_instances() |> Enum.sort()
 
       assert all_instances == [
                {TestEventStore, name: TestEventStore},

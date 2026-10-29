@@ -1,9 +1,9 @@
-defmodule Commanded.Commands.IdentityAggregateRouter do
+defmodule Decree.Commands.IdentityAggregateRouter do
   @moduledoc false
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.IdentityAggregate
-  alias Commanded.Commands.IdentityAggregate.IdentityCommand
+  alias Decree.Commands.IdentityAggregate
+  alias Decree.Commands.IdentityAggregate.IdentityCommand
 
   identify IdentityAggregate,
     by: :uuid,

@@ -1,9 +1,9 @@
-defmodule Commanded.EventStore.SnapshotTestCase do
-  import Commanded.SharedTestCase
+defmodule Decree.EventStore.SnapshotTestCase do
+  import Decree.SharedTestCase
 
   define_tests do
-    alias Commanded.EventStore.SnapshotData
-    alias Commanded.UUID
+    alias Decree.EventStore.SnapshotData
+    alias Decree.UUID
 
     defmodule BankAccountOpened do
       @derive Jason.Encoder

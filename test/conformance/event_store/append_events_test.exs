@@ -1,6 +1,6 @@
-defmodule Commanded.EventStore.Adapters.EventStore.AppendEventsTest do
-  use Commanded.EventStore.EventStoreTestCase
+defmodule Decree.EventStore.Adapters.EventStore.AppendEventsTest do
+  use Decree.EventStore.EventStoreTestCase
 
-  use Commanded.EventStore.AppendEventsTestCase,
-    event_store: Commanded.EventStore.Adapters.EventStore
+  use Decree.EventStore.AppendEventsTestCase,
+    event_store: Decree.EventStore.Adapters.EventStore
 end

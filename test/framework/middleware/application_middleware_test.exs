@@ -1,8 +1,8 @@
-defmodule Commanded.Middleware.ApplicationMiddlewareTest do
+defmodule Decree.Middleware.ApplicationMiddlewareTest do
   use ExUnit.Case
 
-  alias Commanded.Middleware.Tenant.Commands.RegisterTenant
-  alias Commanded.Middleware.TenantApp
+  alias Decree.Middleware.Tenant.Commands.RegisterTenant
+  alias Decree.Middleware.TenantApp
 
   setup do
     for tenant_id <- 1..3 do

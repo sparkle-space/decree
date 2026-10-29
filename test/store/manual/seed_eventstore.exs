@@ -1,5 +1,5 @@
 #
-# Seed EventStore with data to test migrations.
+# Seed Decree.Store with data to test migrations.
 #
 #   MIX_ENV=test mix es.reset
 #   MIX_ENV=test mix run test/manual/seed_eventstore.exs
@@ -19,8 +19,8 @@ defmodule Snapshot do
 end
 
 defmodule Seed do
-  alias EventStore.{EventData, UUID}
-  alias EventStore.Snapshots.SnapshotData
+  alias Decree.Store.{EventData, UUID}
+  alias Decree.Store.Snapshots.SnapshotData
 
   def run(opts \\ []) do
     append_events(opts)

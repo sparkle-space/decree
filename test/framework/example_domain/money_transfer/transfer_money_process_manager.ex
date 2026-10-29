@@ -1,14 +1,14 @@
-defmodule Commanded.ExampleDomain.TransferMoneyProcessManager do
+defmodule Decree.ExampleDomain.TransferMoneyProcessManager do
   @moduledoc false
 
-  use Commanded.ProcessManagers.ProcessManager,
-    application: Commanded.ExampleDomain.BankApp,
+  use Decree.ProcessManagers.ProcessManager,
+    application: Decree.ExampleDomain.BankApp,
     name: __MODULE__
 
-  alias Commanded.ExampleDomain.BankAccount.Commands.{DepositMoney, WithdrawMoney}
-  alias Commanded.ExampleDomain.BankAccount.Events.{MoneyDeposited, MoneyWithdrawn}
-  alias Commanded.ExampleDomain.MoneyTransfer.Events.MoneyTransferRequested
-  alias Commanded.ExampleDomain.TransferMoneyProcessManager
+  alias Decree.ExampleDomain.BankAccount.Commands.{DepositMoney, WithdrawMoney}
+  alias Decree.ExampleDomain.BankAccount.Events.{MoneyDeposited, MoneyWithdrawn}
+  alias Decree.ExampleDomain.MoneyTransfer.Events.MoneyTransferRequested
+  alias Decree.ExampleDomain.TransferMoneyProcessManager
 
   @derive Jason.Encoder
   defstruct [:transfer_uuid, :debit_account, :credit_account, :amount, :status, :user_uuid]

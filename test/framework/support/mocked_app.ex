@@ -1,8 +1,8 @@
-defmodule Commanded.MockedApp do
-  alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
+defmodule Decree.MockedApp do
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
 
-  use Commanded.Application,
-    otp_app: :commanded,
+  use Decree.Application,
+    otp_app: :decree,
     event_store: [
       adapter: MockEventStore
     ],

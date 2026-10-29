@@ -1,8 +1,8 @@
-defmodule Commanded.Event.EventHandlerBatchStateTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.EventHandlerBatchStateTest do
+  use Decree.MockEventStoreCase
 
-  alias Commanded.Event.StatefulBatchedEventHandler
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Event.StatefulBatchedEventHandler
+  alias Decree.Helpers.EventFactory
 
   defmodule AnEvent do
     @derive Jason.Encoder

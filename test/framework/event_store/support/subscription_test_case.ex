@@ -1,10 +1,10 @@
-defmodule Commanded.EventStore.SubscriptionTestCase do
-  import Commanded.SharedTestCase
+defmodule Decree.EventStore.SubscriptionTestCase do
+  import Decree.SharedTestCase
 
   define_tests do
-    alias Commanded.EventStore.{EventData, RecordedEvent, Subscriber}
-    alias Commanded.Helpers.ProcessHelper
-    alias Commanded.UUID
+    alias Decree.EventStore.{EventData, RecordedEvent, Subscriber}
+    alias Decree.Helpers.ProcessHelper
+    alias Decree.UUID
 
     defmodule BankAccountOpened do
       @derive Jason.Encoder

@@ -1,7 +1,7 @@
-defmodule Commanded.Middleware.TenantApp do
-  use Commanded.Application, otp_app: :commanded
+defmodule Decree.Middleware.TenantApp do
+  use Decree.Application, otp_app: :decree
 
-  alias Commanded.Middleware.TenantRouter
+  alias Decree.Middleware.TenantRouter
 
   router(TenantRouter)
 

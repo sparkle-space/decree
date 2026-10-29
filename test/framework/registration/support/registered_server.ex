@@ -1,6 +1,6 @@
-defmodule Commanded.Registration.RegisteredServer do
+defmodule Decree.Registration.RegisteredServer do
   use GenServer
-  use Commanded.Registration
+  use Decree.Registration
 
   def start_link(args) do
     name = args[:name]

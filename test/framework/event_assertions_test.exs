@@ -1,10 +1,10 @@
-defmodule Commanded.EventAssertionsTest do
+defmodule Decree.EventAssertionsTest do
   use ExUnit.Case
 
-  import Commanded.Assertions.EventAssertions
+  import Decree.Assertions.EventAssertions
 
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.Event.Mapper
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.Event.Mapper
 
   defmodule Event do
     @derive Jason.Encoder

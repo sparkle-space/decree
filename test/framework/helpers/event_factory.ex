@@ -1,8 +1,8 @@
-defmodule Commanded.Helpers.EventFactory do
+defmodule Decree.Helpers.EventFactory do
   @moduledoc false
-  alias Commanded.Event.Mapper
-  alias Commanded.EventStore.RecordedEvent
-  alias Commanded.UUID
+  alias Decree.Event.Mapper
+  alias Decree.EventStore.RecordedEvent
+  alias Decree.UUID
 
   def map_to_recorded_events(events, initial_event_number \\ 1, opts \\ []) do
     stream_id = UUID.uuid4()

@@ -1,10 +1,10 @@
-defmodule Commanded.Event.HandlerAfterStartTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.HandlerAfterStartTest do
+  use Decree.MockEventStoreCase
 
   import Mox
   import ExUnit.CaptureLog
 
-  alias Commanded.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
 
   setup do
     stub(MockEventStore, :subscribe_to, fn
@@ -24,11 +24,11 @@ defmodule Commanded.Event.HandlerAfterStartTest do
 
       Code.eval_string("""
         defmodule DeprecatedHandler do
-          use Commanded.Event.Handler,
-            application: Commanded.MockedApp,
+          use Decree.Event.Handler,
+            application: Decree.MockedApp,
             name: __MODULE__
 
-          @impl Commanded.Event.Handler
+          @impl Decree.Event.Handler
           def init() do
             process_name = :"#{test}"
             Process.send(process_name, {:init, self()}, [])
@@ -58,8 +58,8 @@ defmodule Commanded.Event.HandlerAfterStartTest do
 
   describe "event handler `after_start/1` callback" do
     defmodule AfterStartHandler do
-      use Commanded.Event.Handler,
-        application: Commanded.MockedApp,
+      use Decree.Event.Handler,
+        application: Decree.MockedApp,
         name: __MODULE__
 
       def after_start(state) do

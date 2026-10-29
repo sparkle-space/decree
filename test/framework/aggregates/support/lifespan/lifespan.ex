@@ -1,7 +1,7 @@
-defmodule Commanded.Aggregates.Lifespan do
-  @behaviour Commanded.Aggregates.AggregateLifespan
+defmodule Decree.Aggregates.Lifespan do
+  @behaviour Decree.Aggregates.AggregateLifespan
 
-  alias Commanded.Aggregates.LifespanAggregate.{Command, Event}
+  alias Decree.Aggregates.LifespanAggregate.{Command, Event}
 
   def after_event(%Event{} = event) do
     %Event{reply_to: reply_to, lifespan: lifespan} = event

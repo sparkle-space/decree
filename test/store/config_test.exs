@@ -1,7 +1,7 @@
-defmodule EventStore.ConfigTest do
+defmodule Decree.Store.ConfigTest do
   use ExUnit.Case
 
-  alias EventStore.Config
+  alias Decree.Store.Config
 
   test "parse keys" do
     config = [
@@ -11,7 +11,7 @@ defmodule EventStore.ConfigTest do
       password: "postgres",
       schema: "example",
       timeout: 120_000,
-      pool: EventStore.Config.get_pool()
+      pool: Decree.Store.Config.get_pool()
     ]
 
     assert_parsed_config(config,
@@ -19,7 +19,7 @@ defmodule EventStore.ConfigTest do
       column_data_type: "bytea",
       correlation_id_type: "uuid",
       causation_id_type: "uuid",
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       timeout: 120_000,
       schema: "example",
       password: "postgres",
@@ -36,11 +36,11 @@ defmodule EventStore.ConfigTest do
       database: "eventstore_test",
       password: "postgres",
       timeout: 120_000,
-      pool: EventStore.Config.get_pool()
+      pool: Decree.Store.Config.get_pool()
     ]
 
     assert_parsed_config(config,
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       enable_hard_deletes: false,
       column_data_type: "bytea",
       correlation_id_type: "uuid",
@@ -69,7 +69,7 @@ defmodule EventStore.ConfigTest do
       causation_id_type: "uuid",
       schema: "public",
       timeout: 15_000,
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       shared_connection_pool: :shared_pool,
       password: "postgres",
       database: "eventstore_test",
@@ -84,7 +84,7 @@ defmodule EventStore.ConfigTest do
       database: "eventstore_test",
       password: "postgres",
       timeout: 120_000,
-      pool: EventStore.Config.get_pool()
+      pool: Decree.Store.Config.get_pool()
     ]
 
     assert_parsed_config(config,
@@ -93,7 +93,7 @@ defmodule EventStore.ConfigTest do
       correlation_id_type: "uuid",
       causation_id_type: "uuid",
       schema: "public",
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       timeout: 120_000,
       password: "postgres",
       database: "eventstore_test",
@@ -112,7 +112,7 @@ defmodule EventStore.ConfigTest do
       causation_id_type: "uuid",
       schema: "public",
       timeout: 15_000,
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       username: "username",
       password: "password",
       database: "database",
@@ -130,7 +130,7 @@ defmodule EventStore.ConfigTest do
       causation_id_type: "uuid",
       schema: "public",
       timeout: 15_000,
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       username: "username",
       password: "password#with_hash",
       database: "database",
@@ -201,7 +201,7 @@ defmodule EventStore.ConfigTest do
       correlation_id_type: "uuid",
       causation_id_type: "uuid",
       schema: "public",
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       username: "username",
       password: "password",
       database: "database",
@@ -224,7 +224,7 @@ defmodule EventStore.ConfigTest do
       causation_id_type: "uuid",
       schema: "public",
       timeout: 15_000,
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       username: "username",
       password: "password",
       database: "database",
@@ -257,7 +257,7 @@ defmodule EventStore.ConfigTest do
       correlation_id_type: "uuid",
       causation_id_type: "uuid",
       schema: "public",
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       timeout: 120_000,
       port: 5432,
       hostname: "hostname",
@@ -271,7 +271,7 @@ defmodule EventStore.ConfigTest do
     config = [username: {:system, "ES_USERNAME", "default_username"}]
 
     assert_parsed_config(config,
-      pool: EventStore.Config.get_pool(),
+      pool: Decree.Store.Config.get_pool(),
       username: "default_username",
       column_data_type: "bytea",
       correlation_id_type: "uuid",

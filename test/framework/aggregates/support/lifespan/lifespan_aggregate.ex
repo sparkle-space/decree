@@ -1,4 +1,4 @@
-defmodule Commanded.Aggregates.LifespanAggregate do
+defmodule Decree.Aggregates.LifespanAggregate do
   @moduledoc false
   @derive Jason.Encoder
   defstruct [:uuid, :reply_to, :lifespan]
@@ -13,7 +13,7 @@ defmodule Commanded.Aggregates.LifespanAggregate do
     defstruct [:uuid, :reply_to, :lifespan]
   end
 
-  alias Commanded.Aggregates.LifespanAggregate
+  alias Decree.Aggregates.LifespanAggregate
 
   def execute(%LifespanAggregate{}, %Command{action: :event} = command) do
     %Command{uuid: uuid, reply_to: reply_to, lifespan: lifespan} = command

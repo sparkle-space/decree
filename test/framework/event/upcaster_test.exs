@@ -1,12 +1,12 @@
 defmodule Event.UpcasterTest do
   use ExUnit.Case
 
-  alias Commanded.Aggregates.Aggregate
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.EventStore.{EventData, RecordedEvent}
-  alias Commanded.Event.Upcast.Events.{EventFive, EventFour, EventOne, EventThree, EventTwo, Stop}
-  alias Commanded.Event.Upcast.UpcastAggregate
-  alias Commanded.UUID
+  alias Decree.Aggregates.Aggregate
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.EventStore.{EventData, RecordedEvent}
+  alias Decree.Event.Upcast.Events.{EventFive, EventFour, EventOne, EventThree, EventTwo, Stop}
+  alias Decree.Event.Upcast.UpcastAggregate
+  alias Decree.UUID
 
   setup do
     start_supervised!(DefaultApp)
@@ -70,7 +70,7 @@ defmodule Event.UpcasterTest do
   end
 
   describe "upcast events received by event handler" do
-    alias Commanded.Event.Upcast.EventHandler
+    alias Decree.Event.Upcast.EventHandler
 
     setup do
       handler = start_supervised!(EventHandler)
@@ -103,7 +103,7 @@ defmodule Event.UpcasterTest do
   end
 
   describe "upcast events received by batch event handler" do
-    alias Commanded.Event.Upcast.BatchEventHandler
+    alias Decree.Event.Upcast.BatchEventHandler
 
     setup do
       handler = start_supervised!(BatchEventHandler)
@@ -140,8 +140,8 @@ defmodule Event.UpcasterTest do
   end
 
   describe "upcast events received by process manager" do
-    alias Commanded.Event.Upcast.ProcessManager
-    alias Commanded.Event.Upcast.ProcessManager.Application
+    alias Decree.Event.Upcast.ProcessManager
+    alias Decree.Event.Upcast.ProcessManager.Application
 
     setup do
       start_supervised!(Application)
@@ -171,7 +171,7 @@ defmodule Event.UpcasterTest do
 
   defp assert_metadata(metadata) do
     assert %{
-             application: Commanded.DefaultApp,
+             application: Decree.DefaultApp,
              causation_id: nil,
              correlation_id: nil,
              created_at: %DateTime{},

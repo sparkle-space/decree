@@ -1,4 +1,4 @@
-defmodule EventStore.Subscriber do
+defmodule Decree.Store.Subscriber do
   use GenServer
 
   def start_link(receiver) do

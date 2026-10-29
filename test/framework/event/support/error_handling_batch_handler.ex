@@ -1,12 +1,12 @@
-defmodule Commanded.Event.ErrorHandlingBatchHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+defmodule Decree.Event.ErrorHandlingBatchHandler do
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__,
     batch_size: 5
 
-  alias Commanded.Event.ErrorAggregate.Events.ErrorEvent
-  alias Commanded.Event.FailureContext
-  alias Commanded.Event.ReplyEvent
+  alias Decree.Event.ErrorAggregate.Events.ErrorEvent
+  alias Decree.Event.FailureContext
+  alias Decree.Event.ReplyEvent
 
   require Logger
 
@@ -76,7 +76,7 @@ defmodule Commanded.Event.ErrorHandlingBatchHandler do
 
   def error(
         {:error, %ArgumentError{message: "Raise"} = reason},
-        [%Commanded.Event.ReplyEvent{reply_to: reply_to, value: :raise} | _],
+        [%Decree.Event.ReplyEvent{reply_to: reply_to, value: :raise} | _],
         _failure_context
       ) do
     send(reply_to, {:error, :stopping})

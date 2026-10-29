@@ -1,14 +1,14 @@
-defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
+defmodule Decree.Projections.ProjectionVersionSchemaPrefixTest do
   use ExUnit.Case
 
-  alias Commanded.Projections.Repo
-  alias Commanded.Projections.Events.SchemaEvent
+  alias Decree.Projections.Repo
+  alias Decree.Projections.Events.SchemaEvent
 
   setup do
-    schema_prefix = Application.get_env(:commanded_ecto_projections, :schema_prefix)
+    schema_prefix = Application.get_env(:decree, :schema_prefix)
 
     on_exit(fn ->
-      Application.put_env(:commanded_ecto_projections, :schema_prefix, schema_prefix)
+      Application.put_env(:decree, :schema_prefix, schema_prefix)
     end)
 
     start_supervised!(TestApplication)
@@ -18,7 +18,7 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
   describe "schema prefix" do
     test "should default to `nil` schema prefix when not specified" do
       defmodule DefaultSchemaPrefixProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "default_schema_prefix_projector"
       end
@@ -28,7 +28,7 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support static schema prefix" do
       defmodule StaticSchemaPrefixProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "static_schema_prefix_projector",
           schema_prefix: "static_schema_prefix"
@@ -38,10 +38,10 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
     end
 
     test "should support static schema prefix in application config" do
-      Application.put_env(:commanded_ecto_projections, :schema_prefix, "app_config_schema_prefix")
+      Application.put_env(:decree, :schema_prefix, "app_config_schema_prefix")
 
       defmodule AppConfigSchemaPrefixProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "app_config_schema_prefix_projector"
       end
@@ -51,7 +51,7 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support dynamic schema prefix using one-arity anonymous function" do
       defmodule DynamicOneAritySchemaPrefixProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "dynamic_schema_prefix_projector",
           schema_prefix: fn _event -> "dynamic_schema_prefix" end
@@ -62,7 +62,7 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support dynamic schema prefix using two-arity anonymous function" do
       defmodule DynamicTwoAritySchemaPrefixProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "dynamic_schema_prefix_projector",
           schema_prefix: fn _event, _metadata -> "dynamic_schema_prefix" end
@@ -73,11 +73,11 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support optional `schema_prefix/1` callback function" do
       defmodule SchemaPrefixCallbackProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "schema_prefix_callback_projector"
 
-        @impl Commanded.Projections.Ecto
+        @impl Decree.Projections.Ecto
         def schema_prefix(_event), do: "callback_schema_prefix"
       end
 
@@ -86,11 +86,11 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support `schema_prefix/1` callback function with different schema per event" do
       defmodule SchemaPrefixPerEventCallbackProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "schema_prefix_per_event_callback_projector"
 
-        @impl Commanded.Projections.Ecto
+        @impl Decree.Projections.Ecto
         def schema_prefix(%SchemaEvent{schema: schema}), do: schema
       end
 
@@ -118,11 +118,11 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support optional `schema_prefix/2` callback function" do
       defmodule SchemaPrefix2CallbackProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "schema_prefix_callback_projector"
 
-        @impl Commanded.Projections.Ecto
+        @impl Decree.Projections.Ecto
         def schema_prefix(_event, _metadata), do: "callback_schema_prefix"
       end
 
@@ -131,11 +131,11 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should support `schema_prefix/2` callback function with different schema per event and metadata" do
       defmodule SchemaPrefixPerEventAndMetadataCallbackProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "schema_prefix_per_event_callback_projector"
 
-        @impl Commanded.Projections.Ecto
+        @impl Decree.Projections.Ecto
         def schema_prefix(%SchemaEvent{schema: schema}, %{"key" => value}),
           do: schema <> "-" <> value
       end
@@ -164,7 +164,7 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
 
     test "should update the ProjectionVersion with a schema prefix" do
       defmodule TestPrefixProjector do
-        use Commanded.Projections.Ecto,
+        use Decree.Projections.Ecto,
           application: TestApplication,
           name: "TestPrefixProjector",
           schema_prefix: "test"
@@ -191,7 +191,7 @@ defmodule Commanded.Projections.ProjectionVersionSchemaPrefixTest do
                    fn ->
                      Code.eval_string("""
                      defmodule InvalidSchemaPrefixProjector do
-                       use Commanded.Projections.Ecto,
+                       use Decree.Projections.Ecto,
                          application: TestApplication,
                          name: "invalid_schema_prefix_projector",
                          schema_prefix: :invalid

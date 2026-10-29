@@ -1,4 +1,4 @@
-defmodule Commanded.Projections.Projection do
+defmodule Decree.Projections.Projection do
   use Ecto.Schema
 
   schema "projections" do

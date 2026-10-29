@@ -1,13 +1,13 @@
-defmodule Commanded.Event.ErrorEventHandler do
+defmodule Decree.Event.ErrorEventHandler do
   @moduledoc false
 
-  use Commanded.Event.Handler,
-    application: Commanded.MockedApp,
+  use Decree.Event.Handler,
+    application: Decree.MockedApp,
     name: __MODULE__
 
-  alias Commanded.Event.FailureContext
+  alias Decree.Event.FailureContext
 
-  alias Commanded.Event.ErrorAggregate.Events.{
+  alias Decree.Event.ErrorAggregate.Events.{
     ErrorEvent,
     ExceptionEvent,
     InvalidReturnValueEvent

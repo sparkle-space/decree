@@ -1,4 +1,4 @@
-defmodule EventStore.ObservedServer do
+defmodule Decree.Store.ObservedServer do
   @moduledoc false
 
   use GenServer

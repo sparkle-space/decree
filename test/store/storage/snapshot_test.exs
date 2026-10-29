@@ -1,9 +1,9 @@
-defmodule EventStore.Storage.SnapshotTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.SnapshotTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, UUID}
-  alias EventStore.Snapshots.SnapshotData
-  alias EventStore.Storage.Snapshot
+  alias Decree.Store.{EventFactory, UUID}
+  alias Decree.Store.Snapshots.SnapshotData
+  alias Decree.Store.Storage.Snapshot
 
   describe "read snapshot" do
     test "should error when none exists", context do

@@ -1,7 +1,7 @@
-defmodule Commanded.Commands.ConsistencyRouter do
-  use Commanded.Commands.Router
+defmodule Decree.Commands.ConsistencyRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.ConsistencyAggregateRoot
+  alias Decree.Commands.ConsistencyAggregateRoot
   alias ConsistencyAggregateRoot.ConsistencyCommand
   alias ConsistencyAggregateRoot.NoOpCommand
   alias ConsistencyAggregateRoot.RequestDispatchCommand

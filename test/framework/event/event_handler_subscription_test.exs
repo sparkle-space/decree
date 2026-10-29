@@ -1,11 +1,11 @@
-defmodule Commanded.Event.EventHandlerSubscriptionTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.EventHandlerSubscriptionTest do
+  use Decree.MockEventStoreCase
 
-  alias Commanded.Event.Handler
+  alias Decree.Event.Handler
 
   defmodule ExampleHandler do
-    use Commanded.Event.Handler,
-      application: Commanded.MockedApp,
+    use Decree.Event.Handler,
+      application: Decree.MockedApp,
       name: "ExampleHandler"
   end
 

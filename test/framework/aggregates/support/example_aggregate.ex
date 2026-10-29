@@ -1,4 +1,4 @@
-defmodule Commanded.Aggregates.ExampleAggregate do
+defmodule Decree.Aggregates.ExampleAggregate do
   @moduledoc false
   @derive Jason.Encoder
   defstruct items: [],
@@ -21,7 +21,7 @@ defmodule Commanded.Aggregates.ExampleAggregate do
     end
   end
 
-  alias Commanded.Aggregates.ExampleAggregate
+  alias Decree.Aggregates.ExampleAggregate
   alias Commands.NoOp
   alias Events.ItemAppended
 

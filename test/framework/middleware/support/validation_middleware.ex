@@ -1,7 +1,7 @@
-defmodule Commanded.ValidationMiddleware do
-  @behaviour Commanded.Middleware
+defmodule Decree.ValidationMiddleware do
+  @behaviour Decree.Middleware
 
-  alias Commanded.Middleware.Pipeline
+  alias Decree.Middleware.Pipeline
   import Pipeline
 
   def before_dispatch(%Pipeline{} = pipeline) do

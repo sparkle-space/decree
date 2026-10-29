@@ -1,6 +1,6 @@
-defmodule Commanded.Event.StatefulBatchedEventHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.MockedApp,
+defmodule Decree.Event.StatefulBatchedEventHandler do
+  use Decree.Event.Handler,
+    application: Decree.MockedApp,
     name: __MODULE__,
     batch_size: 5
 

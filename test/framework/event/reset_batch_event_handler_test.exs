@@ -1,15 +1,15 @@
-defmodule Commanded.Event.BatchResetEventHandlerTest do
+defmodule Decree.Event.BatchResetEventHandlerTest do
   use ExUnit.Case
 
-  import Commanded.Assertions.EventAssertions
+  import Decree.Assertions.EventAssertions
 
-  alias Commanded.Event.Mapper
-  alias Commanded.EventStore
-  alias Commanded.ExampleDomain.BankAccount.BankAccountBatchHandler
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.ExampleDomain.BankApp
-  alias Commanded.Helpers.Wait
-  alias Commanded.UUID
+  alias Decree.Event.Mapper
+  alias Decree.EventStore
+  alias Decree.ExampleDomain.BankAccount.BankAccountBatchHandler
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.ExampleDomain.BankApp
+  alias Decree.Helpers.Wait
+  alias Decree.UUID
 
   describe "reset batch event handler" do
     setup do

@@ -1,7 +1,7 @@
-defmodule EventStore.Notifications.NotificationsReconnectTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Notifications.NotificationsReconnectTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, PubSub, ProcessHelper, Wait}
+  alias Decree.Store.{EventFactory, PubSub, ProcessHelper, Wait}
 
   describe "notifications reconnect" do
     test "resume after disconnect" do

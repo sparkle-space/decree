@@ -1,15 +1,15 @@
-defmodule Commanded.Subscriptions.DistributedSubscribers do
+defmodule Decree.Subscriptions.DistributedSubscribers do
   import ExUnit.Assertions
 
-  alias Commanded.DistributedApp
-  alias Commanded.Subscriptions
+  alias Decree.DistributedApp
+  alias Decree.Subscriptions
 
   @event_handlers [EventHandler1, EventHandler2, EventHandler3]
   @process_managers [ProcessManager1, ProcessManager2, ProcessManager3]
 
   for event_handler <- @event_handlers do
     defmodule event_handler do
-      use Commanded.Event.Handler,
+      use Decree.Event.Handler,
         application: DistributedApp,
         name: __MODULE__,
         consistency: :strong
@@ -18,7 +18,7 @@ defmodule Commanded.Subscriptions.DistributedSubscribers do
 
   for process_manager <- @process_managers do
     defmodule process_manager do
-      use Commanded.ProcessManagers.ProcessManager,
+      use Decree.ProcessManagers.ProcessManager,
         application: DistributedApp,
         name: __MODULE__,
         consistency: :strong

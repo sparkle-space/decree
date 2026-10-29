@@ -1,9 +1,9 @@
-defmodule Commanded.SubscriptionsTest do
+defmodule Decree.SubscriptionsTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
-  alias Commanded.EventStore.RecordedEvent
-  alias Commanded.Subscriptions
+  alias Decree.DefaultApp
+  alias Decree.EventStore.RecordedEvent
+  alias Decree.Subscriptions
 
   describe "register subscription" do
     setup do
@@ -354,7 +354,7 @@ defmodule Commanded.SubscriptionsTest do
 
       assert Subscriptions.handled?(DefaultApp, "stream1", 1)
 
-      pid = Process.whereis(DefaultApp.Commanded.Subscriptions)
+      pid = Process.whereis(DefaultApp.Decree.Subscriptions)
       send(pid, {:purge_expired_streams, 0})
 
       refute Subscriptions.handled?(DefaultApp, "stream1", 1)
@@ -371,7 +371,7 @@ defmodule Commanded.SubscriptionsTest do
 
       assert Subscriptions.handled?(DefaultApp, "stream1", 1)
 
-      pid = Process.whereis(DefaultApp.Commanded.Subscriptions)
+      pid = Process.whereis(DefaultApp.Decree.Subscriptions)
       send(pid, {:purge_expired_streams, 1_000})
 
       assert Subscriptions.handled?(DefaultApp, "stream1", 1)

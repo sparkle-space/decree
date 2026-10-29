@@ -1,7 +1,7 @@
-defmodule Commanded.HaltingMiddleware do
-  @behaviour Commanded.Middleware
+defmodule Decree.HaltingMiddleware do
+  @behaviour Decree.Middleware
 
-  import Commanded.Middleware.Pipeline
+  import Decree.Middleware.Pipeline
 
   def before_dispatch(pipeline) do
     halt(pipeline)

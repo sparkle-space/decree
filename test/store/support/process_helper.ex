@@ -1,4 +1,4 @@
-defmodule EventStore.ProcessHelper do
+defmodule Decree.Store.ProcessHelper do
   import ExUnit.Assertions
 
   @doc """

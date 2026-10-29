@@ -1,9 +1,9 @@
-defmodule Commanded.Event.Upcast.UpcastAggregate do
+defmodule Decree.Event.Upcast.UpcastAggregate do
   @moduledoc false
   defstruct [:id]
 
-  alias Commanded.Event.Upcast.Events.EventFour
-  alias Commanded.Event.Upcast.UpcastAggregate
+  alias Decree.Event.Upcast.Events.EventFour
+  alias Decree.Event.Upcast.UpcastAggregate
 
   def apply(%UpcastAggregate{} = aggregate, %EventFour{} = event) do
     %EventFour{reply_to: reply_to} = event

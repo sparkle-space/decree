@@ -1,16 +1,16 @@
-defmodule Commanded.Commands.EventuallyConsistentEventHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.Commands.ConsistencyApp,
+defmodule Decree.Commands.EventuallyConsistentEventHandler do
+  use Decree.Event.Handler,
+    application: Decree.Commands.ConsistencyApp,
     name: "EventuallyConsistentEventHandler",
     consistency: :eventual
 
-  alias Commanded.Commands.ConsistencyAggregateRoot.{
+  alias Decree.Commands.ConsistencyAggregateRoot.{
     ConsistencyCommand,
     ConsistencyEvent,
     DispatchRequestedEvent
   }
 
-  alias Commanded.Commands.ConsistencyApp
+  alias Decree.Commands.ConsistencyApp
 
   # Simulate slow event handler.
   def handle(%ConsistencyEvent{}, _metadata) do

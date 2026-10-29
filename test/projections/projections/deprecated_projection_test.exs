@@ -1,12 +1,12 @@
-defmodule Commanded.Projections.DeprecatedProjectionTest do
+defmodule Decree.Projections.DeprecatedProjectionTest do
   use ExUnit.Case
 
-  import Commanded.Projections.ProjectionAssertions
+  import Decree.Projections.ProjectionAssertions
   import ExUnit.CaptureIO
 
-  alias Commanded.Projections.Repo
-  alias Commanded.Projections.Events.AnEvent
-  alias Commanded.Projections.Projection
+  alias Decree.Projections.Repo
+  alias Decree.Projections.Events.AnEvent
+  alias Decree.Projections.Projection
 
   setup do
     start_supervised!(TestApplication)
@@ -16,7 +16,7 @@ defmodule Commanded.Projections.DeprecatedProjectionTest do
   test "should handle a projected event" do
     capture_io(:stderr, fn ->
       defmodule DeprecatedProjector do
-        use Commanded.Projections.Ecto, application: TestApplication, name: "DeprecatedProjector"
+        use Decree.Projections.Ecto, application: TestApplication, name: "DeprecatedProjector"
 
         project %AnEvent{name: name}, _metadata do
           Ecto.Multi.insert(multi, :my_projection, %Projection{name: name})
@@ -37,7 +37,7 @@ defmodule Commanded.Projections.DeprecatedProjectionTest do
   test "should warn project/2 macro deprecated" do
     assert capture_io(:stderr, fn ->
              defmodule DeprecatedProjectorWarn2 do
-               use Commanded.Projections.Ecto,
+               use Decree.Projections.Ecto,
                  application: TestApplication,
                  name: "DeprecatedProjectorWarn2"
 
@@ -52,7 +52,7 @@ defmodule Commanded.Projections.DeprecatedProjectionTest do
   test "should warn project/3 macro deprecated" do
     assert capture_io(:stderr, fn ->
              defmodule DeprecatedProjectorWarn3 do
-               use Commanded.Projections.Ecto,
+               use Decree.Projections.Ecto,
                  application: TestApplication,
                  name: "DeprecatedProjectorWarn3"
 

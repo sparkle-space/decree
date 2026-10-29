@@ -1,7 +1,7 @@
-defmodule EventStore.Subscriptions.SubscribeToStreamTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscribeToStreamTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{
+  alias Decree.Store.{
     EventFactory,
     ProcessHelper,
     RecordedEvent,
@@ -11,8 +11,8 @@ defmodule EventStore.Subscriptions.SubscribeToStreamTest do
     Wait
   }
 
-  alias EventStore.Subscriptions.Subscription
-  alias EventStore.Support.CollectingSubscriber
+  alias Decree.Store.Subscriptions.Subscription
+  alias Decree.Store.Support.CollectingSubscriber
   alias TestEventStore, as: EventStore
 
   @event_store TestEventStore

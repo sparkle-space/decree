@@ -1,6 +1,6 @@
-defmodule Commanded.Event.StatefulEventHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.MockedApp,
+defmodule Decree.Event.StatefulEventHandler do
+  use Decree.Event.Handler,
+    application: Decree.MockedApp,
     name: __MODULE__
 
   def init(config) do

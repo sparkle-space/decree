@@ -1,7 +1,7 @@
-defmodule Commanded.DistributedSubscriptionsTest do
+defmodule Decree.DistributedSubscriptionsTest do
   use ExUnit.Case
 
-  alias Commanded.Subscriptions.DistributedSubscribers
+  alias Decree.Subscriptions.DistributedSubscribers
 
   @moduletag :distributed
 
@@ -12,7 +12,7 @@ defmodule Commanded.DistributedSubscriptionsTest do
     {:ok, cluster} =
       LocalCluster.start_link(3,
         prefix: "commanded",
-        applications: [:commanded]
+        applications: [:decree]
       )
 
     {:ok, nodes} = LocalCluster.nodes(cluster)

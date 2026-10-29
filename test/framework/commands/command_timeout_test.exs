@@ -1,8 +1,8 @@
-defmodule Commanded.Commands.CommandTimeoutTest do
+defmodule Decree.Commands.CommandTimeoutTest do
   use ExUnit.Case
 
-  alias Commanded.Commands.{TimeoutCommand, TimeoutRouter}
-  alias Commanded.{DefaultApp, UUID}
+  alias Decree.Commands.{TimeoutCommand, TimeoutRouter}
+  alias Decree.{DefaultApp, UUID}
 
   setup do
     start_supervised!(DefaultApp)

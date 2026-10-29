@@ -1,8 +1,8 @@
-defmodule Commanded.RuntimeConfiguredApplication do
-  alias Commanded.EventStore.Adapters.InMemory
-  alias Commanded.Serialization.JsonSerializer
+defmodule Decree.RuntimeConfiguredApplication do
+  alias Decree.EventStore.Adapters.InMemory
+  alias Decree.Serialization.JsonSerializer
 
-  use Commanded.Application, otp_app: :commanded
+  use Decree.Application, otp_app: :decree
 
   def init(config) do
     config =

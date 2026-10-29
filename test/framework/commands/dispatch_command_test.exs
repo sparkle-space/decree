@@ -1,9 +1,9 @@
-defmodule Commanded.Commands.DispatchCommandTest do
+defmodule Decree.Commands.DispatchCommandTest do
   use ExUnit.Case
 
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.{BankApp, BankRouter}
-  alias Commanded.Helpers.CommandAuditMiddleware
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.{BankApp, BankRouter}
+  alias Decree.Helpers.CommandAuditMiddleware
 
   setup do
     start_supervised!(CommandAuditMiddleware)

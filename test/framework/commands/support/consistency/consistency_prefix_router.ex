@@ -1,7 +1,7 @@
-defmodule Commanded.Commands.ConsistencyPrefixRouter do
-  use Commanded.Commands.Router
+defmodule Decree.Commands.ConsistencyPrefixRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.Commands.ConsistencyAggregateRoot
+  alias Decree.Commands.ConsistencyAggregateRoot
 
   alias ConsistencyAggregateRoot.{
     ConsistencyCommand,

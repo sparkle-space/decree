@@ -1,23 +1,23 @@
-defmodule Commanded.Event.HandleEventTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.HandleEventTest do
+  use Decree.MockEventStoreCase
 
-  import Commanded.Enumerable, only: [pluck: 2]
-  import Commanded.Assertions.EventAssertions
+  import Decree.Enumerable, only: [pluck: 2]
+  import Decree.Assertions.EventAssertions
 
-  alias Commanded.{DefaultApp, MockedApp}
-  alias Commanded.Event.AppendingEventHandler
-  alias Commanded.Event.EchoHandler
-  alias Commanded.Event.Handler
-  alias Commanded.Event.Mapper
-  alias Commanded.Event.ReplyEvent
-  alias Commanded.Event.UninterestingEvent
-  alias Commanded.EventStore
-  alias Commanded.EventStore.RecordedEvent
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited
-  alias Commanded.Helpers.EventFactory
-  alias Commanded.Helpers.Wait
-  alias Commanded.UUID
+  alias Decree.{DefaultApp, MockedApp}
+  alias Decree.Event.AppendingEventHandler
+  alias Decree.Event.EchoHandler
+  alias Decree.Event.Handler
+  alias Decree.Event.Mapper
+  alias Decree.Event.ReplyEvent
+  alias Decree.Event.UninterestingEvent
+  alias Decree.EventStore
+  alias Decree.EventStore.RecordedEvent
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
+  alias Decree.Helpers.EventFactory
+  alias Decree.Helpers.Wait
+  alias Decree.UUID
 
   describe "event handling" do
     setup do
@@ -44,7 +44,7 @@ defmodule Commanded.Event.HandleEventTest do
         additional_metadata: %{
           application: MockedApp,
           state: nil,
-          handler_name: "Commanded.Event.EchoHandler"
+          handler_name: "Decree.Event.EchoHandler"
         }
       )
 
@@ -54,7 +54,7 @@ defmodule Commanded.Event.HandleEventTest do
         additional_metadata: %{
           application: MockedApp,
           state: nil,
-          handler_name: "Commanded.Event.EchoHandler"
+          handler_name: "Decree.Event.EchoHandler"
         }
       )
 
@@ -116,7 +116,7 @@ defmodule Commanded.Event.HandleEventTest do
       end
 
       assert capture_log(send_unexpected_mesage) =~
-               "Commanded.Event.EchoHandler received unexpected message: :unexpected_message"
+               "Decree.Event.EchoHandler received unexpected message: :unexpected_message"
     end
   end
 

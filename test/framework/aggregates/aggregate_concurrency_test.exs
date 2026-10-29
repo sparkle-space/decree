@@ -1,13 +1,13 @@
-defmodule Commanded.Aggregates.AggregateConcurrencyTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Aggregates.AggregateConcurrencyTest do
+  use Decree.MockEventStoreCase
 
-  alias Commanded.MockedApp
-  alias Commanded.Aggregates.{Aggregate, ExecutionContext}
-  alias Commanded.EventStore.RecordedEvent
-  alias Commanded.ExampleDomain.{BankAccount, DepositMoneyHandler, OpenAccountHandler}
-  alias Commanded.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount}
-  alias Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited
-  alias Commanded.UUID
+  alias Decree.MockedApp
+  alias Decree.Aggregates.{Aggregate, ExecutionContext}
+  alias Decree.EventStore.RecordedEvent
+  alias Decree.ExampleDomain.{BankAccount, DepositMoneyHandler, OpenAccountHandler}
+  alias Decree.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount}
+  alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
+  alias Decree.UUID
 
   setup do
     expect(MockEventStore, :subscribe_to, fn
@@ -61,7 +61,7 @@ defmodule Commanded.Aggregates.AggregateConcurrencyTest do
               event_number: 2,
               stream_id: account_number,
               stream_version: 2,
-              event_type: "Elixir.Commanded.ExampleDomain.BankAccount.Events.MoneyDeposited",
+              event_type: "Elixir.Decree.ExampleDomain.BankAccount.Events.MoneyDeposited",
               data: %MoneyDeposited{
                 account_number: account_number,
                 transfer_uuid: UUID.uuid4(),
@@ -134,7 +134,7 @@ defmodule Commanded.Aggregates.AggregateConcurrencyTest do
       end)
 
       {:ok, ^account_number} =
-        Commanded.Aggregates.Supervisor.open_aggregate(MockedApp, BankAccount, account_number)
+        Decree.Aggregates.Supervisor.open_aggregate(MockedApp, BankAccount, account_number)
 
       command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
 

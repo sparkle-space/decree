@@ -1,9 +1,9 @@
-defmodule Commanded.Aggregates.AppendItemsHandler do
+defmodule Decree.Aggregates.AppendItemsHandler do
   @moduledoc false
-  @behaviour Commanded.Commands.Handler
+  @behaviour Decree.Commands.Handler
 
-  alias Commanded.Aggregates.ExampleAggregate
-  alias Commanded.Aggregates.ExampleAggregate.Commands.AppendItems
+  alias Decree.Aggregates.ExampleAggregate
+  alias Decree.Aggregates.ExampleAggregate.Commands.AppendItems
 
   def handle(%ExampleAggregate{} = aggregate, %AppendItems{count: count}) do
     ExampleAggregate.append_items(aggregate, count)

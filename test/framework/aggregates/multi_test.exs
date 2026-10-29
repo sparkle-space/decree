@@ -1,21 +1,21 @@
-defmodule Commanded.Aggregate.MultiTest do
+defmodule Decree.Aggregate.MultiTest do
   use ExUnit.Case
 
-  import Commanded.Enumerable
+  import Decree.Enumerable
 
-  alias Commanded.Aggregate.Multi
-  alias Commanded.Aggregate.Multi.BankAccount
-  alias Commanded.Aggregate.Multi.BankAccount.Commands.{OpenAccount, WithdrawMoney}
-  alias Commanded.Aggregate.Multi.BankAccount.Events.{BankAccountOpened, MoneyWithdrawn}
-  alias Commanded.Aggregate.MultiBankRouter
-  alias Commanded.{DefaultApp, EventStore, UUID}
+  alias Decree.Aggregate.Multi
+  alias Decree.Aggregate.Multi.BankAccount
+  alias Decree.Aggregate.Multi.BankAccount.Commands.{OpenAccount, WithdrawMoney}
+  alias Decree.Aggregate.Multi.BankAccount.Events.{BankAccountOpened, MoneyWithdrawn}
+  alias Decree.Aggregate.MultiBankRouter
+  alias Decree.{DefaultApp, EventStore, UUID}
 
   setup do
     start_supervised!(DefaultApp)
     :ok
   end
 
-  test "should return `Commanded.Aggregate.Multi` from command" do
+  test "should return `Decree.Aggregate.Multi` from command" do
     account_number = UUID.uuid4()
 
     account =
@@ -44,7 +44,7 @@ defmodule Commanded.Aggregate.MultiTest do
            ]
   end
 
-  test "should return errors encountered by `Commanded.Aggregate.Multi`" do
+  test "should return errors encountered by `Decree.Aggregate.Multi`" do
     account_number = UUID.uuid4()
 
     account =
@@ -63,7 +63,7 @@ defmodule Commanded.Aggregate.MultiTest do
     assert {:error, :insufficient_funds_available} = Multi.run(multi)
   end
 
-  test "should execute command using `Commanded.Aggregate.Multi` and return events" do
+  test "should execute command using `Decree.Aggregate.Multi` and return events" do
     account_number = UUID.uuid4()
 
     command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
@@ -80,7 +80,7 @@ defmodule Commanded.Aggregate.MultiTest do
            ]
   end
 
-  test "should execute command using `Commanded.Aggregate.Multi` and return any error" do
+  test "should execute command using `Decree.Aggregate.Multi` and return any error" do
     account_number = UUID.uuid4()
 
     command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
@@ -98,7 +98,7 @@ defmodule Commanded.Aggregate.MultiTest do
            ]
   end
 
-  describe "nested `Commanded.Aggregate.Multi`" do
+  describe "nested `Decree.Aggregate.Multi`" do
     defmodule ExampleAggregate do
       defstruct events: []
 
@@ -191,27 +191,27 @@ defmodule Commanded.Aggregate.MultiTest do
           assert length(events) == 3
 
           assert steps == %{
-                   event_1: %Commanded.Aggregate.MultiTest.ExampleAggregate{
-                     events: [%Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 1}]
+                   event_1: %Decree.Aggregate.MultiTest.ExampleAggregate{
+                     events: [%Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 1}]
                    },
-                   event_2: %Commanded.Aggregate.MultiTest.ExampleAggregate{
+                   event_2: %Decree.Aggregate.MultiTest.ExampleAggregate{
                      events: [
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 1},
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 2}
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 1},
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 2}
                      ]
                    },
-                   event_3: %Commanded.Aggregate.MultiTest.ExampleAggregate{
+                   event_3: %Decree.Aggregate.MultiTest.ExampleAggregate{
                      events: [
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 1},
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 2},
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 3}
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 1},
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 2},
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 3}
                      ]
                    },
-                   event_4: %Commanded.Aggregate.MultiTest.ExampleAggregate{
+                   event_4: %Decree.Aggregate.MultiTest.ExampleAggregate{
                      events: [
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 1},
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 2},
-                       %Commanded.Aggregate.MultiTest.ExampleAggregate.Event{data: 3}
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 1},
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 2},
+                       %Decree.Aggregate.MultiTest.ExampleAggregate.Event{data: 3}
                      ]
                    }
                  }

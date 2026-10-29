@@ -1,5 +1,5 @@
-defmodule EventStore.StorageInitializer do
-  alias EventStore.Storage.Initializer
+defmodule Decree.Store.StorageInitializer do
+  alias Decree.Store.Storage.Initializer
 
   def reset_storage! do
     config = TestEventStore.config()

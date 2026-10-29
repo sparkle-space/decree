@@ -1,10 +1,10 @@
-defmodule Commanded.Event.HandlerConfigTest do
+defmodule Decree.Event.HandlerConfigTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
+  alias Decree.DefaultApp
 
   defmodule DefaultConfigHandler do
-    use Commanded.Event.Handler,
+    use Decree.Event.Handler,
       application: DefaultApp,
       name: __MODULE__
   end
@@ -18,8 +18,8 @@ defmodule Commanded.Event.HandlerConfigTest do
     {:ok, handler} = DefaultConfigHandler.start_link()
 
     assert_config(handler,
-      application: Commanded.DefaultApp,
-      name: "Commanded.Event.HandlerConfigTest.DefaultConfigHandler",
+      application: Decree.DefaultApp,
+      name: "Decree.Event.HandlerConfigTest.DefaultConfigHandler",
       concurrency: 1,
       consistency: :eventual,
       start_from: :origin,
@@ -29,26 +29,26 @@ defmodule Commanded.Event.HandlerConfigTest do
 
   describe "global config change to default consistency" do
     test "should use overridden default consistency" do
-      Application.put_env(:commanded, :default_consistency, :strong)
+      Application.put_env(:decree, :default_consistency, :strong)
 
       {:ok, handler} = DefaultConfigHandler.start_link()
 
       assert_config(handler,
-        application: Commanded.DefaultApp,
-        name: "Commanded.Event.HandlerConfigTest.DefaultConfigHandler",
+        application: Decree.DefaultApp,
+        name: "Decree.Event.HandlerConfigTest.DefaultConfigHandler",
         concurrency: 1,
         consistency: :strong,
         start_from: :origin,
         subscribe_to: :all
       )
 
-      Application.put_env(:commanded, :default_consistency, :eventual)
+      Application.put_env(:decree, :default_consistency, :eventual)
     end
   end
 
   defmodule ExampleHandler do
-    use Commanded.Event.Handler,
-      application: Commanded.DefaultApp,
+    use Decree.Event.Handler,
+      application: Decree.DefaultApp,
       name: __MODULE__,
       consistency: :strong,
       start_from: :current,
@@ -60,8 +60,8 @@ defmodule Commanded.Event.HandlerConfigTest do
       {:ok, handler} = ExampleHandler.start_link()
 
       assert_config(handler,
-        application: Commanded.DefaultApp,
-        name: "Commanded.Event.HandlerConfigTest.ExampleHandler",
+        application: Decree.DefaultApp,
+        name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
         consistency: :strong,
         start_from: :current,
@@ -80,8 +80,8 @@ defmodule Commanded.Event.HandlerConfigTest do
         )
 
       assert_config(handler,
-        application: Commanded.DefaultApp,
-        name: "Commanded.Event.HandlerConfigTest.ExampleHandler",
+        application: Decree.DefaultApp,
+        name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 10,
         consistency: :eventual,
         start_from: :origin,
@@ -93,8 +93,8 @@ defmodule Commanded.Event.HandlerConfigTest do
       {:ok, handler} = ExampleHandler.start_link(start_from: :origin)
 
       assert_config(handler,
-        application: Commanded.DefaultApp,
-        name: "Commanded.Event.HandlerConfigTest.ExampleHandler",
+        application: Decree.DefaultApp,
+        name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
         consistency: :strong,
         start_from: :origin,
@@ -106,7 +106,7 @@ defmodule Commanded.Event.HandlerConfigTest do
       {:ok, handler} = ExampleHandler.start_link(name: "handler_name")
 
       assert_config(handler,
-        application: Commanded.DefaultApp,
+        application: Decree.DefaultApp,
         name: "handler_name",
         concurrency: 1,
         consistency: :strong,
@@ -122,7 +122,7 @@ defmodule Commanded.Event.HandlerConfigTest do
 
       assert_config(handler,
         application: :dynamic_app,
-        name: "Commanded.Event.HandlerConfigTest.ExampleHandler",
+        name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
         consistency: :strong,
         start_from: :current,
@@ -136,8 +136,8 @@ defmodule Commanded.Event.HandlerConfigTest do
       handler = start_supervised!(ExampleHandler)
 
       assert_config(handler,
-        application: Commanded.DefaultApp,
-        name: "Commanded.Event.HandlerConfigTest.ExampleHandler",
+        application: Decree.DefaultApp,
+        name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
         consistency: :strong,
         start_from: :current,
@@ -169,7 +169,7 @@ defmodule Commanded.Event.HandlerConfigTest do
   end
 
   defmodule InvalidConfiguredHandler do
-    use Commanded.Event.Handler,
+    use Decree.Event.Handler,
       application: DefaultApp,
       name: __MODULE__,
       invalid_config_option: "invalid"
@@ -177,7 +177,7 @@ defmodule Commanded.Event.HandlerConfigTest do
 
   test "should validate provided config at runtime" do
     expected_error =
-      "Commanded.Event.HandlerConfigTest.InvalidConfiguredHandler specifies invalid options: [:invalid_config_option]"
+      "Decree.Event.HandlerConfigTest.InvalidConfiguredHandler specifies invalid options: [:invalid_config_option]"
 
     assert_raise ArgumentError, expected_error, fn ->
       InvalidConfiguredHandler.start_link()
@@ -185,7 +185,7 @@ defmodule Commanded.Event.HandlerConfigTest do
   end
 
   defmodule InvalidBatchConcurrencyHandler do
-    use Commanded.Event.Handler,
+    use Decree.Event.Handler,
       application: DefaultApp,
       name: __MODULE__,
       concurrency: 1,
@@ -205,13 +205,13 @@ defmodule Commanded.Event.HandlerConfigTest do
   end
 
   defmodule RuntimeConfiguredHandler do
-    use Commanded.Event.Handler
+    use Decree.Event.Handler
   end
 
   describe "runtime configured handler" do
     test "should require application" do
       expected_error =
-        "Commanded.Event.HandlerConfigTest.RuntimeConfiguredHandler expects :application option"
+        "Decree.Event.HandlerConfigTest.RuntimeConfiguredHandler expects :application option"
 
       assert_raise ArgumentError, expected_error, fn ->
         RuntimeConfiguredHandler.start_link()
@@ -220,7 +220,7 @@ defmodule Commanded.Event.HandlerConfigTest do
 
     test "should require name" do
       expected_error =
-        "Commanded.Event.HandlerConfigTest.RuntimeConfiguredHandler expects :name option"
+        "Decree.Event.HandlerConfigTest.RuntimeConfiguredHandler expects :name option"
 
       assert_raise ArgumentError, expected_error, fn ->
         RuntimeConfiguredHandler.start_link(application: DefaultApp)
@@ -242,8 +242,8 @@ defmodule Commanded.Event.HandlerConfigTest do
   end
 
   defp assert_config(handler, expected_config) do
-    alias Commanded.Event.Handler
-    alias Commanded.EventStore.Subscription
+    alias Decree.Event.Handler
+    alias Decree.EventStore.Subscription
 
     %Handler{
       application: application,

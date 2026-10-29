@@ -1,11 +1,11 @@
-defmodule Commanded.Commands.DefaultDispatchReturnApp do
-  alias Commanded.ExampleDomain.BankRouter
+defmodule Decree.Commands.DefaultDispatchReturnApp do
+  alias Decree.ExampleDomain.BankRouter
 
-  use Commanded.Application,
-    otp_app: :commanded,
+  use Decree.Application,
+    otp_app: :decree,
     event_store: [
-      adapter: Commanded.EventStore.Adapters.InMemory,
-      serializer: Commanded.Serialization.JsonSerializer
+      adapter: Decree.EventStore.Adapters.InMemory,
+      serializer: Decree.Serialization.JsonSerializer
     ],
     pubsub: :local,
     registry: :local,

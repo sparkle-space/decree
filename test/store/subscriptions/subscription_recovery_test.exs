@@ -1,8 +1,8 @@
-defmodule EventStore.Subscriptions.SubscriptionRecoveryTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionRecoveryTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, RecordedEvent, UUID, Wait}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID, Wait}
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   describe "subscription recovery" do

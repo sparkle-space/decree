@@ -1,10 +1,10 @@
-defmodule EventStore.Subscriptions.SubscriptionPartitioningTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionPartitioningTest do
+  use Decree.Store.StorageCase
 
-  import EventStore.SubscriptionHelpers
+  import Decree.Store.SubscriptionHelpers
 
-  alias EventStore.{EventFactory, RecordedEvent, UUID}
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   describe "subscription partitioning" do

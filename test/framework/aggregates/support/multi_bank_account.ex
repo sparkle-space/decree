@@ -1,8 +1,8 @@
-defmodule Commanded.Aggregate.Multi.BankAccount do
+defmodule Decree.Aggregate.Multi.BankAccount do
   defstruct [:account_number, :status, balance: 0]
 
-  alias Commanded.Aggregate.Multi
-  alias Commanded.Aggregate.Multi.BankAccount
+  alias Decree.Aggregate.Multi
+  alias Decree.Aggregate.Multi.BankAccount
 
   defmodule Commands do
     defmodule OpenAccount do

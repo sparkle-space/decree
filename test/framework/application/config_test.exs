@@ -1,11 +1,11 @@
-defmodule Commanded.Application.ConfigTest do
+defmodule Decree.Application.ConfigTest do
   use ExUnit.Case
 
-  alias Commanded.Application.Config
-  alias Commanded.ExampleApplication
-  alias Commanded.Helpers.Wait
+  alias Decree.Application.Config
+  alias Decree.ExampleApplication
+  alias Decree.Helpers.Wait
 
-  describe "a Commanded application" do
+  describe "a Decree application" do
     setup do
       start_supervised!(ExampleApplication)
 
@@ -13,22 +13,22 @@ defmodule Commanded.Application.ConfigTest do
     end
 
     test "should get application event store config" do
-      assert {Commanded.EventStore.Adapters.InMemory,
-              %{name: Commanded.ExampleApplication.EventStore}} ==
+      assert {Decree.EventStore.Adapters.InMemory,
+              %{name: Decree.ExampleApplication.EventStore}} ==
                Config.get(ExampleApplication, :event_store)
     end
 
     test "should get application pubsub config" do
-      assert {Commanded.PubSub.LocalPubSub,
+      assert {Decree.PubSub.LocalPubSub,
               %{
-                pubsub_name: Commanded.ExampleApplication.LocalPubSub,
-                tracker_name: Commanded.ExampleApplication.LocalPubSub.Tracker
+                pubsub_name: Decree.ExampleApplication.LocalPubSub,
+                tracker_name: Decree.ExampleApplication.LocalPubSub.Tracker
               }} == Config.get(ExampleApplication, :pubsub)
     end
 
     test "should get application registry config" do
-      assert {Commanded.Registration.LocalRegistry,
-              %{registry_name: Commanded.ExampleApplication.LocalRegistry}} ==
+      assert {Decree.Registration.LocalRegistry,
+              %{registry_name: Decree.ExampleApplication.LocalRegistry}} ==
                Config.get(ExampleApplication, :registry)
     end
 
@@ -38,7 +38,7 @@ defmodule Commanded.Application.ConfigTest do
       Wait.until(fn ->
         assert_raise(
           RuntimeError,
-          "could not lookup Commanded.ExampleApplication because it was not started or it does not exist",
+          "could not lookup Decree.ExampleApplication because it was not started or it does not exist",
           fn ->
             Config.get(ExampleApplication, :event_store)
           end

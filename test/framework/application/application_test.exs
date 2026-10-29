@@ -1,12 +1,12 @@
-defmodule Commanded.ApplicationTest do
+defmodule Decree.ApplicationTest do
   use ExUnit.Case
 
-  alias Commanded.Application
-  alias Commanded.ExampleApplication
-  alias Commanded.RuntimeConfiguredApplication
-  alias Commanded.UnconfiguredApplication
+  alias Decree.Application
+  alias Decree.ExampleApplication
+  alias Decree.RuntimeConfiguredApplication
+  alias Decree.UnconfiguredApplication
 
-  describe "a Commanded application" do
+  describe "a Decree application" do
     setup do
       pid = start_supervised!(ExampleApplication)
 
@@ -23,42 +23,42 @@ defmodule Commanded.ApplicationTest do
 
     test "should expose an event store adapter" do
       assert Application.event_store_adapter(ExampleApplication) ==
-               {Commanded.EventStore.Adapters.InMemory,
-                %{name: Commanded.ExampleApplication.EventStore}}
+               {Decree.EventStore.Adapters.InMemory,
+                %{name: Decree.ExampleApplication.EventStore}}
     end
 
     test "should expose a pubsub adapter" do
       assert Application.pubsub_adapter(ExampleApplication) ==
-               {Commanded.PubSub.LocalPubSub,
+               {Decree.PubSub.LocalPubSub,
                 %{
-                  pubsub_name: Commanded.ExampleApplication.LocalPubSub,
-                  tracker_name: Commanded.ExampleApplication.LocalPubSub.Tracker
+                  pubsub_name: Decree.ExampleApplication.LocalPubSub,
+                  tracker_name: Decree.ExampleApplication.LocalPubSub.Tracker
                 }}
     end
 
     test "should expose a registry adapter" do
       assert Application.registry_adapter(ExampleApplication) ==
-               {Commanded.Registration.LocalRegistry,
-                %{registry_name: Commanded.ExampleApplication.LocalRegistry}}
+               {Decree.Registration.LocalRegistry,
+                %{registry_name: Decree.ExampleApplication.LocalRegistry}}
     end
 
     test "should allow application config to be provided by `init/1` callback function" do
       start_supervised!(RuntimeConfiguredApplication)
 
       assert Application.event_store_adapter(RuntimeConfiguredApplication) ==
-               {Commanded.EventStore.Adapters.InMemory,
-                %{name: Commanded.RuntimeConfiguredApplication.EventStore}}
+               {Decree.EventStore.Adapters.InMemory,
+                %{name: Decree.RuntimeConfiguredApplication.EventStore}}
 
       assert Application.pubsub_adapter(RuntimeConfiguredApplication) ==
-               {Commanded.PubSub.PhoenixPubSub,
+               {Decree.PubSub.PhoenixPubSub,
                 %{
-                  pubsub_name: Commanded.RuntimeConfiguredApplication.PhoenixPubSub,
-                  tracker_name: Commanded.RuntimeConfiguredApplication.PhoenixPubSub.Tracker
+                  pubsub_name: Decree.RuntimeConfiguredApplication.PhoenixPubSub,
+                  tracker_name: Decree.RuntimeConfiguredApplication.PhoenixPubSub.Tracker
                 }}
 
       assert Application.registry_adapter(RuntimeConfiguredApplication) ==
-               {Commanded.Registration.LocalRegistry,
-                %{registry_name: Commanded.RuntimeConfiguredApplication.LocalRegistry}}
+               {Decree.Registration.LocalRegistry,
+                %{registry_name: Decree.RuntimeConfiguredApplication.LocalRegistry}}
     end
 
     test "should fail to start unconfigured application" do
@@ -69,7 +69,7 @@ defmodule Commanded.ApplicationTest do
       assert match?(
                {%ArgumentError{
                   message:
-                    "missing :event_store config for application Commanded.UnconfiguredApplication"
+                    "missing :event_store config for application Decree.UnconfiguredApplication"
                 }, _},
                reason
              )

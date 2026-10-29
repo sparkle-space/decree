@@ -1,14 +1,14 @@
-defmodule EventStore.AdvisoryLocksTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.AdvisoryLocksTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{AdvisoryLocks, Config, Wait}
-  alias EventStore.Storage
+  alias Decree.Store.{AdvisoryLocks, Config, Wait}
+  alias Decree.Store.Storage
 
   @locks TestEventStore.EventStore.AdvisoryLocks
   @conn TestEventStore.EventStore.AdvisoryLocks.Postgrex
 
   setup do
-    postgrex_config = Config.parsed(TestEventStore, :eventstore) |> Config.default_postgrex_opts()
+    postgrex_config = Config.parsed(TestEventStore, :decree) |> Config.default_postgrex_opts()
 
     conn = start_supervised!({Postgrex, postgrex_config})
 
@@ -81,7 +81,7 @@ defmodule EventStore.AdvisoryLocksTest do
 
   describe "acquire same lock on different schemas" do
     setup do
-      postgrex_config = Config.parsed(TestEventStore, :eventstore)
+      postgrex_config = Config.parsed(TestEventStore, :decree)
 
       public_schema =
         postgrex_config
@@ -109,6 +109,6 @@ defmodule EventStore.AdvisoryLocksTest do
   defp shutdown_database_connection do
     %{pid: pid} = Process.whereis(@conn) |> :sys.get_state()
 
-    EventStore.ProcessHelper.shutdown(pid)
+    Decree.Store.ProcessHelper.shutdown(pid)
   end
 end

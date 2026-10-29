@@ -1,9 +1,9 @@
-defmodule Commanded.DefaultApp do
-  alias Commanded.EventStore.Adapters.InMemory
-  alias Commanded.Serialization.JsonSerializer
+defmodule Decree.DefaultApp do
+  alias Decree.EventStore.Adapters.InMemory
+  alias Decree.Serialization.JsonSerializer
 
-  use Commanded.Application,
-    otp_app: :commanded,
+  use Decree.Application,
+    otp_app: :decree,
     event_store: [
       adapter: InMemory,
       serializer: JsonSerializer

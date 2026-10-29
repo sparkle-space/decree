@@ -1,9 +1,9 @@
-defmodule EventStore.Subscriptions.AllStreamsSubscriptionTest do
-  use EventStore.Subscriptions.StreamSubscriptionTestCase, stream_uuid: "$all"
+defmodule Decree.Store.Subscriptions.AllStreamsSubscriptionTest do
+  use Decree.Store.Subscriptions.StreamSubscriptionTestCase, stream_uuid: "$all"
 
-  alias EventStore.{EventFactory, ProcessHelper, RecordedEvent, UUID}
-  alias EventStore.Storage.{Appender, CreateStream}
-  alias EventStore.Subscriptions.SubscriptionFsm
+  alias Decree.Store.{EventFactory, ProcessHelper, RecordedEvent, UUID}
+  alias Decree.Store.Storage.{Appender, CreateStream}
+  alias Decree.Store.Subscriptions.SubscriptionFsm
 
   defp create_recorded_events(_context, count, initial_event_number \\ 1) do
     stream_uuid = UUID.uuid4()

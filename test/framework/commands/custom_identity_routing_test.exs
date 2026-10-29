@@ -1,10 +1,10 @@
-defmodule Commanded.Commands.CustomIdentityRoutingTest do
+defmodule Decree.Commands.CustomIdentityRoutingTest do
   use ExUnit.Case
 
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.ExampleDomain.BankAccount
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.OpenAccountHandler
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.ExampleDomain.BankAccount
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.OpenAccountHandler
 
   defmodule AccountNumber do
     @derive Jason.Encoder
@@ -17,7 +17,7 @@ defmodule Commanded.Commands.CustomIdentityRoutingTest do
   end
 
   defmodule CustomIdentityRouter do
-    use Commanded.Commands.Router
+    use Decree.Commands.Router
 
     dispatch OpenAccount,
       to: OpenAccountHandler,

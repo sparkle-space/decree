@@ -1,7 +1,7 @@
-defmodule EventStore.RuntimeConfigTest do
+defmodule Decree.Store.RuntimeConfigTest do
   use ExUnit.Case
 
-  alias EventStore.{Config, Wait}
+  alias Decree.Store.{Config, Wait}
 
   describe "event store runtime config" do
     setup do
@@ -12,7 +12,7 @@ defmodule EventStore.RuntimeConfigTest do
 
     test "should get event store config by module" do
       expected_config =
-        Application.get_env(:eventstore, TestEventStore)
+        Application.get_env(:decree, TestEventStore)
         |> Keyword.put_new(:conn, TestEventStore.Postgrex)
         |> Keyword.put_new(:schema, "public")
         |> Keyword.put_new(:subscription_hibernate_after, 15_000)
@@ -26,7 +26,7 @@ defmodule EventStore.RuntimeConfigTest do
 
     test "should get event store config by name" do
       expected_config =
-        Application.get_env(:eventstore, TestEventStore)
+        Application.get_env(:decree, TestEventStore)
         |> Keyword.put(:conn, Module.concat([:test_event_store, Postgrex]))
         |> Keyword.put(:schema, "example")
         |> Keyword.put(:name, :test_event_store)
@@ -48,11 +48,11 @@ defmodule EventStore.RuntimeConfigTest do
         )
       end)
 
-      assert EventStore.all_instances() == [{TestEventStore, name: :test_event_store}]
+      assert Decree.Store.all_instances() == [{TestEventStore, name: :test_event_store}]
     end
 
     test "should list all running instances" do
-      all_instances = EventStore.all_instances() |> Enum.sort()
+      all_instances = Decree.Store.all_instances() |> Enum.sort()
 
       assert all_instances == [
                {TestEventStore, name: TestEventStore},
@@ -60,9 +60,9 @@ defmodule EventStore.RuntimeConfigTest do
              ]
     end
 
-    # EventStore has no compile-time configuration
+    # Decree.Store has no compile-time configuration
     defmodule RuntimeConfiguredEventStore do
-      use EventStore, otp_app: :eventstore
+      use Decree.Store, otp_app: :decree
     end
 
     test "should allow an event store to be entirely configured at runtime" do
@@ -71,7 +71,7 @@ defmodule EventStore.RuntimeConfigTest do
         password: "postgres",
         database: "eventstore_test",
         hostname: "localhost",
-        serializer: EventStore.JsonSerializer
+        serializer: Decree.Store.JsonSerializer
       ]
 
       assert {:ok, _pid} = start_supervised({RuntimeConfiguredEventStore, config})
@@ -85,7 +85,7 @@ defmodule EventStore.RuntimeConfigTest do
         correlation_id_type: "uuid",
         causation_id_type: "uuid",
         enable_hard_deletes: false,
-        otp_app: :eventstore,
+        otp_app: :decree,
         pool: DBConnection.ConnectionPool,
         subscription_hibernate_after: 15_000,
         subscription_retry_interval: 1_000,

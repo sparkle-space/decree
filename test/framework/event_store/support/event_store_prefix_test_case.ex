@@ -1,9 +1,9 @@
-defmodule Commanded.EventStore.EventStorePrefixTestCase do
-  import Commanded.SharedTestCase
+defmodule Decree.EventStore.EventStorePrefixTestCase do
+  import Decree.SharedTestCase
 
   define_tests do
-    alias Commanded.EventStore.EventData
-    alias Commanded.UUID
+    alias Decree.EventStore.EventData
+    alias Decree.UUID
 
     defmodule BankAccountOpened do
       @derive Jason.Encoder

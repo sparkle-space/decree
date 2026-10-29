@@ -1,6 +1,6 @@
-defmodule Commanded.Event.InitHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.MockedApp,
+defmodule Decree.Event.InitHandler do
+  use Decree.Event.Handler,
+    application: Decree.MockedApp,
     name: __MODULE__
 
   def init do

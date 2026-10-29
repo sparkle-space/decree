@@ -1,14 +1,14 @@
-defmodule Commanded.AggregateCaseTest do
-  use Commanded.AggregateCase, aggregate: Commanded.Aggregate.Multi.BankAccount, async: true
+defmodule Decree.AggregateCaseTest do
+  use Decree.AggregateCase, aggregate: Decree.Aggregate.Multi.BankAccount, async: true
 
-  alias Commanded.Aggregate.Multi.BankAccount
-  alias Commanded.Aggregate.Multi.BankAccount.Commands.DepositMoney
-  alias Commanded.Aggregate.Multi.BankAccount.Commands.OpenAccount
-  alias Commanded.Aggregate.Multi.BankAccount.Commands.WithdrawMoney
-  alias Commanded.Aggregate.Multi.BankAccount.Events.BankAccountOpened
-  alias Commanded.Aggregate.Multi.BankAccount.Events.MoneyDeposited
-  alias Commanded.Aggregate.Multi.BankAccount.Events.MoneyWithdrawn
-  alias Commanded.UUID
+  alias Decree.Aggregate.Multi.BankAccount
+  alias Decree.Aggregate.Multi.BankAccount.Commands.DepositMoney
+  alias Decree.Aggregate.Multi.BankAccount.Commands.OpenAccount
+  alias Decree.Aggregate.Multi.BankAccount.Commands.WithdrawMoney
+  alias Decree.Aggregate.Multi.BankAccount.Events.BankAccountOpened
+  alias Decree.Aggregate.Multi.BankAccount.Events.MoneyDeposited
+  alias Decree.Aggregate.Multi.BankAccount.Events.MoneyWithdrawn
+  alias Decree.UUID
 
   describe "aggregate case" do
     test "`assert_events/2`" do
@@ -37,7 +37,7 @@ defmodule Commanded.AggregateCaseTest do
       )
     end
 
-    test "`assert_events/3` with `Commanded.Aggregate.Multi` command function" do
+    test "`assert_events/3` with `Decree.Aggregate.Multi` command function" do
       transfer_uuid = UUID.uuid4()
 
       assert_events(
@@ -85,7 +85,7 @@ defmodule Commanded.AggregateCaseTest do
       )
     end
 
-    test "`assert_error/3` with `Commanded.Aggregate.Multi` command function" do
+    test "`assert_error/3` with `Decree.Aggregate.Multi` command function" do
       transfer_uuid = UUID.uuid4()
 
       assert_error(

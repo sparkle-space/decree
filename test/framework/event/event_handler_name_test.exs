@@ -1,7 +1,7 @@
-defmodule Commanded.Event.EventHandlerNameTest do
+defmodule Decree.Event.EventHandlerNameTest do
   use ExUnit.Case
 
-  alias Commanded.Event.Handler
+  alias Decree.Event.Handler
 
   describe "event handler name" do
     test "should parse string" do
@@ -31,7 +31,7 @@ defmodule Commanded.Event.EventHandlerNameTest do
 
   test "should ensure an application is provided" do
     expected_error =
-      "Commanded.Event.EventHandlerNameTest.NoAppEventHandler expects :application option"
+      "Decree.Event.EventHandlerNameTest.NoAppEventHandler expects :application option"
 
     assert_raise ArgumentError, expected_error, fn ->
       NoAppEventHandler.start_link()
@@ -39,12 +39,12 @@ defmodule Commanded.Event.EventHandlerNameTest do
   end
 
   defmodule UnnamedEventHandler do
-    use Handler, application: Commanded.DefaultApp
+    use Handler, application: Decree.DefaultApp
   end
 
   test "should ensure an event handler name is provided" do
     expected_error =
-      "Commanded.Event.EventHandlerNameTest.UnnamedEventHandler expects :name option"
+      "Decree.Event.EventHandlerNameTest.UnnamedEventHandler expects :name option"
 
     assert_raise ArgumentError, expected_error, fn ->
       UnnamedEventHandler.start_link()
@@ -52,11 +52,11 @@ defmodule Commanded.Event.EventHandlerNameTest do
   end
 
   defmodule ModuleNamedEventHandler do
-    use Handler, application: Commanded.DefaultApp, name: __MODULE__
+    use Handler, application: Decree.DefaultApp, name: __MODULE__
   end
 
   test "should allow using event handler module as name" do
-    start_supervised!(Commanded.DefaultApp)
+    start_supervised!(Decree.DefaultApp)
 
     assert {:ok, _pid} = ModuleNamedEventHandler.start_link()
   end

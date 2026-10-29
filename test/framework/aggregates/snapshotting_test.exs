@@ -1,9 +1,9 @@
-defmodule Commanded.Aggregates.SnapshottingTest do
+defmodule Decree.Aggregates.SnapshottingTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
+  alias Decree.DefaultApp
 
-  alias Commanded.Aggregates.{
+  alias Decree.Aggregates.{
     Aggregate,
     AppendItemsHandler,
     ExampleAggregate,
@@ -12,11 +12,11 @@ defmodule Commanded.Aggregates.SnapshottingTest do
     Supervisor
   }
 
-  alias Commanded.Aggregates.ExampleAggregate.Commands.AppendItems
-  alias Commanded.Aggregates.SnapshotAggregate.Commands.Create
-  alias Commanded.EventStore
-  alias Commanded.EventStore.SnapshotData
-  alias Commanded.UUID
+  alias Decree.Aggregates.ExampleAggregate.Commands.AppendItems
+  alias Decree.Aggregates.SnapshotAggregate.Commands.Create
+  alias Decree.EventStore
+  alias Decree.EventStore.SnapshotData
+  alias Decree.UUID
 
   describe "with snapshotting disabled" do
     setup do
@@ -92,7 +92,7 @@ defmodule Commanded.Aggregates.SnapshottingTest do
       assert snapshot == %SnapshotData{
                source_uuid: aggregate_uuid,
                source_version: 10,
-               source_type: "Elixir.Commanded.Aggregates.ExampleAggregate",
+               source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
                data: %ExampleAggregate{
                  items: Enum.to_list(1..10),
                  last_index: 10
@@ -112,7 +112,7 @@ defmodule Commanded.Aggregates.SnapshottingTest do
       assert snapshot == %SnapshotData{
                source_uuid: aggregate_uuid,
                source_version: 11,
-               source_type: "Elixir.Commanded.Aggregates.ExampleAggregate",
+               source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
                data: %ExampleAggregate{
                  items: Enum.to_list(1..11),
                  last_index: 11
@@ -141,7 +141,7 @@ defmodule Commanded.Aggregates.SnapshottingTest do
       assert snapshot == %SnapshotData{
                source_uuid: aggregate_uuid,
                source_version: 21,
-               source_type: "Elixir.Commanded.Aggregates.ExampleAggregate",
+               source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
                data: %ExampleAggregate{
                  items: Enum.to_list(1..21),
                  last_index: 21
@@ -330,6 +330,6 @@ defmodule Commanded.Aggregates.SnapshottingTest do
       metadata: metadata
     }
 
-    :ok = Commanded.EventStore.record_snapshot(DefaultApp, snapshot)
+    :ok = Decree.EventStore.record_snapshot(DefaultApp, snapshot)
   end
 end

@@ -1,13 +1,13 @@
-defmodule Commanded.Aggregates.EventPersistenceTest do
+defmodule Decree.Aggregates.EventPersistenceTest do
   use ExUnit.Case
 
-  import Commanded.Enumerable, only: [pluck: 2]
+  import Decree.Enumerable, only: [pluck: 2]
 
-  alias Commanded.Aggregates.{Aggregate, AppendItemsHandler, ExampleAggregate, ExecutionContext}
-  alias Commanded.Aggregates.ExampleAggregate.Commands.{AppendItems, NoOp}
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.Helpers.ProcessHelper
-  alias Commanded.UUID
+  alias Decree.Aggregates.{Aggregate, AppendItemsHandler, ExampleAggregate, ExecutionContext}
+  alias Decree.Aggregates.ExampleAggregate.Commands.{AppendItems, NoOp}
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.Helpers.ProcessHelper
+  alias Decree.UUID
 
   setup do
     start_supervised!(DefaultApp)
@@ -18,7 +18,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     aggregate_uuid = UUID.uuid4()
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 10, events, _aggregate_state} =
       Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
@@ -43,7 +43,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     aggregate_uuid = UUID.uuid4()
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 1, events, _aggregate_state} =
       Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
@@ -71,7 +71,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     aggregate_uuid = UUID.uuid4()
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     metadata = %{"ip_address" => "127.0.0.1"}
 
@@ -98,7 +98,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     aggregate_uuid = UUID.uuid4()
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 10, events, _aggregate_state} =
       Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
@@ -112,7 +112,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     ProcessHelper.shutdown_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     assert Aggregate.aggregate_version(DefaultApp, ExampleAggregate, aggregate_uuid) == 10
 
@@ -127,7 +127,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     aggregate_uuid = UUID.uuid4()
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 100, _events, _aggregate_state} =
       Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
@@ -153,7 +153,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     ProcessHelper.shutdown_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, ^aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
+      Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     assert Aggregate.aggregate_version(DefaultApp, ExampleAggregate, aggregate_uuid) == 201
 
@@ -170,7 +170,7 @@ defmodule Commanded.Aggregates.EventPersistenceTest do
     prefixed_aggregate_uuid = prefix <> aggregate_uuid
 
     {:ok, ^prefixed_aggregate_uuid} =
-      Commanded.Aggregates.Supervisor.open_aggregate(
+      Decree.Aggregates.Supervisor.open_aggregate(
         DefaultApp,
         ExampleAggregate,
         prefixed_aggregate_uuid

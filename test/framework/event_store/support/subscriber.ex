@@ -1,7 +1,7 @@
-defmodule Commanded.EventStore.Subscriber do
+defmodule Decree.EventStore.Subscriber do
   use GenServer
 
-  alias Commanded.EventStore.Subscriber
+  alias Decree.EventStore.Subscriber
 
   defmodule State do
     defstruct [

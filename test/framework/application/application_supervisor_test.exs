@@ -1,8 +1,8 @@
-defmodule Commanded.Aggregates.ApplicationSupervisorTest do
+defmodule Decree.Aggregates.ApplicationSupervisorTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
-  alias Commanded.Helpers.Wait
+  alias Decree.DefaultApp
+  alias Decree.Helpers.Wait
 
   describe "application supervisor configured with `hibernate_after`" do
     setup do
@@ -12,10 +12,10 @@ defmodule Commanded.Aggregates.ApplicationSupervisorTest do
 
     test "children are hibernated after inactivity" do
       for module <- [
-            Commanded.Commands.TaskDispatcher,
-            Commanded.Aggregates.Supervisor,
-            Commanded.Subscriptions,
-            Commanded.Subscriptions.Registry
+            Decree.Commands.TaskDispatcher,
+            Decree.Aggregates.Supervisor,
+            Decree.Subscriptions,
+            Decree.Subscriptions.Registry
           ] do
         name = Module.concat([DefaultApp, module])
         pid = Process.whereis(name)

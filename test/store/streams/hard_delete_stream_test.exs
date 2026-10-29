@@ -1,7 +1,7 @@
-defmodule EventStore.Streams.HardDeleteStreamTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Streams.HardDeleteStreamTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, ProcessHelper, RecordedEvent, UUID}
+  alias Decree.Store.{EventFactory, ProcessHelper, RecordedEvent, UUID}
   alias TestEventStore, as: EventStore
 
   describe "hard delete stream when enabled" do

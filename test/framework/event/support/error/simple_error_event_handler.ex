@@ -1,10 +1,10 @@
-defmodule Commanded.Event.SimpleErrorEventHandler do
+defmodule Decree.Event.SimpleErrorEventHandler do
   @moduledoc false
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__
 
-  alias Commanded.Event.ErrorAggregate.Events.{
+  alias Decree.Event.ErrorAggregate.Events.{
     ErrorEvent,
     ExceptionEvent,
     InvalidReturnValueEvent

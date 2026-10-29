@@ -1,13 +1,13 @@
-defmodule Commanded.Assertions.EventAssertions do
+defmodule Decree.Assertions.EventAssertions do
   @moduledoc """
   Provides test assertion and wait for event functions to help test applications
-  built using Commanded.
+  built using Decree.
 
   The default assert and refute receive timeouts are one second.
 
   You can override the default timeout in config (e.g. `config/test.exs`):
 
-      config :commanded,
+      config :decree,
         assert_receive_event_timeout: 1_000,
         refute_receive_event_timeout: 1_000
 
@@ -15,8 +15,8 @@ defmodule Commanded.Assertions.EventAssertions do
 
   import ExUnit.Assertions
 
-  alias Commanded.{EventStore, UUID}
-  alias Commanded.EventStore.RecordedEvent
+  alias Decree.{EventStore, UUID}
+  alias Decree.EventStore.RecordedEvent
 
   @doc """
   Assert that events matching their respective predicates have a matching
@@ -282,8 +282,8 @@ defmodule Commanded.Assertions.EventAssertions do
     do: ack_events(application, subscription, events)
 
   defp default_receive_timeout,
-    do: Application.get_env(:commanded, :assert_receive_event_timeout, 1_000)
+    do: Application.get_env(:decree, :assert_receive_event_timeout, 1_000)
 
   defp default_refute_receive_timeout,
-    do: Application.get_env(:commanded, :refute_receive_event_timeout, 1_000)
+    do: Application.get_env(:decree, :refute_receive_event_timeout, 1_000)
 end

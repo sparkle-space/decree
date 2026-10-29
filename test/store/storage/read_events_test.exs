@@ -1,8 +1,8 @@
-defmodule EventStore.Storage.ReadEventsTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.ReadEventsTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, RecordedEvent, Storage, UUID}
-  alias EventStore.Storage.{Appender, CreateStream}
+  alias Decree.Store.{EventFactory, RecordedEvent, Storage, UUID}
+  alias Decree.Store.Storage.{Appender, CreateStream}
 
   describe "read stream forward" do
     test "when stream does not exist", context do

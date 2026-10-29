@@ -1,8 +1,8 @@
-defmodule Commanded.Aggregates.DefaultLifespanRouter do
-  use Commanded.Commands.Router
+defmodule Decree.Aggregates.DefaultLifespanRouter do
+  use Decree.Commands.Router
 
-  alias Commanded.Aggregates.LifespanAggregate
-  alias Commanded.Aggregates.LifespanAggregate.Command
+  alias Decree.Aggregates.LifespanAggregate
+  alias Decree.Aggregates.LifespanAggregate.Command
 
   dispatch [Command], to: LifespanAggregate, identity: :uuid
 end

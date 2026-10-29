@@ -1,4 +1,4 @@
-defmodule Commanded.Event.IgnoredEvent do
+defmodule Decree.Event.IgnoredEvent do
   @derive Jason.Encoder
   defstruct [:name]
 end

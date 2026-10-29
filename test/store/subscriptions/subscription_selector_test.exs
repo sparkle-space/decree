@@ -1,11 +1,11 @@
-defmodule EventStore.Subscriptions.SubscriptionSelectorTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionSelectorTest do
+  use Decree.Store.StorageCase
 
   import Integer, only: [is_odd: 1]
-  import EventStore.SubscriptionHelpers
+  import Decree.Store.SubscriptionHelpers
 
-  alias EventStore.{RecordedEvent, SelectorSubscriber, UUID}
-  alias EventStore.EventFactory.Event
+  alias Decree.Store.{RecordedEvent, SelectorSubscriber, UUID}
+  alias Decree.Store.EventFactory.Event
 
   describe "subscription selector with no processing delay" do
     test "should catch up and receive only selected events" do

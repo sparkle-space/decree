@@ -1,4 +1,4 @@
-defmodule Commanded.Event.ThreeStrikesErrorHandler do
+defmodule Decree.Event.ThreeStrikesErrorHandler do
   def error({:error, :failed}, _event, %{context: context}) do
     attempts = Map.get(context, :attempts, 1)
 

@@ -1,16 +1,16 @@
-defmodule Commanded.Commands.OptionalStronglyConsistentEventHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.Commands.ConsistencyApp,
+defmodule Decree.Commands.OptionalStronglyConsistentEventHandler do
+  use Decree.Event.Handler,
+    application: Decree.Commands.ConsistencyApp,
     name: "OptionalStronglyConsistentEventHandler",
     consistency: :strong
 
-  alias Commanded.Commands.ConsistencyAggregateRoot.{
+  alias Decree.Commands.ConsistencyAggregateRoot.{
     ConsistencyCommand,
     ConsistencyEvent,
     DispatchRequestedEvent
   }
 
-  alias Commanded.Commands.ConsistencyApp
+  alias Decree.Commands.ConsistencyApp
 
   def handle(%ConsistencyEvent{delay: delay}, _metadata) do
     :timer.sleep(round(delay / 10))

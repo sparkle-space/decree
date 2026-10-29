@@ -1,13 +1,13 @@
-defmodule Commanded.Middleware.MiddlewareTest do
+defmodule Decree.Middleware.MiddlewareTest do
   use ExUnit.Case
 
-  import Commanded.Enumerable
+  import Decree.Enumerable
 
-  alias Commanded.Commands.ExecutionResult
-  alias Commanded.DefaultApp
-  alias Commanded.Helpers.CommandAuditMiddleware
+  alias Decree.Commands.ExecutionResult
+  alias Decree.DefaultApp
+  alias Decree.Helpers.CommandAuditMiddleware
 
-  alias Commanded.Middleware.Commands.{
+  alias Decree.Middleware.Commands.{
     CommandHandler,
     CounterAggregateRoot,
     Fail,
@@ -16,11 +16,11 @@ defmodule Commanded.Middleware.MiddlewareTest do
     Timeout
   }
 
-  alias Commanded.Middleware.Pipeline
-  alias Commanded.UUID
+  alias Decree.Middleware.Pipeline
+  alias Decree.UUID
 
   defmodule FirstMiddleware do
-    @behaviour Commanded.Middleware
+    @behaviour Decree.Middleware
 
     def before_dispatch(pipeline), do: pipeline
     def after_dispatch(pipeline), do: pipeline
@@ -28,7 +28,7 @@ defmodule Commanded.Middleware.MiddlewareTest do
   end
 
   defmodule ModifyMetadataMiddleware do
-    @behaviour Commanded.Middleware
+    @behaviour Decree.Middleware
 
     def before_dispatch(pipeline) do
       Pipeline.assign_metadata(pipeline, "updated_by", "ModifyMetadataMiddleware")
@@ -39,7 +39,7 @@ defmodule Commanded.Middleware.MiddlewareTest do
   end
 
   defmodule LastMiddleware do
-    @behaviour Commanded.Middleware
+    @behaviour Decree.Middleware
 
     def before_dispatch(pipeline), do: pipeline
     def after_dispatch(pipeline), do: pipeline
@@ -47,11 +47,11 @@ defmodule Commanded.Middleware.MiddlewareTest do
   end
 
   defmodule Router do
-    use Commanded.Commands.Router
+    use Decree.Commands.Router
 
     middleware FirstMiddleware
     middleware ModifyMetadataMiddleware
-    middleware Commanded.Middleware.Logger
+    middleware Decree.Middleware.Logger
     middleware CommandAuditMiddleware
     middleware LastMiddleware
 

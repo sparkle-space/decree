@@ -1,4 +1,4 @@
-defmodule Commanded.Event.BatchTimeoutTelemetryTest do
+defmodule Decree.Event.BatchTimeoutTelemetryTest do
   @moduledoc """
   Tests for batch timeout telemetry events.
 
@@ -7,17 +7,17 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
 
   use ExUnit.Case, async: false
 
-  alias Commanded.Application.Config
-  alias Commanded.Event.Handler
-  alias Commanded.EventStore.Subscription
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Application.Config
+  alias Decree.Event.Handler
+  alias Decree.EventStore.Subscription
+  alias Decree.Helpers.EventFactory
 
   setup do
     # Configure mock adapter
     Config.associate(self(), __MODULE__, event_store: {__MODULE__.MockAdapter, nil})
 
     # Attach telemetry handler
-    ref = :telemetry_test.attach_event_handlers(self(), [[:commanded, :event, :batch, :stop]])
+    ref = :telemetry_test.attach_event_handlers(self(), [[:decree, :event, :batch, :stop]])
 
     on_exit(fn ->
       :telemetry.detach(ref)
@@ -32,8 +32,8 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
   end
 
   defmodule TelemetryHandler do
-    use Commanded.Event.Handler,
-      application: Commanded.DefaultApp,
+    use Decree.Event.Handler,
+      application: Decree.DefaultApp,
       name: __MODULE__,
       batch_size: 10,
       batch_timeout: 100
@@ -54,7 +54,7 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
       {:noreply, _state} = Handler.handle_info({:events, recorded_events}, state)
 
       # Wait for telemetry event
-      assert_receive {[:commanded, :event, :batch, :stop], _ref, _measurements, metadata}, 200
+      assert_receive {[:decree, :event, :batch, :stop], _ref, _measurements, metadata}, 200
 
       # Verify flush_reason is :size
       assert metadata.flush_reason == :size
@@ -75,7 +75,7 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
       {:noreply, _state2} = Handler.handle_info(:flush_batch_timeout, state1)
 
       # Wait for telemetry event
-      assert_receive {[:commanded, :event, :batch, :stop], _ref, _measurements, metadata}, 200
+      assert_receive {[:decree, :event, :batch, :stop], _ref, _measurements, metadata}, 200
 
       # Verify flush_reason is :timeout
       assert metadata.flush_reason == :timeout
@@ -92,7 +92,7 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
       {:noreply, _state} = Handler.handle_info({:events, recorded_events}, state)
 
       # Wait for telemetry event
-      assert_receive {[:commanded, :event, :batch, :stop], _ref, _measurements, metadata}, 200
+      assert_receive {[:decree, :event, :batch, :stop], _ref, _measurements, metadata}, 200
 
       # Verify flush_reason is :immediate
       assert metadata.flush_reason == :immediate
@@ -108,7 +108,7 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
       {:noreply, _state} = Handler.handle_info({:events, recorded_events}, state)
 
       # Wait for telemetry event
-      assert_receive {[:commanded, :event, :batch, :stop], _ref, measurements, metadata}, 200
+      assert_receive {[:decree, :event, :batch, :stop], _ref, measurements, metadata}, 200
 
       # Verify measurements include duration
       assert is_integer(measurements.duration)
@@ -132,7 +132,7 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
       recorded1 = EventFactory.map_to_recorded_events(events1, 1)
       {:noreply, state1} = Handler.handle_info({:events, recorded1}, state)
 
-      assert_receive {[:commanded, :event, :batch, :stop], _ref, _m1, metadata1}, 200
+      assert_receive {[:decree, :event, :batch, :stop], _ref, _m1, metadata1}, 200
       assert metadata1.flush_reason == :size
 
       # Timeout flush
@@ -143,7 +143,7 @@ defmodule Commanded.Event.BatchTimeoutTelemetryTest do
       assert_receive :flush_batch_timeout, 200
       {:noreply, _state3} = Handler.handle_info(:flush_batch_timeout, state2)
 
-      assert_receive {[:commanded, :event, :batch, :stop], _ref, _m2, metadata2}, 200
+      assert_receive {[:decree, :event, :batch, :stop], _ref, _m2, metadata2}, 200
       assert metadata2.flush_reason == :timeout
 
       # Can aggregate these metrics to see:

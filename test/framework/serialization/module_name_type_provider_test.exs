@@ -1,10 +1,10 @@
-defmodule Commanded.Serialization.ModuleNameTypeProviderTest do
+defmodule Decree.Serialization.ModuleNameTypeProviderTest do
   use ExUnit.Case
 
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
-  alias Commanded.Serialization.ModuleNameTypeProvider
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.Serialization.ModuleNameTypeProvider
 
-  @account_opened_type "Elixir.Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened"
+  @account_opened_type "Elixir.Decree.ExampleDomain.BankAccount.Events.BankAccountOpened"
 
   test "should convert an event to its type" do
     account_opened = %BankAccountOpened{account_number: "ACC123", initial_balance: 1_000}
@@ -25,10 +25,10 @@ defmodule Commanded.Serialization.ModuleNameTypeProviderTest do
   end
 
   test "should convert module struct to type" do
-    assert "Elixir.Commanded.Serialization.ModuleNameTypeProviderTest.NamedEvent" ==
+    assert "Elixir.Decree.Serialization.ModuleNameTypeProviderTest.NamedEvent" ==
              ModuleNameTypeProvider.to_string(%NamedEvent{})
 
-    assert "Elixir.Commanded.Serialization.ModuleNameTypeProviderTest.AnotherNamedEvent" ==
+    assert "Elixir.Decree.Serialization.ModuleNameTypeProviderTest.AnotherNamedEvent" ==
              ModuleNameTypeProvider.to_string(%AnotherNamedEvent{})
   end
 end

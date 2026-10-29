@@ -1,11 +1,11 @@
-defmodule Commanded.Event.DefaultErrorEventHandler do
+defmodule Decree.Event.DefaultErrorEventHandler do
   @moduledoc false
 
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__
 
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
 
   def handle(%BankAccountOpened{}, _metadata), do: {:error, :failed}
 end

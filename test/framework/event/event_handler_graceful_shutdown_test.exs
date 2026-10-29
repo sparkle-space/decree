@@ -1,8 +1,8 @@
-defmodule Commanded.Event.EventHandlerGracefulShutdownTest do
-  use Commanded.MockEventStoreCase
+defmodule Decree.Event.EventHandlerGracefulShutdownTest do
+  use Decree.MockEventStoreCase
 
-  alias Commanded.Event.GracefulShutdownHandler
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Event.GracefulShutdownHandler
+  alias Decree.Helpers.EventFactory
 
   defmodule AnEvent do
     @derive Jason.Encoder
@@ -12,7 +12,7 @@ defmodule Commanded.Event.EventHandlerGracefulShutdownTest do
   defmodule EventHandlersSupervisor do
     use Supervisor
 
-    alias Commanded.Event.GracefulShutdownHandler
+    alias Decree.Event.GracefulShutdownHandler
 
     def start_link(arg) do
       Supervisor.start_link(__MODULE__, arg, name: __MODULE__)

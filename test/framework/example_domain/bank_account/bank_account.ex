@@ -1,10 +1,10 @@
-defmodule Commanded.ExampleDomain.BankAccount do
+defmodule Decree.ExampleDomain.BankAccount do
   @moduledoc false
 
   @derive Jason.Encoder
   defstruct [:account_number, :state, balance: 0]
 
-  alias Commanded.ExampleDomain.BankAccount
+  alias Decree.ExampleDomain.BankAccount
 
   defmodule Commands do
     defmodule OpenAccount do

@@ -1,7 +1,7 @@
-defmodule Commanded.Event.RuntimeConfigHandler do
-  use Commanded.Event.Handler
+defmodule Decree.Event.RuntimeConfigHandler do
+  use Decree.Event.Handler
 
-  alias Commanded.DefaultApp
+  alias Decree.DefaultApp
 
   def init(config) do
     {reply_to, config} = Keyword.pop!(config, :reply_to)

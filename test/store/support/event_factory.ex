@@ -1,8 +1,8 @@
-defmodule EventStore.EventFactory do
-  alias EventStore.{EventData, RecordedEvent, UUID}
+defmodule Decree.Store.EventFactory do
+  alias Decree.Store.{EventData, RecordedEvent, UUID}
 
-  @serializer Application.compile_env(:eventstore, TestEventStore)[:serializer] ||
-                EventStore.JsonSerializer
+  @serializer Application.compile_env(:decree, TestEventStore)[:serializer] ||
+                Decree.Store.JsonSerializer
 
   defmodule Event do
     @derive Jason.Encoder
@@ -17,8 +17,8 @@ defmodule EventStore.EventFactory do
       event_id: event_id,
       correlation_id: correlation_id,
       causation_id: causation_id,
-      event_type: "Elixir.EventStore.EventFactory.Event",
-      data: %EventStore.EventFactory.Event{event: number - 1},
+      event_type: "Elixir.Decree.Store.EventFactory.Event",
+      data: %Decree.Store.EventFactory.Event{event: number - 1},
       metadata: %{"user" => "user@example.com"}
     }
   end
@@ -50,8 +50,8 @@ defmodule EventStore.EventFactory do
         stream_version: stream_version,
         correlation_id: correlation_id,
         causation_id: causation_id,
-        event_type: "Elixir.EventStore.EventFactory.Event",
-        data: serialize(%EventStore.EventFactory.Event{event: event_number}),
+        event_type: "Elixir.Decree.Store.EventFactory.Event",
+        data: serialize(%Decree.Store.EventFactory.Event{event: event_number}),
         metadata: serialize(%{"user" => "user@example.com"}),
         created_at: utc_now()
       }
@@ -63,7 +63,7 @@ defmodule EventStore.EventFactory do
     |> Enum.map(fn %RecordedEvent{} = event ->
       %{
         event
-        | data: deserialize(event.data, type: "Elixir.EventStore.EventFactory.Event"),
+        | data: deserialize(event.data, type: "Elixir.Decree.Store.EventFactory.Event"),
           metadata: deserialize(event.metadata, [])
       }
     end)

@@ -1,8 +1,8 @@
-defmodule Commanded.Aggregates.SupervisorTest do
+defmodule Decree.Aggregates.SupervisorTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
-  alias Commanded.ExampleDomain.BankAccount
+  alias Decree.DefaultApp
+  alias Decree.ExampleDomain.BankAccount
 
   describe "open aggregate" do
     setup do
@@ -14,7 +14,7 @@ defmodule Commanded.Aggregates.SupervisorTest do
       aggregate_uuid = "string"
 
       assert {:ok, ^aggregate_uuid} =
-               Commanded.Aggregates.Supervisor.open_aggregate(
+               Decree.Aggregates.Supervisor.open_aggregate(
                  DefaultApp,
                  BankAccount,
                  aggregate_uuid
@@ -24,7 +24,7 @@ defmodule Commanded.Aggregates.SupervisorTest do
     test "should not allow an integer, float, or atom as aggregate identity" do
       Enum.each([1, 1.2, :atom, ["foo"]], fn aggregate_uuid ->
         assert {:error, {:unsupported_aggregate_identity_type, ^aggregate_uuid}} =
-                 Commanded.Aggregates.Supervisor.open_aggregate(
+                 Decree.Aggregates.Supervisor.open_aggregate(
                    DefaultApp,
                    BankAccount,
                    aggregate_uuid

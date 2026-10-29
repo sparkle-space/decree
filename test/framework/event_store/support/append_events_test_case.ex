@@ -1,11 +1,11 @@
-defmodule Commanded.EventStore.AppendEventsTestCase do
-  import Commanded.SharedTestCase
+defmodule Decree.EventStore.AppendEventsTestCase do
+  import Decree.SharedTestCase
 
   define_tests do
-    import Commanded.Enumerable, only: [pluck: 2]
+    import Decree.Enumerable, only: [pluck: 2]
 
-    alias Commanded.EventStore.EventData
-    alias Commanded.UUID
+    alias Decree.EventStore.EventData
+    alias Decree.UUID
 
     defmodule BankAccountOpened do
       @derive Jason.Encoder
@@ -13,10 +13,10 @@ defmodule Commanded.EventStore.AppendEventsTestCase do
     end
 
     describe "event store adapter" do
-      test "should implement `Commanded.EventStore.Adapter` behaviour", %{
+      test "should implement `Decree.EventStore.Adapter` behaviour", %{
         event_store: event_store
       } do
-        assert_implements(event_store, Commanded.EventStore.Adapter)
+        assert_implements(event_store, Decree.EventStore.Adapter)
       end
     end
 

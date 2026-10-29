@@ -1,15 +1,15 @@
-defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
+defmodule Decree.Event.EventHandlerBatchTelemetryTest do
   use ExUnit.Case
 
-  alias Commanded.Application.Config
-  alias Commanded.Event.Handler
-  alias Commanded.EventStore.Subscription
+  alias Decree.Application.Config
+  alias Decree.Event.Handler
+  alias Decree.EventStore.Subscription
 
   # Test support code
-  alias Commanded.Helpers.EventFactory
-  alias Commanded.Event.{BatchHandler, ErrorHandlingBatchHandler}
-  alias Commanded.Event.EventHandlerBatchTelemetryTest.MockAdapter
-  alias Commanded.Event.ReplyEvent
+  alias Decree.Helpers.EventFactory
+  alias Decree.Event.{BatchHandler, ErrorHandlingBatchHandler}
+  alias Decree.Event.EventHandlerBatchTelemetryTest.MockAdapter
+  alias Decree.Event.ReplyEvent
 
   setup do
     attach_telemetry()
@@ -17,7 +17,7 @@ defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
   end
 
   describe "batch event handler telemetry" do
-    test "should emit `[:commanded, :event, :batch, :stop]` telemetry from :ok" do
+    test "should emit `[:decree, :event, :batch, :stop]` telemetry from :ok" do
       events = [
         %ReplyEvent{reply_to: self(), value: 1},
         %ReplyEvent{reply_to: self(), value: 2}
@@ -29,15 +29,15 @@ defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
 
       {:noreply, _state} = Handler.handle_info({:events, recorded_events}, state)
 
-      assert_receive {[:commanded, :event, :batch, :start], _measurements, _metadata}
+      assert_receive {[:decree, :event, :batch, :start], _measurements, _metadata}
 
-      assert_receive {[:commanded, :event, :batch, :stop], _measurements, metadata}
+      assert_receive {[:decree, :event, :batch, :stop], _measurements, metadata}
       assert metadata.event_count == 2
 
-      refute_received {[:commanded, :event, :batch, :exception], _measurements, _metadata}
+      refute_received {[:decree, :event, :batch, :exception], _measurements, _metadata}
     end
 
-    test "should emit `[:commanded, :event, :batch, :stop]` telemetry from :error" do
+    test "should emit `[:decree, :event, :batch, :stop]` telemetry from :error" do
       events = [
         %ReplyEvent{reply_to: self(), value: :error},
         %ReplyEvent{reply_to: self(), value: :error}
@@ -49,9 +49,9 @@ defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
 
       {:stop, :bad_value, _state} = Handler.handle_info({:events, recorded_events}, state)
 
-      assert_receive {[:commanded, :event, :batch, :start], _measurements, _metadata}
-      assert_receive {[:commanded, :event, :batch, :stop], _measurements, _metadata}
-      refute_received {[:commanded, :event, :batch, :exception], _measurements, _metadata}
+      assert_receive {[:decree, :event, :batch, :start], _measurements, _metadata}
+      assert_receive {[:decree, :event, :batch, :stop], _measurements, _metadata}
+      refute_received {[:decree, :event, :batch, :exception], _measurements, _metadata}
     end
 
     test "should include count of successfully processed events when erroring on a specific event" do
@@ -68,14 +68,14 @@ defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
 
       Handler.handle_info({:events, recorded_events}, state)
 
-      assert_receive {[:commanded, :event, :batch, :start], _measurements, metadata}
+      assert_receive {[:decree, :event, :batch, :start], _measurements, metadata}
       assert metadata.event_count == 4
 
-      assert_receive {[:commanded, :event, :batch, :stop], _measurements, metadata}
+      assert_receive {[:decree, :event, :batch, :stop], _measurements, metadata}
       assert metadata.event_count == 4
     end
 
-    test "should emit `[:commanded, :event, :batch, :exception]` telemetry from thrown exception" do
+    test "should emit `[:decree, :event, :batch, :exception]` telemetry from thrown exception" do
       events = [
         %ReplyEvent{reply_to: self(), value: :raise},
         %ReplyEvent{reply_to: self(), value: :raise}
@@ -87,9 +87,9 @@ defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
 
       {:stop, _, _} = Handler.handle_info({:events, recorded_events}, state)
 
-      assert_receive {[:commanded, :event, :batch, :start], _measurements, _metadata}
-      refute_received {[:commanded, :event, :batch, :stop], _measurements, _metadata}
-      assert_receive {[:commanded, :event, :batch, :exception], _measurements, _metadata}
+      assert_receive {[:decree, :event, :batch, :start], _measurements, _metadata}
+      refute_received {[:decree, :event, :batch, :stop], _measurements, _metadata}
+      assert_receive {[:decree, :event, :batch, :exception], _measurements, _metadata}
     end
   end
 
@@ -114,9 +114,9 @@ defmodule Commanded.Event.EventHandlerBatchTelemetryTest do
     :telemetry.attach_many(
       "test-handler",
       [
-        [:commanded, :event, :batch, :start],
-        [:commanded, :event, :batch, :stop],
-        [:commanded, :event, :batch, :exception]
+        [:decree, :event, :batch, :start],
+        [:decree, :event, :batch, :stop],
+        [:decree, :event, :batch, :exception]
       ],
       fn event_name, measurements, metadata, reply_to ->
         send(reply_to, {event_name, measurements, metadata})

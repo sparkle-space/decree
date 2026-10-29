@@ -1,6 +1,6 @@
-defmodule Commanded.EventStore.Adapters.EventStore.Storage do
-  alias EventStore.Config
-  alias EventStore.Storage.Initializer
+defmodule Decree.EventStore.Adapters.EventStore.Storage do
+  alias Decree.Store.Config
+  alias Decree.Store.Storage.Initializer
 
   def connect(config) do
     postgrex_config = Config.default_postgrex_opts(config)
@@ -10,7 +10,7 @@ defmodule Commanded.EventStore.Adapters.EventStore.Storage do
 
   def config(schema \\ "public") do
     TestEventStore
-    |> Config.parsed(:commanded_eventstore_adapter)
+    |> Config.parsed(:decree)
     |> Keyword.put(:schema, schema)
   end
 

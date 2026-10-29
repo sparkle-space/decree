@@ -1,4 +1,4 @@
-defmodule Commanded.Event.BatchTimeoutTest do
+defmodule Decree.Event.BatchTimeoutTest do
   @moduledoc """
   Tests for batch timeout functionality.
 
@@ -7,10 +7,10 @@ defmodule Commanded.Event.BatchTimeoutTest do
 
   use ExUnit.Case, async: false
 
-  alias Commanded.Application.Config
-  alias Commanded.Event.Handler
-  alias Commanded.EventStore.Subscription
-  alias Commanded.Helpers.EventFactory
+  alias Decree.Application.Config
+  alias Decree.Event.Handler
+  alias Decree.EventStore.Subscription
+  alias Decree.Helpers.EventFactory
 
   setup do
     # Configure mock adapter once per test
@@ -29,8 +29,8 @@ defmodule Commanded.Event.BatchTimeoutTest do
   end
 
   defmodule BatchTimeoutHandler do
-    use Commanded.Event.Handler,
-      application: Commanded.DefaultApp,
+    use Decree.Event.Handler,
+      application: Decree.DefaultApp,
       name: __MODULE__,
       batch_size: 5,
       batch_timeout: 100
@@ -62,7 +62,7 @@ defmodule Commanded.Event.BatchTimeoutTest do
     test "rejects invalid batch_size values" do
       assert_raise ArgumentError, ~r/:batch_size must be nil or positive integer/, fn ->
         Handler.parse_config!(__MODULE__.TestModule,
-          application: Commanded.DefaultApp,
+          application: Decree.DefaultApp,
           name: "TestHandler",
           batch_size: -10
         )
@@ -70,7 +70,7 @@ defmodule Commanded.Event.BatchTimeoutTest do
 
       assert_raise ArgumentError, ~r/:batch_size must be nil or positive integer/, fn ->
         Handler.parse_config!(__MODULE__.TestModule,
-          application: Commanded.DefaultApp,
+          application: Decree.DefaultApp,
           name: "TestHandler",
           batch_size: 0
         )
@@ -80,7 +80,7 @@ defmodule Commanded.Event.BatchTimeoutTest do
     test "rejects invalid batch_timeout values" do
       assert_raise ArgumentError, ~r/:batch_timeout must be :infinity or positive integer/, fn ->
         Handler.parse_config!(__MODULE__.TestModule,
-          application: Commanded.DefaultApp,
+          application: Decree.DefaultApp,
           name: "TestHandler",
           batch_size: 10,
           batch_timeout: -100
@@ -89,7 +89,7 @@ defmodule Commanded.Event.BatchTimeoutTest do
 
       assert_raise ArgumentError, ~r/:batch_timeout must be :infinity or positive integer/, fn ->
         Handler.parse_config!(__MODULE__.TestModule,
-          application: Commanded.DefaultApp,
+          application: Decree.DefaultApp,
           name: "TestHandler",
           batch_size: 10,
           batch_timeout: 0
@@ -100,7 +100,7 @@ defmodule Commanded.Event.BatchTimeoutTest do
     test "requires batch_size when batch_timeout is provided" do
       assert_raise ArgumentError, ~r/:batch_timeout requires :batch_size/, fn ->
         Handler.parse_config!(__MODULE__.TestModule,
-          application: Commanded.DefaultApp,
+          application: Decree.DefaultApp,
           name: "TestHandler",
           batch_timeout: 100
         )
@@ -189,7 +189,7 @@ defmodule Commanded.Event.BatchTimeoutTest do
 
       {:noreply, new_state} = Handler.handle_info({:events, recorded_events}, state)
 
-      # Should flush immediately (EventStore subscription handles batching)
+      # Should flush immediately (Decree.Store subscription handles batching)
       assert_receive {:batch_processed, 5}, 50
 
       # Buffer should be empty

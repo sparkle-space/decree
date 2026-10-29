@@ -1,4 +1,4 @@
-defmodule EventStore.ListEventStoreMigrationsTest do
+defmodule Decree.Store.ListEventStoreMigrationsTest do
   use ExUnit.Case
 
   import ExUnit.CaptureIO
@@ -17,7 +17,7 @@ defmodule EventStore.ListEventStoreMigrationsTest do
 
       expected = """
 
-      EventStore: TestEventStore
+      Decree.Store: TestEventStore
 
         migration     state           migrated_at
       -------------------------------------------------------------
@@ -37,7 +37,7 @@ defmodule EventStore.ListEventStoreMigrationsTest do
 
       assert {:shutdown, 1} ==
                catch_exit(
-                 Mix.Task.run("event_store.migrations", ["-e", "TestEventStore", "--quiet"])
+                 Mix.Task.run("decree.store.migrations", ["-e", "TestEventStore", "--quiet"])
                )
     end
   end
@@ -48,7 +48,7 @@ defmodule EventStore.ListEventStoreMigrationsTest do
 
       expected_header = """
 
-      EventStore: TestEventStore
+      Decree.Store: TestEventStore
 
         migration     state           migrated_at
       -------------------------------------------------------------
@@ -68,29 +68,29 @@ defmodule EventStore.ListEventStoreMigrationsTest do
       create_new_database(config)
 
       # Task should exit normally
-      Mix.Task.run("event_store.migrations", ["-e", "TestEventStore", "--quiet"])
+      Mix.Task.run("decree.store.migrations", ["-e", "TestEventStore", "--quiet"])
     end
   end
 
   defp create_new_database(config) do
-    :ok = EventStore.Storage.Database.drop(config)
-    :ok = EventStore.Storage.Database.create(config)
+    :ok = Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
 
     {:ok, conn} = Postgrex.start_link(config)
 
-    EventStore.Storage.Initializer.run!(conn, config)
+    Decree.Store.Storage.Initializer.run!(conn, config)
 
     :ok = GenServer.stop(conn)
   end
 
   defp restore_pre_migration_event_store(config) do
-    EventStore.Storage.Database.drop(config)
-    :ok = EventStore.Storage.Database.create(config)
+    Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = EventStore.Storage.Database.restore(config, "test/fixture/eventstore.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore.dump")
   end
 
   defp list_migrations(config, opts) do
-    capture_io(fn -> EventStore.Tasks.Migrations.exec(config, opts) end)
+    capture_io(fn -> Decree.Store.Tasks.Migrations.exec(config, opts) end)
   end
 end

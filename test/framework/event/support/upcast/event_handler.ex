@@ -1,9 +1,9 @@
-defmodule Commanded.Event.Upcast.EventHandler do
-  use Commanded.Event.Handler,
-    application: Commanded.DefaultApp,
+defmodule Decree.Event.Upcast.EventHandler do
+  use Decree.Event.Handler,
+    application: Decree.DefaultApp,
     name: __MODULE__
 
-  alias Commanded.Event.Upcast.Events.{EventFive, EventFour, EventOne, EventThree, EventTwo}
+  alias Decree.Event.Upcast.Events.{EventFive, EventFour, EventOne, EventThree, EventTwo}
 
   def handle(%EventOne{} = e, _), do: send_reply(e)
   def handle(%EventTwo{} = e, _), do: send_reply(e)

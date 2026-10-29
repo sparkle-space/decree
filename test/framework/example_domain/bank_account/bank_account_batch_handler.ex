@@ -1,13 +1,13 @@
-defmodule Commanded.ExampleDomain.BankAccount.BankAccountBatchHandler do
+defmodule Decree.ExampleDomain.BankAccount.BankAccountBatchHandler do
   @moduledoc false
 
-  use Commanded.Event.Handler,
-    application: Commanded.ExampleDomain.BankApp,
+  use Decree.Event.Handler,
+    application: Decree.ExampleDomain.BankApp,
     name: __MODULE__,
     start_from: :origin,
     batch_size: 3
 
-  alias Commanded.ExampleDomain.BankAccount.Events.BankAccountOpened
+  alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
 
   def init do
     case Agent.start_link(fn -> %{prefix: "", accounts: []} end, name: __MODULE__) do

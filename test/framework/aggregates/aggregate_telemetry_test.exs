@@ -1,8 +1,8 @@
-defmodule Commanded.Aggregates.AggregateTelemetryTest do
+defmodule Decree.Aggregates.AggregateTelemetryTest do
   use ExUnit.Case
 
-  alias Commanded.Aggregates.{Aggregate, ExecutionContext}
-  alias Commanded.{DefaultApp, UUID}
+  alias Decree.Aggregates.{Aggregate, ExecutionContext}
+  alias Decree.{DefaultApp, UUID}
 
   defmodule Commands do
     defmodule Ok do
@@ -53,7 +53,7 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
       [aggregate_uuid: aggregate_uuid, pid: pid]
     end
 
-    test "emit `[:commanded, :aggregate, :execute, :start]` event",
+    test "emit `[:decree, :aggregate, :execute, :start]` event",
          %{aggregate_uuid: aggregate_uuid, pid: pid} do
       context = %ExecutionContext{
         command: %Ok{message: "ok"},
@@ -65,7 +65,7 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
 
       {:ok, 1, _events, _aggregate_state} = GenServer.call(pid, {:execute_command, context})
 
-      assert_receive {[:commanded, :aggregate, :execute, :start], measurements, metadata}
+      assert_receive {[:decree, :aggregate, :execute, :start], measurements, metadata}
 
       assert match?(%{system_time: _system_time}, measurements)
       assert is_number(measurements.system_time)
@@ -75,18 +75,18 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                  aggregate_state: %ExampleAggregate{},
                  aggregate_uuid: ^aggregate_uuid,
                  aggregate_version: 0,
-                 application: Commanded.DefaultApp,
+                 application: Decree.DefaultApp,
                  caller: ^self,
                  execution_context: ^context
                },
                metadata
              )
 
-      assert_receive {[:commanded, :aggregate, :execute, :stop], _measurements, _metadata}
-      refute_received {[:commanded, :aggregate, :execute, :exception], _measurements, _metadata}
+      assert_receive {[:decree, :aggregate, :execute, :stop], _measurements, _metadata}
+      refute_received {[:decree, :aggregate, :execute, :exception], _measurements, _metadata}
     end
 
-    test "emit `[:commanded, :aggregate, :execute, :stop]` event",
+    test "emit `[:decree, :aggregate, :execute, :stop]` event",
          %{aggregate_uuid: aggregate_uuid, pid: pid} do
       context = %ExecutionContext{
         command: %Ok{message: "ok"},
@@ -98,8 +98,8 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
 
       {:ok, 1, events, _aggregate_state} = GenServer.call(pid, {:execute_command, context})
 
-      assert_receive {[:commanded, :aggregate, :execute, :start], _measurements, _metadata}
-      assert_receive {[:commanded, :aggregate, :execute, :stop], measurements, metadata}
+      assert_receive {[:decree, :aggregate, :execute, :start], _measurements, _metadata}
+      assert_receive {[:decree, :aggregate, :execute, :stop], measurements, metadata}
 
       assert match?(%{duration: _duration}, measurements)
       assert is_number(measurements.duration)
@@ -109,7 +109,7 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                  aggregate_state: %ExampleAggregate{message: "ok"},
                  aggregate_uuid: ^aggregate_uuid,
                  aggregate_version: 1,
-                 application: Commanded.DefaultApp,
+                 application: Decree.DefaultApp,
                  caller: ^self,
                  execution_context: ^context,
                  events: ^events
@@ -117,10 +117,10 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                metadata
              )
 
-      refute_received {[:commanded, :aggregate, :execute, :exception], _measurements, _metadata}
+      refute_received {[:decree, :aggregate, :execute, :exception], _measurements, _metadata}
     end
 
-    test "emit `[:commanded, :aggregate, :execute, :stop]` with error event",
+    test "emit `[:decree, :aggregate, :execute, :stop]` with error event",
          %{aggregate_uuid: aggregate_uuid, pid: pid} do
       context = %ExecutionContext{
         command: %Error{message: "an error"},
@@ -132,8 +132,8 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
 
       {:error, "an error"} = GenServer.call(pid, {:execute_command, context})
 
-      assert_receive {[:commanded, :aggregate, :execute, :start], _measurements, _metadata}
-      assert_receive {[:commanded, :aggregate, :execute, :stop], measurements, metadata}
+      assert_receive {[:decree, :aggregate, :execute, :start], _measurements, _metadata}
+      assert_receive {[:decree, :aggregate, :execute, :stop], measurements, metadata}
 
       assert match?(%{duration: _duration}, measurements)
       assert is_number(measurements.duration)
@@ -143,7 +143,7 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                  aggregate_state: %ExampleAggregate{},
                  aggregate_uuid: ^aggregate_uuid,
                  aggregate_version: 0,
-                 application: Commanded.DefaultApp,
+                 application: Decree.DefaultApp,
                  caller: ^self,
                  execution_context: ^context,
                  error: "an error"
@@ -151,10 +151,10 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                metadata
              )
 
-      refute_received {[:commanded, :aggregate, :execute, :exception], _measurements, _metadata}
+      refute_received {[:decree, :aggregate, :execute, :exception], _measurements, _metadata}
     end
 
-    test "emit `[:commanded, :aggregate, :execute, :exception]` event",
+    test "emit `[:decree, :aggregate, :execute, :exception]` event",
          %{aggregate_uuid: aggregate_uuid, pid: pid} do
       context = %ExecutionContext{
         command: %RaiseException{message: "an exception"},
@@ -169,8 +169,8 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
       {:error, %RuntimeError{message: "an exception"}} =
         GenServer.call(pid, {:execute_command, context})
 
-      assert_receive {[:commanded, :aggregate, :execute, :start], _measurements, _metadata}
-      assert_receive {[:commanded, :aggregate, :execute, :exception], measurements, metadata}
+      assert_receive {[:decree, :aggregate, :execute, :start], _measurements, _metadata}
+      assert_receive {[:decree, :aggregate, :execute, :exception], measurements, metadata}
 
       assert match?(%{duration: _duration}, measurements)
       assert is_number(measurements.duration)
@@ -180,7 +180,7 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                  aggregate_state: %ExampleAggregate{},
                  aggregate_uuid: ^aggregate_uuid,
                  aggregate_version: 0,
-                 application: Commanded.DefaultApp,
+                 application: Decree.DefaultApp,
                  caller: ^self,
                  execution_context: ^context,
                  kind: :error,
@@ -190,10 +190,10 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
                metadata
              )
 
-      refute_received {[:commanded, :aggregate, :execute, :stop], _measurements, _metadata}
+      refute_received {[:decree, :aggregate, :execute, :stop], _measurements, _metadata}
     end
 
-    test "emit `[:commanded, :aggregate, :populate]` events",
+    test "emit `[:decree, :aggregate, :populate]` events",
          %{aggregate_uuid: aggregate_uuid, pid: pid} do
       context = %ExecutionContext{
         command: %Ok{message: "ok"},
@@ -213,8 +213,8 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
       # Do the reload, we should now have telemetry
       start_aggregate(aggregate_uuid)
 
-      assert_receive {[:commanded, :aggregate, :populate, :start], _measurements, _metadata}
-      assert_receive {[:commanded, :aggregate, :populate, :stop], measurements, metadata}
+      assert_receive {[:decree, :aggregate, :populate, :start], _measurements, _metadata}
+      assert_receive {[:decree, :aggregate, :populate, :stop], measurements, metadata}
 
       assert match?(%{count: ^count}, measurements)
 
@@ -241,11 +241,11 @@ defmodule Commanded.Aggregates.AggregateTelemetryTest do
     :telemetry.attach_many(
       "test-handler",
       [
-        [:commanded, :aggregate, :execute, :start],
-        [:commanded, :aggregate, :execute, :stop],
-        [:commanded, :aggregate, :execute, :exception],
-        [:commanded, :aggregate, :populate, :start],
-        [:commanded, :aggregate, :populate, :stop]
+        [:decree, :aggregate, :execute, :start],
+        [:decree, :aggregate, :execute, :stop],
+        [:decree, :aggregate, :execute, :exception],
+        [:decree, :aggregate, :populate, :start],
+        [:decree, :aggregate, :populate, :stop]
       ],
       fn event_name, measurements, metadata, reply_to ->
         send(reply_to, {event_name, measurements, metadata})

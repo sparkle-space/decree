@@ -1,8 +1,8 @@
-defmodule EventStore.Subscriptions.SubscriptionBackPressureTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Subscriptions.SubscriptionBackPressureTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.EventFactory
-  alias EventStore.Subscriptions.Subscription
+  alias Decree.Store.EventFactory
+  alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
   describe "subscription back pressure" do

@@ -1,20 +1,20 @@
-defmodule Commanded.ExampleDomain.BankRouter do
+defmodule Decree.ExampleDomain.BankRouter do
   @moduledoc false
 
-  use Commanded.Commands.Router
+  use Decree.Commands.Router
 
-  alias Commanded.ExampleDomain.BankAccount
-  alias Commanded.ExampleDomain.BankAccount.Commands.CloseAccount
-  alias Commanded.ExampleDomain.BankAccount.Commands.DepositMoney
-  alias Commanded.ExampleDomain.BankAccount.Commands.OpenAccount
-  alias Commanded.ExampleDomain.BankAccount.Commands.WithdrawMoney
-  alias Commanded.ExampleDomain.DepositMoneyHandler
-  alias Commanded.ExampleDomain.MoneyTransfer
-  alias Commanded.ExampleDomain.MoneyTransfer.Commands.TransferMoney
-  alias Commanded.ExampleDomain.OpenAccountHandler
-  alias Commanded.ExampleDomain.TransferMoneyHandler
-  alias Commanded.ExampleDomain.WithdrawMoneyHandler
-  alias Commanded.Helpers.CommandAuditMiddleware
+  alias Decree.ExampleDomain.BankAccount
+  alias Decree.ExampleDomain.BankAccount.Commands.CloseAccount
+  alias Decree.ExampleDomain.BankAccount.Commands.DepositMoney
+  alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
+  alias Decree.ExampleDomain.BankAccount.Commands.WithdrawMoney
+  alias Decree.ExampleDomain.DepositMoneyHandler
+  alias Decree.ExampleDomain.MoneyTransfer
+  alias Decree.ExampleDomain.MoneyTransfer.Commands.TransferMoney
+  alias Decree.ExampleDomain.OpenAccountHandler
+  alias Decree.ExampleDomain.TransferMoneyHandler
+  alias Decree.ExampleDomain.WithdrawMoneyHandler
+  alias Decree.Helpers.CommandAuditMiddleware
 
   middleware CommandAuditMiddleware
 

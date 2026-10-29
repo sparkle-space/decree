@@ -1,8 +1,8 @@
-defmodule Commanded.Event.EventHandlerSubscribeToStreamTest do
+defmodule Decree.Event.EventHandlerSubscribeToStreamTest do
   use ExUnit.Case
 
-  alias Commanded.{DefaultApp, EventStore}
-  alias Commanded.Event.Mapper
+  alias Decree.{DefaultApp, EventStore}
+  alias Decree.Event.Mapper
 
   defmodule AnEvent do
     @derive Jason.Encoder
@@ -10,7 +10,7 @@ defmodule Commanded.Event.EventHandlerSubscribeToStreamTest do
   end
 
   defmodule SingleStreamEventHandler do
-    use Commanded.Event.Handler,
+    use Decree.Event.Handler,
       application: DefaultApp,
       name: __MODULE__,
       subscribe_to: "stream2"

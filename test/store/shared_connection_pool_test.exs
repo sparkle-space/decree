@@ -1,9 +1,9 @@
-defmodule EventStore.SharedConnectionPoolTest do
+defmodule Decree.Store.SharedConnectionPoolTest do
   use ExUnit.Case
 
-  alias EventStore.{EventFactory, MonitoredServer, UUID, Wait}
-  alias EventStore.MonitoredServer.State, as: MonitoredServerState
-  alias EventStore.Tasks.{Create, Drop, Init}
+  alias Decree.Store.{EventFactory, MonitoredServer, UUID, Wait}
+  alias Decree.Store.MonitoredServer.State, as: MonitoredServerState
+  alias Decree.Store.Tasks.{Create, Drop, Init}
 
   describe "connection pool sharing" do
     setup do

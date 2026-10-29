@@ -1,8 +1,8 @@
-defmodule EventStore.Storage.AppendEventsTest do
-  use EventStore.StorageCase
+defmodule Decree.Store.Storage.AppendEventsTest do
+  use Decree.Store.StorageCase
 
-  alias EventStore.{EventFactory, RecordedEvent, UUID}
-  alias EventStore.Storage.{Appender, CreateStream}
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.Storage.{Appender, CreateStream}
 
   test "append single event to new stream", context do
     %{conn: conn} = context

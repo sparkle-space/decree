@@ -1,4 +1,4 @@
-defmodule Commanded.Middleware.Commands do
+defmodule Decree.Middleware.Commands do
   @moduledoc false
 
   defmodule IncrementCount do
@@ -48,7 +48,7 @@ defmodule Commanded.Middleware.Commands do
 
   defmodule CommandHandler do
     @moduledoc false
-    @behaviour Commanded.Commands.Handler
+    @behaviour Decree.Commands.Handler
 
     def handle(%CounterAggregateRoot{} = aggregate, %IncrementCount{by: by}) do
       CounterAggregateRoot.increment(aggregate, by)

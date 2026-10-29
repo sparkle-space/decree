@@ -1,15 +1,15 @@
-defmodule Commanded.ExampleApplication do
-  alias Commanded.EventStore.Adapters.InMemory
-  alias Commanded.Serialization.JsonSerializer
+defmodule Decree.ExampleApplication do
+  alias Decree.EventStore.Adapters.InMemory
+  alias Decree.Serialization.JsonSerializer
 
-  use Commanded.Application,
-    otp_app: :commanded,
+  use Decree.Application,
+    otp_app: :decree,
     event_store: [
       adapter: InMemory,
       serializer: JsonSerializer
     ]
 
-  alias Commanded.ExampleDomain.BankRouter
+  alias Decree.ExampleDomain.BankRouter
 
   router(BankRouter)
 end

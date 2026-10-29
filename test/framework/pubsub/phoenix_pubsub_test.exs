@@ -1,5 +1,5 @@
-defmodule Commanded.PubSub.PhoenixPubSubTest do
-  alias Commanded.PubSub.{PhoenixPubSub, PubSubTestCase}
+defmodule Decree.PubSub.PhoenixPubSubTest do
+  alias Decree.PubSub.{PhoenixPubSub, PubSubTestCase}
 
   use PubSubTestCase, pubsub: PhoenixPubSub
 

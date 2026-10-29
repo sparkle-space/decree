@@ -1,9 +1,9 @@
-defmodule Commanded.Aggregates.AggregateStateTest do
+defmodule Decree.Aggregates.AggregateStateTest do
   use ExUnit.Case
 
-  alias Commanded.DefaultApp
+  alias Decree.DefaultApp
 
-  alias Commanded.Aggregates.{
+  alias Decree.Aggregates.{
     Aggregate,
     AppendItemsHandler,
     ExampleAggregate,
@@ -11,8 +11,8 @@ defmodule Commanded.Aggregates.AggregateStateTest do
     Supervisor
   }
 
-  alias Commanded.Aggregates.ExampleAggregate.Commands.AppendItems
-  alias Commanded.UUID
+  alias Decree.Aggregates.ExampleAggregate.Commands.AppendItems
+  alias Decree.UUID
 
   @aggregate_module ExampleAggregate
 

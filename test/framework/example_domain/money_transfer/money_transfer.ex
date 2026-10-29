@@ -1,4 +1,4 @@
-defmodule Commanded.ExampleDomain.MoneyTransfer do
+defmodule Decree.ExampleDomain.MoneyTransfer do
   @moduledoc false
   @derive Jason.Encoder
   defstruct transfer_uuid: nil,
@@ -7,7 +7,7 @@ defmodule Commanded.ExampleDomain.MoneyTransfer do
             amount: 0,
             state: nil
 
-  alias Commanded.ExampleDomain.MoneyTransfer
+  alias Decree.ExampleDomain.MoneyTransfer
 
   defmodule Commands do
     defmodule TransferMoney do
