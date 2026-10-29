@@ -1,0 +1,131 @@
+# Dropped tests
+
+Every upstream test, test case or test configuration that decree does not run, and why. The four upstream suites live under `test/framework` (commanded), `test/store` (eventstore), `test/conformance` (commanded-eventstore-adapter) and `test/projections` (commanded-ecto-projections).
+
+## Not copied (the copy commit)
+
+From commanded's `test/`; eventstore, commanded-eventstore-adapter and commanded-ecto-projections were copied whole.
+
+In-memory adapter (no in-memory store, founder ruling 2026-10-29). The shared test cases these files ran on the in-memory adapter run on Postgres in `test/conformance`.
+
+- `event_store/adapters/in_memory/append_events_test.exs`
+- `event_store/adapters/in_memory/event_store_prefix_test.exs`
+- `event_store/adapters/in_memory/in_memory_test.exs`
+- `event_store/adapters/in_memory/snapshot_test.exs`
+- `event_store/adapters/in_memory/subscription_test.exs`
+- `event_store/support/in_memory_test_case.ex`
+
+Process managers (permanent founder lock: decree has none):
+
+- `process_managers/dynamic_process_manager_application_test.exs`
+- `process_managers/multi_routing_test.exs`
+- `process_managers/process_manager_after_command_test.exs`
+- `process_managers/process_manager_error_handling_state_test.exs`
+- `process_managers/process_manager_error_handling_test.exs`
+- `process_managers/process_manager_idle_timeout_test.exs`
+- `process_managers/process_manager_init_test.exs`
+- `process_managers/process_manager_instance_exception_test.exs`
+- `process_managers/process_manager_instance_test.exs`
+- `process_managers/process_manager_integration_test.exs`
+- `process_managers/process_manager_routing_test.exs`
+- `process_managers/process_manager_subscription_test.exs`
+- `process_managers/process_manager_telemetry_test.exs`
+- `process_managers/process_manager_timeout_test.exs`
+- `process_managers/process_router_process_pending_events_test.exs`
+- `process_managers/resume_process_manager_test.exs`
+- `process_managers/support/after_command_process_manager.ex`
+- `process_managers/support/dynamic_process_manager.ex`
+- `process_managers/support/error/default_error_handling_process_manager.ex`
+- `process_managers/support/error/error_aggregate.ex`
+- `process_managers/support/error/error_app.ex`
+- `process_managers/support/error/error_handling_process_manager.ex`
+- `process_managers/support/error/error_router.ex`
+- `process_managers/support/error/state_error_handling_process_manager.ex`
+- `process_managers/support/example_aggregate.ex`
+- `process_managers/support/example_app.ex`
+- `process_managers/support/example_command_handler.ex`
+- `process_managers/support/example_process_manager.ex`
+- `process_managers/support/example_router.ex`
+- `process_managers/support/identity/identity_process_manager.ex`
+- `process_managers/support/init/runtime_config_process_manager.ex`
+- `process_managers/support/multi/todo.ex`
+- `process_managers/support/multi/todo_app.ex`
+- `process_managers/support/multi/todo_list.ex`
+- `process_managers/support/multi/todo_process_manager.ex`
+- `process_managers/support/multi/todo_router.ex`
+- `process_managers/support/null_handler.ex`
+- `process_managers/support/null_router.ex`
+- `process_managers/support/resume/resume_aggregate.ex`
+- `process_managers/support/resume/resume_app.ex`
+- `process_managers/support/resume/resume_command_handler.ex`
+- `process_managers/support/resume/resume_process_manager.ex`
+- `process_managers/support/resume/resume_router.ex`
+- `process_managers/support/routing/routing_process_manager.ex`
+- `process_managers/support/timeout_process_manager.ex`
+
+## Deleted in the test port
+
+Files (7), each with its reason:
+
+- `test/framework/mix/tasks/reset_event_handler_test.exs` (1 test): tests `Mix.Tasks.Commanded.Reset`, which was not kept.
+- `test/framework/subscriptions/distributed_subscriptions_test.exs` (1 test, tagged `:distributed` and excluded upstream too): needs `local_cluster` and starts process managers on every node.
+- `test/framework/subscriptions/support/distributed_subscribers.ex`: support for the distributed test; defines process managers.
+- `test/framework/support/distributed_app.ex`: the distributed test's application, on the in-memory adapter.
+- `test/framework/example_domain/money_transfer/transfer_money_process_manager.ex`: a process manager.
+- `test/framework/commands/support/consistency/strongly_consistent_process_manager.ex`: a process manager.
+- `test/framework/event/support/upcast/process_manager.ex`: a process manager (and the application it ran in).
+
+Test cases removed from files that stay (4):
+
+- `test/framework/commands/correlation_causation_test.exs`: "`causation_id` should be copied onto commands/events by process manager" and "`correlation_id` should be copied onto commands/events by process manager" (both drive `TransferMoneyProcessManager`). The setup no longer starts the process manager.
+- `test/framework/commands/dispatch_consistency_test.exs`: "process manager consistency should successfully dispatch command" (drives `StronglyConsistentProcessManager`).
+- `test/framework/event/upcaster_test.exs`: "upcast events received by process manager will receive upcasted events".
+
+## Upstream test configurations not run
+
+- eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.
+- eventstore's `test.text_ids` (`MIX_ENV=text_ids`): runs the store suite with text correlation and causation ids. sparklespace uses the default uuid ids.
+- eventstore's `test.migration` (`MIX_ENV=migration`) and the `:migration`-tagged tests (`migrate_event_store_test.exs`, `list_event_store_migrations_test.exs`, `migrated_event_store_test.exs`): they restore the dumps in `test/store/fixture` with `pg_restore` and compare schemas with `pg_dump`. Excluded by default, as upstream does. Run with `mix test --only migration` where `pg_dump` and `pg_restore` (version 18 or later, to match the server) are installed: on 2026-10-29 all 13 passed that way. They are not in CI: the runner image does not ship a version-18 client, and adding one is a follow-up; the store-migration path is P4's.
+- `:manual` (`shared_connection_pool_test.exs`, one test) and `:ignore`: excluded, as upstream does.
+
+## Kept, with assertions adapted to Postgres
+
+Not dropped; listed so the port can be audited:
+
+- Every framework and projections test application runs on `Decree.EventStore.Adapters.EventStore` over the `decree_framework_test` database (`Decree.FrameworkEventStore`), with one event store process per application instance (`Decree.FrameworkStorage.name_event_store/1`, called from each test application's `init/1`). `Decree.PostgresCase` (and `Decree.MockEventStoreCase`) empty the database before each test, as a fresh in-memory store did.
+- `application/application_test.exs`, `application/config_test.exs`: the expected adapter tuple is the Postgres adapter's.
+- `application/dynamic_applications_test.exs`: each named instance gets its own schema (`prefix:`), so the two instances keep separate streams, as two in-memory stores did; `length/1` on a stream became `Enum.count/1`.
+- `aggregates/snapshotting_test.exs`: the Postgres store stamps `created_at` on a snapshot; the comparison ignores it.
+- `aggregates/aggregate_subscription_test.exs`: the aggregate learns of an event appended to its stream through a Postgres notification; the setup waits for it.
+- `event/event_handler_batch_subscribe_to_stream_test.exs`, `event/upcaster_test.exs` (batch handler): the store may deliver events appended together in one batch; the assertions accept any batching.
+- `event/event_handler_concurrency_test.exs` (partitioning): the store keeps a partition's events serial but does not pin a partition to one handler process; the handler-count assertion became a range.
+- `event_store/telemetry_test.exs`: valid snapshot and event data (Postgres enforces not-null columns), an ack on a live subscription, and `:ok` for deleting an unknown subscription.
+- `middleware/middleware_test.exs`: the test router no longer lists `Commanded.Middleware.Logger`, which was not kept.
+- `test/conformance`: its `TestEventStore` is `ConformanceEventStore` (the store suite has its own `TestEventStore`), on its own database.
+- `test/store/advisory_locks_test.exs`: the derived process name is `TestEventStore.Decree.Store.AdvisoryLocks`.
+- `test/store`: fixture paths moved to `test/store/fixture/`; `Decree.Store.EventFactory` reads only the serializer at compile time.
+- `test/projections`: the `projection_versions` migrations (upstream's `priv/repo/migrations`) live in `test/projections/migrations` and run from the test helper; the helper no longer defines `Decree.EventStore.Adapters.Mock` (the framework support does); `projections/runtime_config_projector_test.exs` waits for the projector's transaction to commit (it raced it).
+
+Flaky upstream tests made deterministic (test changes, not drops):
+
+- `test/framework/subscriptions/subscriptions_test.exs`, "should not remove PID when process terminates": it spawned the registering process with `spawn_link` and monitored it afterwards, so a process that had already exited produced a `:noproc` `:DOWN` instead of `:normal` (seen on CI). It now uses `spawn_monitor`; the assertions are unchanged.
+- The same spawn-then-monitor order, asserting any exit reason (so it could not fail, but raced the same way): `test/framework/aggregates/execute_command_test.exs` (`assert_aggregate_exit/4` now uses `spawn_monitor`) and `test/framework/helpers/process_helper.ex` (`shutdown/2` now monitors before it sends the exit, as `test/store/support/process_helper.ex` already did).
+- `test/store/storage/append_events_test.exs`, "append single event with a db connection error": the append used `timeout: 0`, which raced the client timeout against the server. It returned `{:error, %DBConnection.ConnectionError{}}`, `{:error, :query_canceled}` (seen on CI) or, when a fast server finished first, `{:error, :not_found}` (seen locally; stream 1 does not exist, so the insert fails its foreign key). The last outcome means no timeout happened, so the test could pass without exercising its subject. It is now deterministic: a second connection holds `LOCK TABLE events IN ACCESS EXCLUSIVE MODE` in an open transaction (released after the assertion and in `on_exit`), the append uses `timeout: 100`, blocks on the lock, and the test accepts only `%DBConnection.ConnectionError{}` or `:query_canceled`. Its point, an error tuple instead of a raise, is unchanged.
+
+## Test timeouts against upstream
+
+decree runs the four suites in one VM with one `config/test.exs`, so each suite's receive timeouts are the shared values below. Compared with each upstream `config/test.exs` and `test/test_helper.exs`:
+
+| Setting | framework (commanded) | store (eventstore) | conformance (commanded-eventstore-adapter) | projections (commanded-ecto-projections) | decree |
+|---|---|---|---|---|---|
+| ExUnit `assert_receive_timeout` | 1_000 | 2_000 | 1_000 | 100 (ExUnit default) | 2_000 |
+| ExUnit `refute_receive_timeout` | 100 (default) | 100 | 100 (default) | 100 (default) | 100 |
+| `assert_receive_event_timeout` (`Decree.Assertions.EventAssertions`) | 100 | not used | 1_000 | not used | 1_000 |
+| `refute_receive_event_timeout` | 100 | not used | 1_000 | not used | 100 |
+| `dispatch_consistency_timeout` | 100 | not used | not set | not set | 100 |
+
+So: `assert_receive_timeout` rose from 1_000 to 2_000 for framework and conformance and from 100 to 2_000 for projections; framework's `assert_receive_event_timeout` rose from 100 to 1_000; conformance's `refute_receive_event_timeout` fell from 1_000 to 100 (no conformance test case calls `refute_receive_event`); the store's values and every `refute_receive_timeout` are unchanged.
+
+## Audit
+
+`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.

@@ -1,0 +1,97 @@
+defmodule Decree.Store.RuntimeConfigTest do
+  use ExUnit.Case
+
+  alias Decree.Store.{Config, Wait}
+
+  describe "event store runtime config" do
+    setup do
+      start_supervised!(TestEventStore)
+      start_supervised!({TestEventStore, name: :test_event_store, schema: "example"})
+      :ok
+    end
+
+    test "should get event store config by module" do
+      expected_config =
+        Application.get_env(:decree, TestEventStore)
+        |> Keyword.put_new(:conn, TestEventStore.Postgrex)
+        |> Keyword.put_new(:schema, "public")
+        |> Keyword.put_new(:subscription_hibernate_after, 15_000)
+        |> Keyword.put_new(:subscription_retry_interval, 1000)
+        |> with_defaults()
+
+      for {key, value} <- Config.lookup(TestEventStore) do
+        assert Keyword.get(expected_config, key) == value
+      end
+    end
+
+    test "should get event store config by name" do
+      expected_config =
+        Application.get_env(:decree, TestEventStore)
+        |> Keyword.put(:conn, Module.concat([:test_event_store, Postgrex]))
+        |> Keyword.put(:schema, "example")
+        |> Keyword.put(:name, :test_event_store)
+        |> with_defaults()
+
+      for {key, value} <- Config.lookup(:test_event_store) do
+        assert Keyword.get(expected_config, key) == value
+      end
+    end
+
+    test "should remove config when application stopped" do
+      :ok = stop_supervised(TestEventStore)
+
+      Wait.until(fn ->
+        assert_raise(
+          RuntimeError,
+          "could not lookup TestEventStore because it was not started or it does not exist",
+          fn -> Config.lookup(TestEventStore) end
+        )
+      end)
+
+      assert Decree.Store.all_instances() == [{TestEventStore, name: :test_event_store}]
+    end
+
+    test "should list all running instances" do
+      all_instances = Decree.Store.all_instances() |> Enum.sort()
+
+      assert all_instances == [
+               {TestEventStore, name: TestEventStore},
+               {TestEventStore, name: :test_event_store}
+             ]
+    end
+
+    # Decree.Store has no compile-time configuration
+    defmodule RuntimeConfiguredEventStore do
+      use Decree.Store, otp_app: :decree
+    end
+
+    test "should allow an event store to be entirely configured at runtime" do
+      config = [
+        username: "postgres",
+        password: "postgres",
+        database: "eventstore_test",
+        hostname: "localhost",
+        serializer: Decree.Store.JsonSerializer
+      ]
+
+      assert {:ok, _pid} = start_supervised({RuntimeConfiguredEventStore, config})
+    end
+  end
+
+  defp with_defaults(config) do
+    Keyword.merge(
+      [
+        column_data_type: "bytea",
+        correlation_id_type: "uuid",
+        causation_id_type: "uuid",
+        enable_hard_deletes: false,
+        otp_app: :decree,
+        pool: DBConnection.ConnectionPool,
+        subscription_hibernate_after: 15_000,
+        subscription_retry_interval: 1_000,
+        timeout: 15_000
+      ],
+      config
+    )
+  end
+end
