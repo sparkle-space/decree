@@ -73,6 +73,29 @@ defmodule Decree.Store.Subscriptions.SubscriptionCheckpointRowTest do
     end
   end
 
+  describe "checkpoint by id" do
+    test "never moves a row's position back", %{conn: conn, schema: schema} do
+      {:ok, %Storage.Subscription{subscription_id: subscription_id}} =
+        Storage.Subscription.subscribe_to_stream(conn, "$all", UUID.uuid4(), 0, schema: schema)
+
+      :ok =
+        Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, 5, schema: schema)
+
+      assert last_seen(conn, subscription_id) == 5
+
+      # A lower position, such as a stale holder's final checkpoint, is ignored.
+      :ok =
+        Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, 3, schema: schema)
+
+      assert last_seen(conn, subscription_id) == 5
+
+      :ok =
+        Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, 7, schema: schema)
+
+      assert last_seen(conn, subscription_id) == 7
+    end
+  end
+
   defp start_subscription(context, subscription_name, opts \\ []) do
     %{
       conn: conn,
