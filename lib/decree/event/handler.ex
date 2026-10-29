@@ -111,7 +111,7 @@ defmodule Decree.Event.Handler do
   provides a convenience macro that implements the behaviour, allowing you to
   handle only the events you are interested in processing.
 
-  You should start your event handlers using a [Supervisor](supervision.html) to
+  You should start your event handlers using a `Supervisor` to
   ensure they are restarted on error.
 
   ### Example
@@ -127,14 +127,14 @@ defmodule Decree.Event.Handler do
         end
       end
 
-  Start your event handler process (or use a [Supervisor](supervision.html)):
+  Start your event handler process (or use a `Supervisor`):
 
       {:ok, _handler} = ExampleHandler.start_link()
 
   ## Event handler name
 
   The name you specify is used when subscribing to the event store. You must use
-  a unique name for each event handler and process manager you start. Also, you
+  a unique name for each event handler you start. Also, you
   *should not* change the name once the handler has been deployed. A new
   subscription will be created if you change the name and the event handler will
   receive already handled events.
@@ -1263,11 +1263,28 @@ defmodule Decree.Event.Handler do
 
   defp handle_event(event, context \\ %{}, handler)
 
-  # Ignore already seen event.
+  # Ignore already seen event, at `concurrency: 1` only.
+  #
+  # With one instance, `last_seen_event` is the instance's position in the stream, so
+  # an event at or below it was handled already. With `concurrency: n > 1`, each
+  # instance sees only some of the events, and `last_seen_event` is the number of the
+  # event this instance last acked (`confirm_receipt/2` sets it), not a stream
+  # position, and not monotonic: acking a redelivered earlier event lowers it. When a
+  # sibling instance exits mid-event, the store redelivers its in-flight event to
+  # another instance, which may already have handled a later one; skipping it there
+  # would ack the event without handling it, and lose it. So at concurrency > 1 a
+  # redelivered event always goes to `handle/2`, within the at-least-once contract
+  # (commanded/commanded#671, sparkle-space/sparklespace#7429).
+  #
+  # `handle_batch/3` keeps its already-seen check: `:batch_size` and `:concurrency`
+  # cannot be combined, so a batching handler always runs at `concurrency: 1`.
   defp handle_event(
          %RecordedEvent{event_number: event_number} = event,
          _context,
-         %Handler{last_seen_event: last_seen_event} = state
+         %Handler{
+           last_seen_event: last_seen_event,
+           subscription: %Subscription{concurrency: 1}
+         } = state
        )
        when not is_nil(last_seen_event) and event_number <= last_seen_event do
     Logger.debug(describe(state) <> " has already seen event ##{inspect(event_number)}")

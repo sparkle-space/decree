@@ -113,18 +113,18 @@ defmodule Decree.Commands.Router do
           :ok = BankApp.dispatch(command, consistency: :eventual)
 
     - `:strong` - block command dispatch until all strongly
-      consistent event handlers and process managers have successfully processed
-      all events created by the command.
+      consistent event handlers have successfully processed all events created
+      by the command.
 
       Use this when you have event handlers that update read models you need to
       query immediately after dispatching the command.
 
           :ok = BankApp.dispatch(command, consistency: :strong)
 
-    - Provide an explicit list of event handler and process manager modules (or
-      their configured names), containing only those handlers you'd like to wait
-      for. No other handlers will be awaited on, regardless of their own
-      configured consistency setting.
+    - Provide an explicit list of event handler modules (or their configured
+      names), containing only those handlers you'd like to wait for. No other
+      handlers will be awaited on, regardless of their own configured
+      consistency setting.
 
       ```elixir
       :ok = BankApp.dispatch(command, consistency: [ExampleHandler, AnotherHandler])
@@ -216,9 +216,9 @@ defmodule Decree.Commands.Router do
   When `:causation_id` is not provided, the command's own `command_uuid` is
   used as the resulting events' `causation_id`.
 
-  Process managers and event handlers that dispatch follow-up commands
-  already propagate the handled event's id this way, so the full causation
-  chain is observable on the events alone.
+  An event handler that dispatches a follow-up command can pass the handled
+  event's id (`metadata.event_id`) as the `:causation_id`, so the full
+  causation chain is observable on the events alone.
 
   """
 

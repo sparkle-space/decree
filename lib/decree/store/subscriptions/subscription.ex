@@ -137,6 +137,19 @@ defmodule Decree.Store.Subscriptions.Subscription do
     {:noreply, state}
   end
 
+  # The retry timer armed when a catch-up read failed.
+  @impl GenServer
+  def handle_info({:retry_catch_up, token}, %Subscription{} = state) do
+    %Subscription{subscription: subscription} = state
+
+    state =
+      subscription
+      |> SubscriptionFsm.retry_catch_up(token)
+      |> apply_subscription_to_state(state)
+
+    {:noreply, state}
+  end
+
   @impl GenServer
   def handle_info(
         {Decree.Store.AdvisoryLocks, :lock_released, lock_ref, reason},
@@ -290,6 +303,13 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
   defp handle_subscription_state(
          %Subscription{subscription: %SubscriptionFsm{state: :max_capacity}} = state
+       ) do
+    state
+  end
+
+  # A failed catch-up read is retried by the timer the FSM armed, not by a cast.
+  defp handle_subscription_state(
+         %Subscription{subscription: %SubscriptionFsm{state: :catch_up_retry}} = state
        ) do
     state
   end
