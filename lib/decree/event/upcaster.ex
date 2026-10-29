@@ -9,8 +9,8 @@ defprotocol Decree.Event.Upcaster do
   Upcaster will run for new events and for historical events.
 
   Because the upcaster changes any historical event to the latest version,
-  consumers (aggregates, event handlers, and process managers) only need
-  to support the latest version.
+  consumers (aggregates and event handlers) only need to support the latest
+  version.
 
   ## Example
 
