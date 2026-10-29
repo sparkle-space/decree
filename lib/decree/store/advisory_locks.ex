@@ -162,7 +162,9 @@ defmodule Decree.Store.AdvisoryLocks do
           | {:error, term}
   def subscription_locks(server, subscription_ids, timeout \\ 5_000)
       when is_list(subscription_ids) do
-    GenServer.call(server, {:subscription_locks, subscription_ids, timeout}, timeout)
+    deadline = deadline(timeout)
+
+    GenServer.call(server, {:subscription_locks, subscription_ids, timeout, deadline}, timeout)
   catch
     :exit, reason -> {:error, reason}
   end
@@ -173,20 +175,29 @@ defmodule Decree.Store.AdvisoryLocks do
     {:reply, reply, state}
   end
 
-  def handle_call({:subscription_locks, [], _timeout}, _from, %State{} = state) do
+  def handle_call({:subscription_locks, [], _timeout, _deadline}, _from, %State{} = state) do
     {:reply, {:ok, %{}}, state}
   end
 
-  def handle_call({:subscription_locks, subscription_ids, timeout}, _from, %State{} = state) do
+  # A probe whose caller has stopped waiting is dropped before any work, so stale
+  # probes queued here do not delay the handling of a lost lock behind them.
+  def handle_call(
+        {:subscription_locks, subscription_ids, timeout, deadline},
+        _from,
+        %State{} = state
+      ) do
     %State{schema: schema} = state
 
-    reply =
-      with_pool(state, fn pool ->
-        Storage.Lock.subscription_locks(pool, subscription_ids, schema: schema, timeout: timeout)
-      end)
-
-    case reply do
-      {:ok, backend_pid, locks} -> {:reply, {:ok, locks}, session_seen(state, backend_pid)}
+    with {:ok, remaining} <- remaining(deadline),
+         {:ok, pool} <- whereis_pool(state, min(5_000, remaining)),
+         {:ok, remaining} <- remaining(deadline),
+         {:ok, backend_pid, locks} <-
+           query_subscription_locks(pool, subscription_ids,
+             schema: schema,
+             timeout: min(timeout, remaining)
+           ) do
+      {:reply, {:ok, locks}, session_seen(state, backend_pid)}
+    else
       {:error, _error} = reply -> {:reply, reply, state}
     end
   end
@@ -493,6 +504,14 @@ defmodule Decree.Store.AdvisoryLocks do
     :exit, reason -> {:error, reason}
   end
 
+  # The queries against the pool's pid return an exit (the pool died while the
+  # query waited for, or held, its connection) as `{:error, reason}`.
+  defp query_subscription_locks(pool, subscription_ids, opts) do
+    Storage.Lock.subscription_locks(pool, subscription_ids, opts)
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
   defp held_keys(pool, keys, opts) do
     Storage.Lock.held_keys(pool, keys, opts)
   catch
@@ -520,19 +539,6 @@ defmodule Decree.Store.AdvisoryLocks do
       {:ok, nil} -> {:error, :not_connected}
       {:ok, pool} when is_pid(pool) -> {:ok, pool}
       {:error, reason} -> {:error, {:pool_lookup_failed, reason}}
-    end
-  end
-
-  # Run `fun` against the lock pool's pid. Returns the `whereis_pool/2` error when
-  # there is no known pool, and the reason of an exit (the pool died while the query
-  # waited for, or held, its connection) as `{:error, reason}`.
-  defp with_pool(%State{} = state, fun) do
-    with {:ok, pool} <- whereis_pool(state) do
-      try do
-        fun.(pool)
-      catch
-        :exit, reason -> {:error, reason}
-      end
     end
   end
 end

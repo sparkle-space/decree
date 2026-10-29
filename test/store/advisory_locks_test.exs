@@ -260,6 +260,53 @@ defmodule Decree.Store.AdvisoryLocksTest do
       send(caller, :stop)
     end
 
+    test "expired ownership probes queued ahead of a disconnect do not delay it" do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+
+      # The lock pool's only connection is busy, so a probe that did run a query
+      # would wait for it.
+      pool = MonitoredServer.whereis(@conn)
+      test = self()
+
+      holder =
+        spawn(fn ->
+          Postgrex.transaction(pool, fn _conn ->
+            send(test, :holding)
+
+            receive do
+              :release -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :holding
+      on_exit(fn -> send(holder, :release) end)
+
+      locks = Process.whereis(@locks)
+      :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
+
+      # Three probes whose callers give up after 100ms, queued ahead of the
+      # disconnect.
+      probes =
+        for _probe <- 1..3 do
+          Task.async(fn -> AdvisoryLocks.subscription_locks(@locks, [1], 100) end)
+        end
+
+      wait_for_queue_length(locks, 3)
+
+      for probe <- probes, do: assert({:error, {:timeout, _call}} = Task.await(probe))
+
+      trace_subscription_locks_queries(locks)
+      send(locks, {:disconnected, self()})
+      :ok = :sys.resume(locks)
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :session_lost}, 1_000
+      refute_received {:trace, ^locks, :call, {Storage.Lock, :subscription_locks, _args}}
+
+      send(holder, :release)
+    end
+
     test "should answer `{:error, :not_connected}` while the lock pool is down" do
       shutdown_database_connection()
 
@@ -533,6 +580,26 @@ defmodule Decree.Store.AdvisoryLocksTest do
     :sys.resume(pid)
   catch
     :exit, _reason -> :ok
+  end
+
+  # Trace the ownership query when `pid` runs it, until the test ends.
+  defp trace_subscription_locks_queries(pid) do
+    mfa = {Storage.Lock, :subscription_locks, 3}
+
+    1 = :erlang.trace_pattern(mfa, true, [:global])
+    1 = :erlang.trace(pid, true, [:call])
+
+    on_exit(fn ->
+      :erlang.trace_pattern(mfa, false, [:global])
+    end)
+  end
+
+  defp wait_for_queue_length(pid, count) do
+    Wait.until(5_000, fn ->
+      {:message_queue_len, length} = Process.info(pid, :message_queue_len)
+
+      assert length >= count
+    end)
   end
 
   defp wait_for_message(pid, match?) do
