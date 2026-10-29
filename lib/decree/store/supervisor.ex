@@ -60,6 +60,11 @@ defmodule Decree.Store.Supervisor do
         advisory_locks_postgrex_conn = Module.concat([advisory_locks_name, Postgrex])
         advisory_locks_config = Config.advisory_locks_postgrex_opts(config)
 
+        # The delay before the lock pool is started again after it stopped.
+        # Configurable (`:advisory_locks_restart_delay`) so tests can drive a pool
+        # restart quickly.
+        advisory_locks_restart_delay = Keyword.get(config, :advisory_locks_restart_delay, 30_000)
+
         subscriptions_name = Module.concat([name, Subscriptions.Supervisor])
         subscriptions_registry_name = Module.concat([name, Subscriptions.Registry])
 
@@ -78,7 +83,8 @@ defmodule Decree.Store.Supervisor do
               {MonitoredServer,
                mfa: {Postgrex, :start_link, [advisory_locks_config]},
                name: advisory_locks_postgrex_conn,
-               backoff_min: 30_000},
+               backoff_min: advisory_locks_restart_delay,
+               backoff_max: advisory_locks_restart_delay},
               id: Module.concat([advisory_locks_postgrex_conn, MonitoredServer])
             ),
             {AdvisoryLocks,

@@ -4,6 +4,17 @@ defmodule Decree.Store.AdvisoryLocks do
   # PostgreSQL provides a means for creating locks that have application-defined
   # meanings. Advisory locks are faster, avoid table bloat, and are
   # automatically cleaned up by the server at the end of the session.
+  #
+  # Queries run against the lock pool's pid, never through `MonitoredServer`'s
+  # name: a checkout through the name is forwarded (or queued and forwarded) to a
+  # pool, and if that pool dies holding it, nothing replies and the checkout's
+  # monitor, which watches `MonitoredServer`, never fires, so this process would
+  # wait forever (sparkle-space/sparklespace#7543, upstream
+  # commanded/eventstore#331). Against the pid, a pool that dies mid-checkout exits
+  # the query, which is returned as `{:error, reason}`, and a live pool with no
+  # connection drops the checkout from its queue after its
+  # `queue_target`/`queue_interval` (four to six seconds with the lock pool's
+  # defaults, measured).
 
   use GenServer
 
@@ -69,6 +80,8 @@ defmodule Decree.Store.AdvisoryLocks do
 
   Returns `{:ok, lock}` when lock successfully acquired, or
   `{:error, :lock_already_taken}` if the lock cannot be acquired immediately.
+  Returns `{:error, :not_connected}` while the lock connection pool is down, or
+  `{:error, reason}` when the lock query fails.
 
   ## Lock released
 
@@ -97,10 +110,12 @@ defmodule Decree.Store.AdvisoryLocks do
   end
 
   defp try_acquire_exclusive_lock(key, owner, timeout, %State{} = state) do
-    %State{conn: conn, schema: schema} = state
+    %State{schema: schema} = state
 
     with :ok <-
-           Storage.Lock.try_acquire_exclusive_lock(conn, key, schema: schema, timeout: timeout) do
+           with_pool(state, fn pool ->
+             Storage.Lock.try_acquire_exclusive_lock(pool, key, schema: schema, timeout: timeout)
+           end) do
       {:ok, Lock.new(key, owner)}
     end
   end
@@ -151,8 +166,26 @@ defmodule Decree.Store.AdvisoryLocks do
   end
 
   defp release_lock(key, %State{} = state) do
-    %State{conn: conn, query_timeout: query_timeout, schema: schema} = state
+    %State{query_timeout: query_timeout, schema: schema} = state
 
-    Storage.Lock.unlock(conn, key, schema: schema, timeout: query_timeout)
+    with_pool(state, &Storage.Lock.unlock(&1, key, schema: schema, timeout: query_timeout))
+  end
+
+  # Run `fun` against the lock pool's pid (see the module comment). Returns
+  # `{:error, :not_connected}` while the pool is down, and the reason of an exit
+  # (the pool died while the query waited for, or held, its connection) as
+  # `{:error, reason}`.
+  defp with_pool(%State{conn: conn}, fun) do
+    case MonitoredServer.whereis(conn) do
+      nil ->
+        {:error, :not_connected}
+
+      pool when is_pid(pool) ->
+        try do
+          fun.(pool)
+        catch
+          :exit, reason -> {:error, reason}
+        end
+    end
   end
 end

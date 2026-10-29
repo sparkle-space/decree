@@ -84,6 +84,21 @@ defmodule Decree.Store.MonitoredServer do
     GenServer.call(name, {__MODULE__, :monitors})
   end
 
+  # The pid of the monitored process, or `nil` while it is down (or the monitored
+  # server itself does not answer within `timeout`).
+  #
+  # A caller that must not wait for a reply from a process which can die holding the
+  # request uses this pid directly rather than the monitored server's name: a call
+  # through the name is forwarded (or queued and forwarded later), and when the
+  # process that received it dies, nothing replies and the caller's monitor, which
+  # watches this server and not that process, never fires
+  # (sparkle-space/sparklespace#7543, upstream commanded/eventstore#331).
+  def whereis(name, timeout \\ 5_000) do
+    GenServer.call(name, {__MODULE__, :whereis}, timeout)
+  catch
+    :exit, _reason -> nil
+  end
+
   def init(%State{} = state) do
     Process.flag(:trap_exit, true)
 
@@ -105,6 +120,10 @@ defmodule Decree.Store.MonitoredServer do
     %State{monitors: monitors} = state
 
     {:reply, {:ok, monitors}, state}
+  end
+
+  def handle_call({__MODULE__, :whereis}, _from, %State{pid: pid} = state) do
+    {:reply, pid, state}
   end
 
   def handle_call(msg, from, %State{pid: nil} = state) do
