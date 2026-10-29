@@ -56,8 +56,10 @@ defmodule Decree.Event.EventHandlerConcurrencyRedeliveryTest do
 
     Process.exit(blocked, :kill)
 
+    # The DOWN reaches the subscription when `blocked` is killed, before a restarted
+    # instance can connect, so the sibling is the only subscriber to requeue to.
     assert_receive {:handling, 1, redelivered_to}
-    refute redelivered_to == blocked
+    assert redelivered_to == sibling
 
     send(redelivered_to, :proceed)
 

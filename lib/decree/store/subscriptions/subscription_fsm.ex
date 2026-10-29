@@ -237,7 +237,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #     in the other states; an `unsubscribe` of the last subscriber still persists
   #     the checkpoint and unsubscribes;
   #   - `disconnect` (catch-all): the advisory lock was lost, so go to `disconnected`;
-  #     the pending timer's token no longer matches and its event is ignored.
+  #     the pending timer's token is cleared, so its event is ignored, and the count
+  #     of failed reads is reset, so the backoff starts again at its shortest wait.
   defstate catch_up_retry do
     defevent retry_catch_up(token),
       data: %SubscriptionState{catch_up_retry_token: token} = data do
@@ -334,9 +335,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     next_state(state, data)
   end
 
+  # Losing the advisory lock also ends any run of failed catch-up reads: the pending
+  # retry timer's token is cleared, so its event is ignored, and the backoff starts
+  # again from its shortest wait once the subscription has resubscribed.
   defevent disconnect(lock_ref), data: %SubscriptionState{lock_ref: lock_ref} = data do
     data =
-      %SubscriptionState{data | lock_ref: nil}
+      %SubscriptionState{data | lock_ref: nil, catch_up_retry_token: nil, catch_up_failures: 0}
       |> SubscriptionState.reset_event_tracking()
       |> purge_in_flight_events()
 
@@ -579,7 +583,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   end
 
   # The wait before retrying after the `attempt`th consecutive failed catch-up read. A
-  # `retry_interval` below one second gives a flat wait of `retry_interval`.
+  # `retry_interval` below one second gives a flat wait of `retry_interval`; only a
+  # subscription's own `retry_interval` option can be that short, since the event
+  # store's `subscription_retry_interval` is raised to at least one second.
   defp catch_up_backoff(attempt, retry_interval) do
     first = min(1_000, retry_interval)
 

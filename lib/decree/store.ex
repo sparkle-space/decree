@@ -1249,9 +1249,15 @@ defmodule Decree.Store do
   query timeout, the subscription holds: it keeps its position and its subscribers,
   and retries the read with a capped exponential backoff. The first wait is one
   second, doubling after each further consecutive failed read, up to the event
-  store's `subscription_retry_interval` (default one minute); an interval shorter
-  than one second gives a flat wait of that interval. The next successful read resets
-  the backoff.
+  store's `subscription_retry_interval` (default one minute), or a subscription's own
+  `retry_interval` option. An interval shorter than one second gives a flat wait of
+  that interval; only the `retry_interval` option can set one, since the configured
+  `subscription_retry_interval` is raised to at least one second. The next successful
+  read resets the backoff, and so does losing the subscription's advisory lock.
+
+  An ack received while the read is held still writes the subscription's checkpoint.
+  If that write fails, the failure is logged and the write is not retried; a later
+  ack writes a later checkpoint, so delivery stays at-least-once.
 
   Each failed read logs a warning and emits the telemetry event
   `[:decree, :store, :subscription, :catch_up, :error]`, with the measurement

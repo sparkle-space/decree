@@ -1267,13 +1267,14 @@ defmodule Decree.Event.Handler do
   #
   # With one instance, `last_seen_event` is the instance's position in the stream, so
   # an event at or below it was handled already. With `concurrency: n > 1`, each
-  # instance sees only some of the events, and `last_seen_event` is the highest event
-  # number this instance was sent, not a stream position. When a sibling instance exits
-  # mid-event, the store redelivers its in-flight event to another instance, which may
-  # already have handled a later one; skipping it there would ack the event without
-  # handling it, and lose it. So at concurrency > 1 a redelivered event always goes to
-  # `handle/2`, within the at-least-once contract (commanded/commanded#671,
-  # sparkle-space/sparklespace#7429).
+  # instance sees only some of the events, and `last_seen_event` is the number of the
+  # event this instance last acked (`confirm_receipt/2` sets it), not a stream
+  # position, and not monotonic: acking a redelivered earlier event lowers it. When a
+  # sibling instance exits mid-event, the store redelivers its in-flight event to
+  # another instance, which may already have handled a later one; skipping it there
+  # would ack the event without handling it, and lose it. So at concurrency > 1 a
+  # redelivered event always goes to `handle/2`, within the at-least-once contract
+  # (commanded/commanded#671, sparkle-space/sparklespace#7429).
   #
   # `handle_batch/3` keeps its already-seen check: `:batch_size` and `:concurrency`
   # cannot be combined, so a batching handler always runs at `concurrency: 1`.
