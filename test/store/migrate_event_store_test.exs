@@ -10,6 +10,8 @@ defmodule Decree.Store.MigrateEventStoreTest do
   setup_all do
     config = TestEventStore.config()
 
+    on_exit(&Decree.Store.StorageInitializer.recreate_test_event_store_database!/0)
+
     [config: config]
   end
 
