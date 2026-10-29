@@ -63,7 +63,11 @@ defmodule Decree.Store.AdvisoryLockSessionTest do
       append_events(:lock_node_a, 3)
 
       # Every event is delivered once in total, by node B.
-      delivered = receive_events(3)
+      # This asserts exactly-once delivery after a takeover, not latency, so the
+      # wait for the events is long. A NOTIFY that never arrives still fails it.
+      # Under load this wait was missed 3 times in about 98 runs, by a NOTIFY seen
+      # by no listener within two seconds; the cause is not isolated.
+      delivered = receive_events(3, 10_000)
 
       assert Enum.sort(delivered) == [{:b, 2}, {:b, 3}, {:b, 4}]
       refute_receive {_node, {:events, _events}}, 1_000
@@ -189,14 +193,14 @@ defmodule Decree.Store.AdvisoryLockSessionTest do
     end
   end
 
-  defp receive_events(count, delivered \\ [])
+  defp receive_events(count, timeout, delivered \\ [])
 
-  defp receive_events(count, delivered) when length(delivered) >= count, do: delivered
+  defp receive_events(count, _timeout, delivered) when length(delivered) >= count, do: delivered
 
-  defp receive_events(count, delivered) do
-    assert_receive {node, {:events, events}}
+  defp receive_events(count, timeout, delivered) do
+    assert_receive {node, {:events, events}}, timeout
 
-    receive_events(count, delivered ++ Enum.map(events, &{node, &1.event_number}))
+    receive_events(count, timeout, delivered ++ Enum.map(events, &{node, &1.event_number}))
   end
 
   defp append_events(event_store_name, count) do
