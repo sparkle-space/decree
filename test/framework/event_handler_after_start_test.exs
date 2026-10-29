@@ -174,6 +174,51 @@ defmodule Decree.Event.HandlerAfterStartTest do
     end
   end
 
+  describe "reset" do
+    defmodule ReplayedEvent do
+      @derive Jason.Encoder
+      defstruct [:reply_to]
+    end
+
+    defmodule BufferingHandler do
+      use Decree.Event.Handler,
+        application: Decree.MockedApp,
+        name: __MODULE__,
+        batch_size: 10,
+        batch_timeout: 60_000
+
+      def handle_batch([{%{reply_to: reply_to}, _metadata} | _rest] = events) do
+        send(reply_to, {:batch_handled, length(events)})
+
+        :ok
+      end
+    end
+
+    test "should not apply events buffered before the reset" do
+      stub(MockEventStore, :unsubscribe, fn _event_store, _subscription -> :ok end)
+      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
+      stub(MockEventStore, :ack_event, fn _event_store, _subscription, _event -> :ok end)
+
+      handler = start_supervised!(BufferingHandler)
+      send_subscribed(handler)
+
+      events =
+        Decree.Helpers.EventFactory.map_to_recorded_events([%ReplayedEvent{reply_to: self()}])
+
+      # Buffered, not yet handled, when the handler is reset.
+      send(handler, {:events, events})
+      send(handler, :reset)
+
+      # The reset subscription delivers the event again.
+      send_subscribed(handler)
+      send(handler, {:events, events})
+      send(handler, :flush_batch_timeout)
+
+      assert_receive {:batch_handled, 1}
+      refute_receive {:batch_handled, _count}
+    end
+  end
+
   defp send_subscribed(handler) do
     send(handler, {:subscribed, handler})
   end

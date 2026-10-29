@@ -1195,17 +1195,22 @@ defmodule Decree.Event.Handler do
     {:noreply, state}
   end
 
+  # Events buffered for a batch belong to the subscription being reset: they are
+  # dropped unhandled, and the new subscription delivers them again.
   defp reset_subscription(%Handler{} = state) do
     %Handler{subscription: subscription} = state
 
     subscription = Subscription.reset(subscription)
+
+    state = cancel_batch_timer(state)
 
     %Handler{
       state
       | last_seen_event: nil,
         subscription: subscription,
         subscribe_timer: nil,
-        started_subscription: nil
+        started_subscription: nil,
+        batch_buffer: []
     }
   end
 
