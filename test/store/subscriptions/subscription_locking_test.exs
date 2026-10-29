@@ -134,6 +134,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
       # Connecting tries the lock at once; keep that attempt from succeeding.
       locks = Process.whereis(TestEventStore.Decree.Store.AdvisoryLocks)
       :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
 
       test = self()
 
@@ -178,6 +179,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
     test "should stay parked and retry when the lock call times out", context do
       locks = Process.whereis(TestEventStore.Decree.Store.AdvisoryLocks)
       :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
 
       [subscription: subscription] = create_subscription(Map.put(context, :query_timeout, 200))
 
@@ -272,6 +274,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
     {:ok, ^subscription} = Subscription.connect(subscription, self(), buffer_size: 3)
 
     [subscription: subscription]
+  end
+
+  # Resume a suspended process, if it still runs.
+  defp resume(pid) do
+    :sys.resume(pid)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp reconnect(subscription) do

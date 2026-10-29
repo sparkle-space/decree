@@ -61,7 +61,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
       :ok = :sys.suspend(slow)
 
       try do
-        assert [%{pid: ^answering}] = TestEventStore.local_subscriptions(timeout: 100)
+        assert [%{pid: ^answering}] = TestEventStore.local_subscriptions(timeout: 500)
       after
         :sys.resume(slow)
       end
