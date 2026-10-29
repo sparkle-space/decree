@@ -1208,6 +1208,21 @@ defmodule Decree.Store do
   `{:events, events}` where events is a collection of `Decree.Store.RecordedEvent`
   structs.
 
+  A persistent subscription delivers events only while it holds its advisory lock,
+  which keeps one subscription of a given name delivering at a time across every
+  instance of the event store on the database. When the lock is lost (its
+  database session ended, for example when the lock connection reconnects or the
+  database restarts), subscribers receive `{:subscription_lock_lost, subscription}`.
+  From then on another instance may take the lock and deliver the same events, so
+  a subscriber treats this as the end of its ownership: work it still holds for
+  events it has not acknowledged belongs to whichever instance takes the lock, and
+  acknowledgements it sends are ignored. The subscription retries the lock every
+  `subscription_retry_interval` and, on taking it, sends `{:subscribed,
+  subscription}` again and resumes from the last acknowledged event, so events
+  sent but not acknowledged before the loss are sent again. A subscriber that
+  connects while the subscription is waiting for its lock receives `{:subscribed,
+  subscription}` only once the lock is taken.
+
   ## Example
 
       {:ok, subscription} = Decree.Store.subscribe_to_stream(stream_uuid, "example", self())
