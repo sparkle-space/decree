@@ -359,8 +359,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     next_state(:disconnected, data)
   end
 
-  # A lock released that is not the subscription's current lock, such as one taken
-  # by a lock attempt whose call timed out here and was served afterwards.
+  # A lock released that is not the subscription's current lock: one taken by a
+  # lock attempt whose call timed out here, and was served afterwards.
   defevent disconnect(_lock_ref), data: %SubscriptionState{} = data, state: state do
     next_state(state, data)
   end
@@ -415,7 +415,19 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
     server = Module.concat(event_store, AdvisoryLocks)
 
-    AdvisoryLocks.try_advisory_lock(server, subscription_id, timeout)
+    # A lock attempt that does not answer in time (or an `AdvisoryLocks` that is
+    # not running) leaves the subscription where it is, to retry after the retry
+    # interval, rather than crashing it.
+    try do
+      AdvisoryLocks.try_advisory_lock(server, subscription_id, timeout)
+    catch
+      :exit, reason ->
+        Logger.warning(
+          describe(data) <> " failed to take its advisory lock due to: " <> inspect(reason)
+        )
+
+        {:error, reason}
+    end
   end
 
   defp subscribe_to_events(%SubscriptionState{} = data) do
