@@ -45,6 +45,13 @@ defmodule Decree.Store.Storage.Subscription do
     Subscription.Ack.execute(conn, stream_uuid, subscription_name, last_seen, opts)
   end
 
+  # Keyed by the row's `subscription_id`, so a subscription whose row was deleted
+  # and created again under the same name (with a new id) does not write its
+  # position into the new row.
+  def ack_last_seen_event_by_id(conn, subscription_id, last_seen, opts) do
+    Subscription.Ack.execute_by_id(conn, subscription_id, last_seen, opts)
+  end
+
   def delete_subscription(conn, stream_uuid, subscription_name, opts),
     do: Subscription.Delete.execute(conn, stream_uuid, subscription_name, opts)
 
@@ -148,6 +155,28 @@ defmodule Decree.Store.Storage.Subscription do
         {:error, error} = reply ->
           Logger.warning(
             "Failed to ack last seen event on stream \"#{stream_uuid}\" named \"#{subscription_name}\" due to: " <>
+              inspect(error)
+          )
+
+          reply
+      end
+    end
+
+    def execute_by_id(conn, subscription_id, last_seen, opts) do
+      {schema, opts} = Keyword.pop(opts, :schema)
+
+      query = Statements.subscription_ack_by_id(schema)
+
+      case Postgrex.query(conn, query, [subscription_id, last_seen], opts) do
+        {:ok, %Postgrex.Result{num_rows: 0}} ->
+          {:error, :subscription_not_found}
+
+        {:ok, _result} ->
+          :ok
+
+        {:error, error} = reply ->
+          Logger.warning(
+            "Failed to ack last seen event for subscription id #{subscription_id} due to: " <>
               inspect(error)
           )
 

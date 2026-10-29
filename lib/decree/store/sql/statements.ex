@@ -24,6 +24,7 @@ defmodule Decree.Store.Sql.Statements do
         {:query_session_backend, []},
         {:query_subscription_locks, [:schema]},
         {:subscription_ack, [:schema]},
+        {:subscription_ack_by_id, [:schema]},
         {:insert_snapshot, [:schema]},
         {:delete_snapshot, [:schema]},
         {:query_all_subscriptions, [:schema]},

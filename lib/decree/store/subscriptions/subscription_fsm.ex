@@ -905,24 +905,63 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   end
 
   defp persist_checkpoint(%SubscriptionState{transient: false} = data) do
+    %SubscriptionState{checkpoints_pending: checkpoints_pending} = data
+
+    if checkpoints_pending > 0 do
+      write_checkpoint(data)
+    end
+
+    %SubscriptionState{data | checkpoints_pending: 0}
+  end
+
+  # Write the position to the subscription's own row, by its `subscription_id`.
+  # Keyed by name, a subscription whose row was deleted and created again (with a
+  # new id, by an operator reset or another instance) would write its position
+  # into the new row, past where that row's subscription starts.
+  #
+  # A row that no longer exists is only logged: the subscription keeps running,
+  # and its position is not written anywhere.
+  defp write_checkpoint(%SubscriptionState{subscription_id: subscription_id} = data)
+       when is_integer(subscription_id) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      last_ack: last_ack,
+      query_timeout: query_timeout
+    } = data
+
+    case Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, last_ack,
+           schema: schema,
+           timeout: query_timeout
+         ) do
+      {:error, :subscription_not_found} ->
+        Logger.warning(
+          describe(data) <>
+            " (subscription_id #{subscription_id}) did not write its checkpoint " <>
+            "(event #{last_ack}): its subscription row no longer exists"
+        )
+
+      _reply ->
+        :ok
+    end
+  end
+
+  # No row id is known: the subscription has never taken its lock, so it has
+  # acknowledged nothing. Kept for completeness.
+  defp write_checkpoint(%SubscriptionState{} = data) do
     %SubscriptionState{
       conn: conn,
       schema: schema,
       stream_uuid: stream_uuid,
       subscription_name: subscription_name,
       last_ack: last_ack,
-      query_timeout: query_timeout,
-      checkpoints_pending: checkpoints_pending
+      query_timeout: query_timeout
     } = data
 
-    if checkpoints_pending > 0 do
-      Storage.Subscription.ack_last_seen_event(conn, stream_uuid, subscription_name, last_ack,
-        schema: schema,
-        timeout: query_timeout
-      )
-    end
-
-    %SubscriptionState{data | checkpoints_pending: 0}
+    Storage.Subscription.ack_last_seen_event(conn, stream_uuid, subscription_name, last_ack,
+      schema: schema,
+      timeout: query_timeout
+    )
   end
 
   # Purge all subscriber in-flight events and subscription event queue.
