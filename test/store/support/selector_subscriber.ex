@@ -69,7 +69,9 @@ defmodule Decree.Store.SelectorSubscriber do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  def test_selector(%Decree.Store.RecordedEvent{data: %{event: event}}) when is_odd(event), do: true
+  def test_selector(%Decree.Store.RecordedEvent{data: %{event: event}}) when is_odd(event),
+    do: true
+
   def test_selector(_recorded_event), do: false
 
   defp processing_delay(%State{delay: 0}), do: :ok

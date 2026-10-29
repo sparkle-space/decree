@@ -60,7 +60,6 @@ defmodule Decree.Commands.CorrelationCasuationTest do
 
       assert event.causation_id == causation_id
     end
-
   end
 
   describe "`correlation_id`" do
@@ -104,7 +103,6 @@ defmodule Decree.Commands.CorrelationCasuationTest do
         assert event.correlation_id == correlation_id
       end
     end
-
   end
 
   describe "event handler dispatch command" do

@@ -1,5 +1,6 @@
 defmodule Decree.Store.Subscriptions.SingleSubscriptionFsmTest do
-  use Decree.Store.Subscriptions.StreamSubscriptionTestCase, stream_uuid: Decree.Store.UUID.uuid4()
+  use Decree.Store.Subscriptions.StreamSubscriptionTestCase,
+    stream_uuid: Decree.Store.UUID.uuid4()
 
   alias Decree.Store.{EventFactory, UUID}
   alias TestEventStore, as: EventStore

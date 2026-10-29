@@ -128,5 +128,4 @@ defmodule Decree.Commands.DispatchConsistencyTest do
 
     :ok
   end
-
 end

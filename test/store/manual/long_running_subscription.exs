@@ -33,7 +33,8 @@ defmodule LoggingSubscriber do
   end
 
   defp subscribe_to_stream(stream_uuid) do
-    with {:ok, subscription} <- Decree.Store.subscribe_to_stream(stream_uuid, UUID.uuid4(), self()) do
+    with {:ok, subscription} <-
+           Decree.Store.subscribe_to_stream(stream_uuid, UUID.uuid4(), self()) do
       subscription
     end
   end

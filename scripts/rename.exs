@@ -125,7 +125,9 @@ defmodule Decree.Rename do
 
     masked
     |> apply_head_rule()
-    |> then(fn text -> Enum.reduce(@rules, text, fn {re, to}, acc -> Regex.replace(re, acc, to) end) end)
+    |> then(fn text ->
+      Enum.reduce(@rules, text, fn {re, to}, acc -> Regex.replace(re, acc, to) end)
+    end)
     |> unmask(masks)
   end
 
@@ -185,7 +187,9 @@ defmodule Decree.Rename do
       |> Enum.map(fn line ->
         case String.split(line, "\t") do
           [dest | rest] when rest != [] ->
-            if String.starts_with?(dest, "#"), do: line, else: Enum.join([move_path(dest) | rest], "\t")
+            if String.starts_with?(dest, "#"),
+              do: line,
+              else: Enum.join([move_path(dest) | rest], "\t")
 
           _ ->
             line

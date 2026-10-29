@@ -12,8 +12,17 @@
 # namespace.
 
 defmodule Decree.CheckLayers do
-  @store_prefixes ["Elixir.Decree.Store", "Elixir.Mix.Decree.Store", "Elixir.Mix.Tasks.Decree.Store"]
-  @store_paths ["lib/decree/store/", "lib/decree/store.ex", "lib/mix/decree/", "lib/mix/tasks/decree.store."]
+  @store_prefixes [
+    "Elixir.Decree.Store",
+    "Elixir.Mix.Decree.Store",
+    "Elixir.Mix.Tasks.Decree.Store"
+  ]
+  @store_paths [
+    "lib/decree/store/",
+    "lib/decree/store.ex",
+    "lib/mix/decree/",
+    "lib/mix/tasks/decree.store."
+  ]
 
   def run do
     root = File.cwd!()
@@ -43,7 +52,9 @@ defmodule Decree.CheckLayers do
 
     case misplaced ++ Enum.uniq(violations) do
       [] ->
-        IO.puts("Layer check passed: #{length(store)} store modules reference no framework module.")
+        IO.puts(
+          "Layer check passed: #{length(store)} store modules reference no framework module."
+        )
 
       errors ->
         Enum.each(errors, &IO.puts(:stderr, &1))
