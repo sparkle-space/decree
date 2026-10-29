@@ -220,22 +220,54 @@ defmodule Decree.Store.Storage.AppendEventsTest do
              Appender.append(conn, 1, recorded_events, schema: "doesnotexist")
   end
 
-  test "append single event with a db connection error", %{conn: conn, schema: schema} do
+  test "append single event with a db connection error", context do
+    %{conn: conn, schema: schema, postgrex_config: postgrex_config} = context
+
     recorded_events = EventFactory.create_recorded_events(100, UUID.uuid4())
 
-    # A Postgrex query timeout of zero makes the append race the client timeout. It
-    # returns an error tuple rather than raising, in one of three shapes:
+    # Hold an ACCESS EXCLUSIVE lock on the events table from a second connection, in
+    # a transaction that stays open until released. The append's single statement
+    # inserts into `events`, so it blocks on the lock and the client timeout always
+    # fires before the query can finish. A statement that completed (for example
+    # with a foreign key `:not_found`) would mean no timeout happened, so only the
+    # two timeout outcomes are accepted.
+    test_pid = self()
+
+    {:ok, lock_conn} = Postgrex.start_link(postgrex_config ++ [pool_size: 1])
+
+    holder =
+      Task.async(fn ->
+        Postgrex.transaction(
+          lock_conn,
+          fn tx ->
+            Postgrex.query!(tx, ~s(LOCK TABLE "#{schema}".events IN ACCESS EXCLUSIVE MODE), [])
+            send(test_pid, :events_locked)
+
+            receive do
+              :release_lock -> :ok
+            end
+          end,
+          timeout: :infinity
+        )
+      end)
+
+    # Releases the lock even when an assertion above fails; a repeat send is harmless.
+    on_exit(fn -> send(holder.pid, :release_lock) end)
+
+    assert_receive :events_locked, 5_000
+
+    # The append blocks on the lock until the client times out. It returns an error
+    # tuple rather than raising, in one of two shapes:
     # - a `DBConnection.ConnectionError` when the client gives up first;
-    # - `:query_canceled` when a fast server has already received the query and
-    #   Postgres cancels it;
-    # - `:not_found` when a fast server finishes the query before the timer fires:
-    #   stream 1 does not exist in this schema, so the insert fails its foreign key.
-    result = Appender.append(conn, 1, recorded_events, schema: schema, timeout: 0)
+    # - `:query_canceled` when Postgres cancels the query already received.
+    result = Appender.append(conn, 1, recorded_events, schema: schema, timeout: 100)
+
+    send(holder.pid, :release_lock)
+    assert {:ok, :ok} = Task.await(holder, 5_000)
 
     assert match?({:error, %DBConnection.ConnectionError{}}, result) or
-             result in [{:error, :query_canceled}, {:error, :not_found}],
-           "expected a connection error, :query_canceled or :not_found, got: " <>
-             inspect(result)
+             result == {:error, :query_canceled},
+           "expected a connection error or :query_canceled, got: " <> inspect(result)
   end
 
   defp create_stream(context) do
