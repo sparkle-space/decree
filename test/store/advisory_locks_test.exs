@@ -13,6 +13,12 @@ defmodule Decree.Store.AdvisoryLocksTest do
 
     conn = start_supervised!({Postgrex, postgrex_config})
 
+    # A lock attempt does not wait for the lock pool's connection, so wait until
+    # the instance's lock pool is serving before the test takes locks.
+    Wait.until(5_000, fn ->
+      assert {:ok, _locks} = AdvisoryLocks.subscription_locks(@locks, [0])
+    end)
+
     [conn: conn]
   end
 
