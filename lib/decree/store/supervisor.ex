@@ -69,9 +69,10 @@ defmodule Decree.Store.Supervisor do
           |> Config.advisory_locks_postgrex_opts()
           |> add_connection_listener({advisory_locks_name, node()})
 
-        # The delay before the lock pool is started again after it stopped.
-        # Configurable (`:advisory_locks_restart_delay`) so tests can drive a pool
-        # restart quickly.
+        # The delay before the lock pool is started again after it stopped, including
+        # when `AdvisoryLocks` ends the session because a lock cleanup could not be
+        # confirmed; every persistent subscription of the instance stays parked until
+        # then. Configurable (`:advisory_locks_restart_delay`); tests shorten it.
         advisory_locks_restart_delay = Keyword.get(config, :advisory_locks_restart_delay, 30_000)
 
         subscriptions_name = Module.concat([name, Subscriptions.Supervisor])
