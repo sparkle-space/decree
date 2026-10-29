@@ -307,6 +307,45 @@ defmodule Decree.Store.AdvisoryLocksTest do
       send(holder, :release)
     end
 
+    test "a lock attempt and a probe do not wait for a busy connection" do
+      # The lock pool's only connection is busy.
+      pool = MonitoredServer.whereis(@conn)
+      test = self()
+
+      holder =
+        spawn(fn ->
+          Postgrex.transaction(pool, fn _conn ->
+            send(test, :holding)
+
+            receive do
+              :release -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :holding
+      on_exit(fn -> send(holder, :release) end)
+
+      # Both have five seconds left, yet answer at once, not after the pool's
+      # queue gives up on them.
+      {lock_elapsed, lock_reply} = timed(fn -> AdvisoryLocks.try_advisory_lock(@locks, 1) end)
+
+      {probe_elapsed, probe_reply} =
+        timed(fn -> AdvisoryLocks.subscription_locks(@locks, [1]) end)
+
+      assert {:error, %DBConnection.ConnectionError{}} = lock_reply
+      assert {:error, %DBConnection.ConnectionError{}} = probe_reply
+      assert lock_elapsed < 500
+      assert probe_elapsed < 500
+      assert tracked_locks() == []
+
+      # Once the connection is free, both are served.
+      send(holder, :release)
+
+      Wait.until(fn -> assert {:ok, _lock} = AdvisoryLocks.try_advisory_lock(@locks, 1) end)
+      assert {:ok, %{1 => %{lock_held: true}}} = AdvisoryLocks.subscription_locks(@locks, [1])
+    end
+
     test "should answer `{:error, :not_connected}` while the lock pool is down" do
       shutdown_database_connection()
 
@@ -395,7 +434,12 @@ defmodule Decree.Store.AdvisoryLocksTest do
           id: :scripted_locks
         )
 
-      {:ok, lock} = AdvisoryLocks.try_advisory_lock(locks, 1)
+      # A lock attempt does not wait for the new pool to connect.
+      lock =
+        Wait.until(fn ->
+          assert {:ok, lock} = AdvisoryLocks.try_advisory_lock(locks, 1)
+          lock
+        end)
 
       # The held-locks query runs on `pool` and fails; by the time the session is
       # ended, `replacement` is the current pool.
@@ -574,6 +618,13 @@ defmodule Decree.Store.AdvisoryLocksTest do
     after
       GenServer.stop(conn)
     end
+  end
+
+  defp timed(fun) do
+    started = System.monotonic_time(:millisecond)
+    reply = fun.()
+
+    {System.monotonic_time(:millisecond) - started, reply}
   end
 
   defp resume(pid) do

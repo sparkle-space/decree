@@ -58,6 +58,17 @@ defmodule Decree.Store.AdvisoryLocks do
   # `backoff_type: :stop` a failed reconnect usually ends the pool first) drops
   # the checkout from its queue after its `queue_target`/`queue_interval`, four
   # to six seconds with the lock pool's defaults, measured.
+  #
+  # That queue wait is not bounded by a query's `:timeout`, so the queries a caller
+  # drives (a lock attempt, an ownership probe) pass `queue: false`: when the
+  # pool's one connection is not free at once they fail at once ("connection not
+  # available and queuing is disabled"), the lock attempt is retried by its owner,
+  # and nothing queued behind them here (a disconnect, a pool or owner `:DOWN`)
+  # waits on the pool. The cleanup driven by the connection listener and by owner
+  # `:DOWN`s does queue: it runs during reconnects, when the connection is briefly
+  # unavailable, and failing it would end the session on every disconnect. The
+  # listener's cleanup tells the owners of the locks it handles before it queries,
+  # and an owner's `:DOWN` has no owner left to tell.
 
   use GenServer
 
@@ -194,7 +205,8 @@ defmodule Decree.Store.AdvisoryLocks do
          {:ok, backend_pid, locks} <-
            query_subscription_locks(pool, subscription_ids,
              schema: schema,
-             timeout: min(timeout, remaining)
+             timeout: min(timeout, remaining),
+             queue: false
            ) do
       {:reply, {:ok, locks}, session_seen(state, backend_pid)}
     else
@@ -281,7 +293,11 @@ defmodule Decree.Store.AdvisoryLocks do
   defp try_acquire_exclusive_lock(pool, key, timeout, %State{} = state) do
     %State{schema: schema} = state
 
-    Storage.Lock.try_acquire_exclusive_session_lock(pool, key, schema: schema, timeout: timeout)
+    Storage.Lock.try_acquire_exclusive_session_lock(pool, key,
+      schema: schema,
+      timeout: timeout,
+      queue: false
+    )
   catch
     :exit, reason -> {:error, reason}
   end
