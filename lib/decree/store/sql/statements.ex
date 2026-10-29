@@ -22,6 +22,7 @@ defmodule Decree.Store.Sql.Statements do
         {:advisory_unlock, [:schema]},
         {:try_session_advisory_lock, [:schema]},
         {:query_session_backend, []},
+        {:query_subscription_locks, [:schema]},
         {:subscription_ack, [:schema]},
         {:insert_snapshot, [:schema]},
         {:delete_snapshot, [:schema]},

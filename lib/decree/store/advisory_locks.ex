@@ -20,8 +20,8 @@ defmodule Decree.Store.AdvisoryLocks do
   # `{:connected, pid}` and `{:disconnected, pid}` here. On either, while any lock
   # is held, one `SELECT pg_backend_pid()` asks which session the pool is on now,
   # and every lock tagged with another session is released; if the query fails,
-  # every lock is released. A lock attempt, which also reports its session, does
-  # the same with the session it ran on.
+  # every lock is released. Every query that reports a session (a lock attempt,
+  # the ownership query) does the same with the session it ran on.
   #
   # Releasing by session, rather than releasing every lock on `:disconnected`,
   # matters for a lock call already in flight across the disconnect: it is
@@ -127,6 +127,23 @@ defmodule Decree.Store.AdvisoryLocks do
     GenServer.call(server, {:try_advisory_lock, key, self(), timeout}, timeout)
   end
 
+  @doc """
+  For each subscription id, whether its `subscriptions` row exists and whether this
+  instance's lock session holds its advisory lock.
+
+  Returns `{:ok, %{subscription_id => %{row_exists: boolean(), lock_held:
+  boolean()}}}` or `{:error, reason}`.
+  """
+  @spec subscription_locks(GenServer.server(), [pos_integer()], timeout()) ::
+          {:ok, %{pos_integer() => %{row_exists: boolean(), lock_held: boolean()}}}
+          | {:error, term}
+  def subscription_locks(server, subscription_ids, timeout \\ 5_000)
+      when is_list(subscription_ids) do
+    GenServer.call(server, {:subscription_locks, subscription_ids, timeout}, timeout)
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
   def handle_call({:try_advisory_lock, key, owner, timeout}, _from, %State{} = state) do
     case try_acquire_exclusive_lock(key, timeout, state) do
       {:ok, :acquired, backend_pid} ->
@@ -144,6 +161,24 @@ defmodule Decree.Store.AdvisoryLocks do
 
       {:error, _error} = reply ->
         {:reply, reply, state}
+    end
+  end
+
+  def handle_call({:subscription_locks, [], _timeout}, _from, %State{} = state) do
+    {:reply, {:ok, %{}}, state}
+  end
+
+  def handle_call({:subscription_locks, subscription_ids, timeout}, _from, %State{} = state) do
+    %State{schema: schema} = state
+
+    reply =
+      with_pool(state, fn pool ->
+        Storage.Lock.subscription_locks(pool, subscription_ids, schema: schema, timeout: timeout)
+      end)
+
+    case reply do
+      {:ok, backend_pid, locks} -> {:reply, {:ok, locks}, session_seen(state, backend_pid)}
+      {:error, _error} = reply -> {:reply, reply, state}
     end
   end
 

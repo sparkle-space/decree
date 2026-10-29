@@ -64,6 +64,39 @@ defmodule Decree.Store.Storage.Lock do
     end
   end
 
+  @doc """
+  For each subscription id, whether its `subscriptions` row exists and whether the
+  session running the query holds the subscription's advisory lock.
+
+  Returns `{:ok, backend_pid, %{subscription_id => %{row_exists: boolean(),
+  lock_held: boolean()}}}`, where `backend_pid` is the session's backend process id
+  (`nil` for an empty list of ids), or `{:error, reason}`.
+  """
+  def subscription_locks(conn, subscription_ids, opts) when is_list(subscription_ids) do
+    {schema, opts} = Keyword.pop(opts, :schema)
+
+    query = Statements.query_subscription_locks(schema)
+
+    case Postgrex.query(conn, query, [subscription_ids], opts) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        backend_pid =
+          case rows do
+            [[_id, _row_exists, _lock_held, backend_pid] | _rows] -> backend_pid
+            [] -> nil
+          end
+
+        locks =
+          Map.new(rows, fn [id, row_exists, lock_held, _backend_pid] ->
+            {id, %{row_exists: row_exists, lock_held: lock_held}}
+          end)
+
+        {:ok, backend_pid, locks}
+
+      {:error, _error} = reply ->
+        reply
+    end
+  end
+
   def unlock(conn, key, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
 
