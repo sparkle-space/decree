@@ -1,7 +1,7 @@
 defmodule Decree.Store.AdvisoryLocksTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{AdvisoryLocks, Config, MonitoredServer, Wait}
+  alias Decree.Store.{AdvisoryLocks, Config, MonitoredServer, ProcessHelper, Wait}
   alias Decree.Store.AdvisoryLocks.Lock
   alias Decree.Store.Storage
 
@@ -245,6 +245,48 @@ defmodule Decree.Store.AdvisoryLocksTest do
     end
   end
 
+  describe "cleanup that cannot be confirmed ends the lock session" do
+    # Moving the `subscriptions` table away makes the lock statements fail (they
+    # name it), while the locks already taken stay held: their key derives from
+    # the table's oid, which a rename keeps.
+    setup %{postgrex_config: postgrex_config} do
+      on_exit(fn -> restore_subscriptions_table(postgrex_config) end)
+    end
+
+    test "after a disconnect, when the held-locks query fails", %{conn: conn} do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      pool = MonitoredServer.whereis(@conn)
+
+      move_subscriptions_table(conn)
+      send(Process.whereis(@locks), {:disconnected, self()})
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :session_lost}
+      assert_session_ended(conn, pool, 1)
+    end
+
+    test "after a connect, when the held-locks query fails", %{conn: conn} do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      pool = MonitoredServer.whereis(@conn)
+
+      move_subscriptions_table(conn)
+      send(Process.whereis(@locks), {:connected, self()})
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :session_lost}
+      assert_session_ended(conn, pool, 1)
+    end
+
+    test "when the unlock after an owner terminated fails", %{conn: conn} do
+      owner = start_lock_owner(1)
+      assert_receive {:lock_owner, ^owner, {:ok, _lock}}
+      pool = MonitoredServer.whereis(@conn)
+
+      move_subscriptions_table(conn)
+      ProcessHelper.shutdown(owner)
+
+      assert_session_ended(conn, pool, 1)
+    end
+  end
+
   describe "lock pool dies holding a checkout" do
     defmodule SilentPool do
       # Stands in for a connection pool that takes a checkout request and never
@@ -373,6 +415,39 @@ defmodule Decree.Store.AdvisoryLocksTest do
     end)
   end
 
+  # The lock pool was killed, and with it its session: once the table is back the
+  # key is free from another connection.
+  defp assert_session_ended(conn, pool, key) do
+    Wait.until(5_000, fn -> refute Process.alive?(pool) end)
+
+    restore_subscriptions_table(conn)
+
+    Wait.until(5_000, fn -> assert lock_backend_pid(conn, key) == nil end)
+    assert :ok = Storage.Lock.try_acquire_exclusive_lock(conn, key, schema: "public")
+  end
+
+  defp move_subscriptions_table(conn) do
+    Postgrex.query!(conn, "ALTER TABLE public.subscriptions RENAME TO subscriptions_moved", [])
+  end
+
+  defp restore_subscriptions_table(conn) when is_pid(conn) do
+    Postgrex.query!(
+      conn,
+      "ALTER TABLE IF EXISTS public.subscriptions_moved RENAME TO subscriptions",
+      []
+    )
+  end
+
+  defp restore_subscriptions_table(postgrex_config) when is_list(postgrex_config) do
+    {:ok, conn} = Postgrex.start_link(postgrex_config)
+
+    try do
+      restore_subscriptions_table(conn)
+    after
+      GenServer.stop(conn)
+    end
+  end
+
   defp resume(pid) do
     :sys.resume(pid)
   catch
@@ -419,6 +494,6 @@ defmodule Decree.Store.AdvisoryLocksTest do
   defp shutdown_database_connection do
     %{pid: pid} = Process.whereis(@conn) |> :sys.get_state()
 
-    Decree.Store.ProcessHelper.shutdown(pid)
+    ProcessHelper.shutdown(pid)
   end
 end

@@ -26,13 +26,20 @@ defmodule Decree.Store.AdvisoryLocks do
   #     the released keys the current session holds, and each released lock on
   #     such a key is unlocked once. As `pg_try_advisory_lock` is reentrant
   #     within a session, this leaves no lock count behind; an extra unlock only
-  #     returns false. If that query fails, nothing more is done.
+  #     returns false.
   #   - `:connected`, while locks are tracked: `pg_locks` says which tracked keys
   #     the current session holds. Locks on those keys are kept, the others are
   #     released; if the query fails, every lock is released. Reading the locks
   #     themselves, rather than comparing backend process ids, also catches a
   #     session whose backend pid is the same as before but whose locks are gone
   #     (a pooler's server reset, or a pid reused after a failover).
+  #
+  # Whenever that cleanup cannot be confirmed (the `pg_locks` query or an unlock
+  # fails, here, after an owner terminated, or after a lock acquired too late),
+  # the session may still hold a lock count nothing tracks, which would keep the
+  # key held by this instance for good. The lock pool is then killed, which ends
+  # its session and every lock count in it, and is started again after its
+  # restart delay.
   #
   # Each lock is also tagged with the backend pid of the session that took it,
   # and a lock query that reports a different backend releases the locks of the
@@ -158,12 +165,9 @@ defmodule Decree.Store.AdvisoryLocks do
   end
 
   def handle_call({:try_advisory_lock, key, owner, timeout, deadline}, _from, %State{} = state) do
-    if expired?(deadline) do
-      # The caller has stopped waiting: take nothing for it.
-      {:reply, {:error, :timeout}, state}
-    else
-      try_advisory_lock(key, owner, timeout, deadline, state)
-    end
+    {reply, state} = try_advisory_lock(key, owner, timeout, deadline, state)
+
+    {:reply, reply, state}
   end
 
   def handle_call({:subscription_locks, [], _timeout}, _from, %State{} = state) do
@@ -187,14 +191,7 @@ defmodule Decree.Store.AdvisoryLocks do
   # Lost the locks taken on the pool that went down. A `:DOWN` handled after a
   # restarted pool has served a new lock leaves that lock alone.
   def handle_info({:DOWN, ref, :process, pool, reason}, %State{ref: ref} = state) do
-    %State{locks: locks} = state
-
-    {lost, kept} =
-      Enum.split_with(locks, fn {_ref, %Lock{pool: lock_pool}} -> lock_pool == pool end)
-
-    release_from_tracking(lost, reason)
-
-    {:noreply, %State{state | locks: Map.new(kept)}}
+    {:noreply, release_pool_locks(state, pool, reason)}
   end
 
   # Release lock when the lock owner process terminates.
@@ -202,14 +199,12 @@ defmodule Decree.Store.AdvisoryLocks do
     %State{locks: locks} = state
 
     state =
-      case Map.get(locks, ref) do
-        nil ->
+      case Map.pop(locks, ref) do
+        {nil, _locks} ->
           state
 
-        %Lock{} = lock ->
-          release_lock(lock, state)
-
-          %State{state | locks: Map.delete(locks, ref)}
+        {%Lock{} = lock, locks} ->
+          release_lock(lock, %State{state | locks: locks})
       end
 
     {:noreply, state}
@@ -230,42 +225,51 @@ defmodule Decree.Store.AdvisoryLocks do
   def handle_info({:connected, _conn_pid, _tag}, %State{} = state),
     do: {:noreply, verify_held_locks(state)}
 
+  # Every blocking step uses what is left of the caller's `timeout`; once nothing
+  # is left the caller has stopped waiting, and no lock is taken for it.
   defp try_advisory_lock(key, owner, timeout, deadline, %State{} = state) do
-    case try_acquire_exclusive_lock(key, timeout, state) do
-      {:ok, :acquired, backend_pid, pool} ->
-        state = session_seen(state, backend_pid)
+    with {:ok, remaining} <- remaining(deadline),
+         {:ok, pool} <- whereis_pool(state, min(5_000, remaining)),
+         {:ok, remaining} <- remaining(deadline) do
+      case try_acquire_exclusive_lock(pool, key, min(timeout, remaining), state) do
+        {:ok, :acquired, backend_pid} ->
+          state = session_seen(state, backend_pid)
 
-        if expired?(deadline) do
-          # Acquired after the caller stopped waiting: no one would own it.
-          unlock(pool, key, state)
+          acquired(key, owner, backend_pid, pool, deadline, state)
 
-          {:reply, {:error, :timeout}, state}
-        else
-          lock = Lock.new(key, owner, backend_pid, pool)
+        {:ok, :lock_already_taken, backend_pid} ->
+          {{:error, :lock_already_taken}, session_seen(state, backend_pid)}
 
-          {:reply, {:ok, Lock.ref(lock)}, monitor_acquired_lock(state, lock)}
-        end
-
-      {:ok, :lock_already_taken, backend_pid, _pool} ->
-        {:reply, {:error, :lock_already_taken}, session_seen(state, backend_pid)}
-
-      {:error, _error} = reply ->
-        {:reply, reply, state}
+        {:error, _error} = reply ->
+          {reply, state}
+      end
+    else
+      {:error, _error} = reply -> {reply, state}
     end
   end
 
-  defp try_acquire_exclusive_lock(key, timeout, %State{} = state) do
+  defp acquired(key, owner, backend_pid, pool, deadline, %State{} = state) do
+    case remaining(deadline) do
+      {:ok, _remaining} ->
+        lock = Lock.new(key, owner, backend_pid, pool)
+
+        {{:ok, Lock.ref(lock)}, monitor_acquired_lock(state, lock)}
+
+      {:error, :timeout} = reply ->
+        # Acquired after the caller stopped waiting: no one would own it.
+        case unlock(pool, key, state) do
+          :ok -> {reply, state}
+          {:error, error} -> {reply, end_session(state, pool, {:unlock_failed, error})}
+        end
+    end
+  end
+
+  defp try_acquire_exclusive_lock(pool, key, timeout, %State{} = state) do
     %State{schema: schema} = state
 
-    with_pool(state, fn pool ->
-      case Storage.Lock.try_acquire_exclusive_session_lock(pool, key,
-             schema: schema,
-             timeout: timeout
-           ) do
-        {:ok, acquired, backend_pid} -> {:ok, acquired, backend_pid, pool}
-        {:error, _error} = reply -> reply
-      end
-    end)
+    Storage.Lock.try_acquire_exclusive_session_lock(pool, key, schema: schema, timeout: timeout)
+  catch
+    :exit, reason -> {:error, reason}
   end
 
   defp monitor_acquired_lock(%State{locks: locks} = state, %Lock{} = lock) do
@@ -286,26 +290,41 @@ defmodule Decree.Store.AdvisoryLocks do
 
     release_from_tracking(locks, :session_lost)
 
-    unlock_released_on_current_session(Map.values(locks), state)
+    state = %State{state | locks: %{}}
 
-    %State{state | locks: %{}}
+    case whereis_pool(state) do
+      {:ok, pool} ->
+        case unlock_held(Map.values(locks), pool, state) do
+          :ok -> state
+          {:error, error} -> end_session(state, pool, error)
+        end
+
+      # No pool, so no session to hold them.
+      {:error, :not_connected} ->
+        state
+    end
   end
 
-  defp unlock_released_on_current_session(released, %State{} = state) do
+  # Unlock, once per released lock, the keys the pool's current session holds.
+  defp unlock_held(released, pool, %State{} = state) do
     %State{query_timeout: query_timeout, schema: schema} = state
 
     keys = released |> Enum.map(fn %Lock{key: key} -> key end) |> Enum.uniq()
 
-    with_pool(state, fn pool ->
-      with {:ok, held} <-
-             Storage.Lock.held_keys(pool, keys, schema: schema, timeout: query_timeout) do
-        for %Lock{key: key} <- released, MapSet.member?(held, key) do
-          Storage.Lock.unlock(pool, key, schema: schema, timeout: query_timeout)
-        end
+    case held_keys(pool, keys, schema: schema, timeout: query_timeout) do
+      {:ok, held} ->
+        Enum.reduce_while(released, :ok, fn %Lock{key: key}, :ok ->
+          with true <- MapSet.member?(held, key),
+               {:error, error} <- unlock(pool, key, state) do
+            {:halt, {:error, {:unlock_failed, error}}}
+          else
+            _unlocked_or_not_held -> {:cont, :ok}
+          end
+        end)
 
-        :ok
-      end
-    end)
+      {:error, error} ->
+        {:error, {:held_locks_query_failed, error}}
+    end
   end
 
   # Keep the tracked locks the current session holds, release the others.
@@ -316,28 +335,55 @@ defmodule Decree.Store.AdvisoryLocks do
 
     keys = locks |> Enum.map(fn {_ref, %Lock{key: key}} -> key end) |> Enum.uniq()
 
-    case with_pool(
-           state,
-           &Storage.Lock.held_keys(&1, keys, schema: schema, timeout: query_timeout)
-         ) do
-      {:ok, held} ->
-        {kept, lost} =
-          Enum.split_with(locks, fn {_ref, %Lock{key: key}} -> MapSet.member?(held, key) end)
+    with {:ok, pool} <- whereis_pool(state),
+         {:ok, held} <- held_keys(pool, keys, schema: schema, timeout: query_timeout) do
+      {kept, lost} =
+        Enum.split_with(locks, fn {_ref, %Lock{key: key}} -> MapSet.member?(held, key) end)
 
-        release_from_tracking(lost, :session_lost)
+      release_from_tracking(lost, :session_lost)
 
-        %State{state | locks: Map.new(kept)}
-
+      %State{state | locks: Map.new(kept)}
+    else
       {:error, error} ->
-        Logger.warning(
-          "Advisory lock session could not be verified, releasing all locks due to: " <>
-            inspect(error)
-        )
-
         release_from_tracking(locks, :session_lost)
 
-        %State{state | locks: %{}}
+        state = %State{state | locks: %{}}
+
+        case whereis_pool(state) do
+          {:ok, pool} -> end_session(state, pool, {:held_locks_query_failed, error})
+          {:error, :not_connected} -> state
+        end
     end
+  end
+
+  # Cleaning up after a lost lock failed, so the pool's session may still hold a
+  # lock count that nothing tracks: an owner retrying would take the key again
+  # (advisory locks are reentrant within a session) and its one unlock would not
+  # free it. End the session instead. Killing the pool ends its connections too:
+  # `DBConnection.Watcher` terminates the dead pool's connection supervisor, the
+  # connection processes exit and their sockets close, and Postgres releases
+  # every lock the session held. `MonitoredServer` starts a new pool after its
+  # restart delay.
+  defp end_session(%State{} = state, pool, reason) do
+    Logger.warning(
+      "Ending the advisory lock session, so that it holds no lock left behind, due to: " <>
+        inspect(reason)
+    )
+
+    Process.exit(pool, :kill)
+
+    release_pool_locks(state, pool, :session_lost)
+  end
+
+  defp release_pool_locks(%State{} = state, pool, reason) do
+    %State{locks: locks} = state
+
+    {lost, kept} =
+      Enum.split_with(locks, fn {_ref, %Lock{pool: lock_pool}} -> lock_pool == pool end)
+
+    release_from_tracking(lost, reason)
+
+    %State{state | locks: Map.new(kept)}
   end
 
   # A query ran on the session `backend_pid`: every lock taken on another session
@@ -372,19 +418,24 @@ defmodule Decree.Store.AdvisoryLocks do
     :ok
   end
 
-  # A lock taken on an earlier session or an earlier pool is no longer held, and
-  # unlocking its key now would only make Postgres warn that it is not held.
-  defp release_lock(%Lock{backend_pid: backend_pid}, %State{backend_pid: current})
+  # Unlock the key of a lock whose owner terminated. A lock taken on an earlier
+  # session or an earlier pool is no longer held, and unlocking its key now would
+  # only make Postgres warn that it is not held.
+  defp release_lock(%Lock{backend_pid: backend_pid}, %State{backend_pid: current} = state)
        when backend_pid != current,
-       do: :ok
+       do: state
 
   defp release_lock(%Lock{key: key, pool: lock_pool}, %State{} = state) do
-    with_pool(state, fn
-      ^lock_pool = pool -> unlock(pool, key, state)
-      _other_pool -> :ok
-    end)
+    with {:ok, ^lock_pool = pool} <- whereis_pool(state),
+         {:error, error} <- unlock(pool, key, state) do
+      end_session(state, pool, {:unlock_failed, error})
+    else
+      _unlocked_or_gone -> state
+    end
   end
 
+  # `:ok` when the key is unlocked or was not held, `{:error, reason}` when the
+  # unlock failed.
   defp unlock(pool, key, %State{} = state) do
     %State{query_timeout: query_timeout, schema: schema} = state
 
@@ -393,27 +444,44 @@ defmodule Decree.Store.AdvisoryLocks do
     :exit, reason -> {:error, reason}
   end
 
+  defp held_keys(pool, keys, opts) do
+    Storage.Lock.held_keys(pool, keys, opts)
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
   defp deadline(:infinity), do: :infinity
   defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
 
-  defp expired?(:infinity), do: false
-  defp expired?(deadline), do: System.monotonic_time(:millisecond) >= deadline
+  # What is left of the caller's timeout, or `{:error, :timeout}` once nothing is.
+  defp remaining(:infinity), do: {:ok, :infinity}
 
-  # Run `fun` against the lock pool's pid (see the module comment). Returns
-  # `{:error, :not_connected}` while the pool is down, and the reason of an exit
-  # (the pool died while the query waited for, or held, its connection) as
-  # `{:error, reason}`.
-  defp with_pool(%State{conn: conn}, fun) do
-    case MonitoredServer.whereis(conn) do
-      nil ->
-        {:error, :not_connected}
+  defp remaining(deadline) do
+    case deadline - System.monotonic_time(:millisecond) do
+      remaining when remaining > 0 -> {:ok, remaining}
+      _expired -> {:error, :timeout}
+    end
+  end
 
-      pool when is_pid(pool) ->
-        try do
-          fun.(pool)
-        catch
-          :exit, reason -> {:error, reason}
-        end
+  # The lock pool's pid (see the module comment), or `{:error, :not_connected}`
+  # while the pool is down.
+  defp whereis_pool(%State{conn: conn}, timeout \\ 5_000) do
+    case MonitoredServer.whereis(conn, timeout) do
+      nil -> {:error, :not_connected}
+      pool when is_pid(pool) -> {:ok, pool}
+    end
+  end
+
+  # Run `fun` against the lock pool's pid. Returns `{:error, :not_connected}` while
+  # the pool is down, and the reason of an exit (the pool died while the query
+  # waited for, or held, its connection) as `{:error, reason}`.
+  defp with_pool(%State{} = state, fun) do
+    with {:ok, pool} <- whereis_pool(state) do
+      try do
+        fun.(pool)
+      catch
+        :exit, reason -> {:error, reason}
+      end
     end
   end
 end
