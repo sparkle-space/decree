@@ -80,6 +80,28 @@ defmodule Decree.Store.AdvisoryLocksTest do
     end
   end
 
+  defmodule ScriptedMonitoredServer do
+    # Stands in for the lock pool's MonitoredServer: `whereis` answers the scripted
+    # pids in turn, repeating the last one.
+    use GenServer
+
+    alias Decree.Store.MonitoredServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, [], opts)
+
+    def script(server, pids), do: GenServer.call(server, {:script, pids})
+
+    def init(pids), do: {:ok, pids}
+
+    def handle_call({:script, pids}, _from, _pids), do: {:reply, :ok, pids}
+
+    def handle_call({MonitoredServer, :monitor, _pid}, _from, pids),
+      do: {:reply, {:ok, make_ref()}, pids}
+
+    def handle_call({MonitoredServer, :whereis}, _from, [pid]), do: {:reply, pid, [pid]}
+    def handle_call({MonitoredServer, :whereis}, _from, [pid | pids]), do: {:reply, pid, pids}
+  end
+
   describe "lock session" do
     test "a disconnect releases every lock, and unlocks it on the current session", %{
       conn: conn
@@ -284,6 +306,65 @@ defmodule Decree.Store.AdvisoryLocksTest do
       ProcessHelper.shutdown(owner)
 
       assert_session_ended(conn, pool, 1)
+    end
+  end
+
+  describe "cleanup ends the exact pool" do
+    setup %{postgrex_config: postgrex_config} do
+      on_exit(fn -> restore_subscriptions_table(postgrex_config) end)
+    end
+
+    test "when the pool cannot be looked up after an owner terminated, the lock's own pool ends",
+         %{conn: conn} do
+      owner = start_lock_owner(1)
+      assert_receive {:lock_owner, ^owner, {:ok, _lock}}
+      pool = MonitoredServer.whereis(@conn)
+
+      # MonitoredServer stalls, so AdvisoryLocks cannot tell which pool is current.
+      monitored = Process.whereis(@conn)
+      :ok = :sys.suspend(monitored)
+      on_exit(fn -> resume(monitored) end)
+
+      ProcessHelper.shutdown(owner)
+
+      # The lookup gives up after five seconds; the lock's own pool is ended.
+      Wait.until(10_000, fn -> refute Process.alive?(pool) end)
+      Wait.until(5_000, fn -> assert lock_backend_pid(conn, 1) == nil end)
+    end
+
+    test "a failed held-locks query ends the pool it ran on, not a pool started since",
+         %{conn: conn, postgrex_config: postgrex_config} do
+      # Answers AdvisoryLocks's MonitoredServer calls with scripted pools.
+      scripted = start_supervised!({ScriptedMonitoredServer, name: :scripted_lock_pool})
+      pool = start_supervised!({Postgrex, postgrex_config}, id: :scripted_pool)
+      replacement = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(replacement, :kill) end)
+
+      :ok = ScriptedMonitoredServer.script(scripted, [pool])
+
+      locks =
+        start_supervised!(
+          {AdvisoryLocks, conn: :scripted_lock_pool, query_timeout: 5_000, schema: "public"},
+          id: :scripted_locks
+        )
+
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(locks, 1)
+
+      # The held-locks query runs on `pool` and fails; by the time the session is
+      # ended, `replacement` is the current pool.
+      move_subscriptions_table(conn)
+      :ok = ScriptedMonitoredServer.script(scripted, [pool, replacement])
+
+      send(locks, {:connected, self()})
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :session_lost}
+      _state = :sys.get_state(locks)
+
+      assert Process.alive?(replacement)
+      Wait.until(5_000, fn -> refute Process.alive?(pool) end)
+
+      restore_subscriptions_table(conn)
+      Wait.until(5_000, fn -> assert lock_backend_pid(conn, 1) == nil end)
     end
   end
 

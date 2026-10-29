@@ -94,9 +94,18 @@ defmodule Decree.Store.MonitoredServer do
   # watches this server and not that process, never fires
   # (sparkle-space/sparklespace#7543, upstream commanded/eventstore#331).
   def whereis(name, timeout \\ 5_000) do
-    GenServer.call(name, {__MODULE__, :whereis}, timeout)
+    case lookup(name, timeout) do
+      {:ok, pid} -> pid
+      {:error, _reason} -> nil
+    end
+  end
+
+  # Like `whereis/2`, but tells a monitored process that is down (`{:ok, nil}`)
+  # from a monitored server that did not answer (`{:error, reason}`).
+  def lookup(name, timeout \\ 5_000) do
+    {:ok, GenServer.call(name, {__MODULE__, :whereis}, timeout)}
   catch
-    :exit, _reason -> nil
+    :exit, reason -> {:error, reason}
   end
 
   def init(%State{} = state) do

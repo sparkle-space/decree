@@ -39,7 +39,10 @@ defmodule Decree.Store.AdvisoryLocks do
   # the session may still hold a lock count nothing tracks, which would keep the
   # key held by this instance for good. The lock pool is then killed, which ends
   # its session and every lock count in it, and is started again after its
-  # restart delay.
+  # restart delay. The pool killed is the one the failed step ran on or, when
+  # `MonitoredServer` does not answer which pool is current, the pool each lock
+  # was taken on; never a pool started since. An owner's lock counts as cleaned
+  # up only once it is unlocked, or its pool is confirmed down or replaced.
   #
   # Each lock is also tagged with the backend pid of the session that took it,
   # and a lock query that reports a different backend releases the locks of the
@@ -292,9 +295,11 @@ defmodule Decree.Store.AdvisoryLocks do
 
     state = %State{state | locks: %{}}
 
+    released = Map.values(locks)
+
     case whereis_pool(state) do
       {:ok, pool} ->
-        case unlock_held(Map.values(locks), pool, state) do
+        case unlock_held(released, pool, state) do
           :ok -> state
           {:error, error} -> end_session(state, pool, error)
         end
@@ -302,6 +307,10 @@ defmodule Decree.Store.AdvisoryLocks do
       # No pool, so no session to hold them.
       {:error, :not_connected} ->
         state
+
+      # Which pool is current is unknown: end the pools the locks were taken on.
+      {:error, {:pool_lookup_failed, _reason} = error} ->
+        end_sessions(state, lock_pools(released), error)
     end
   end
 
@@ -335,25 +344,42 @@ defmodule Decree.Store.AdvisoryLocks do
 
     keys = locks |> Enum.map(fn {_ref, %Lock{key: key}} -> key end) |> Enum.uniq()
 
-    with {:ok, pool} <- whereis_pool(state),
-         {:ok, held} <- held_keys(pool, keys, schema: schema, timeout: query_timeout) do
-      {kept, lost} =
-        Enum.split_with(locks, fn {_ref, %Lock{key: key}} -> MapSet.member?(held, key) end)
+    case whereis_pool(state) do
+      {:ok, pool} ->
+        case held_keys(pool, keys, schema: schema, timeout: query_timeout) do
+          {:ok, held} ->
+            {kept, lost} =
+              Enum.split_with(locks, fn {_ref, %Lock{key: key}} -> MapSet.member?(held, key) end)
 
-      release_from_tracking(lost, :session_lost)
+            release_from_tracking(lost, :session_lost)
 
-      %State{state | locks: Map.new(kept)}
-    else
-      {:error, error} ->
-        release_from_tracking(locks, :session_lost)
+            %State{state | locks: Map.new(kept)}
 
-        state = %State{state | locks: %{}}
-
-        case whereis_pool(state) do
-          {:ok, pool} -> end_session(state, pool, {:held_locks_query_failed, error})
-          {:error, :not_connected} -> state
+          # End the session the query ran on, never a pool started since.
+          {:error, error} ->
+            state
+            |> release_all()
+            |> end_session(pool, {:held_locks_query_failed, error})
         end
+
+      # No pool, so no session to hold them.
+      {:error, :not_connected} ->
+        release_all(state)
+
+      # Which pool is current is unknown: end the pools the locks were taken on.
+      {:error, {:pool_lookup_failed, _reason} = error} ->
+        pools = locks |> Map.values() |> lock_pools()
+
+        state
+        |> release_all()
+        |> end_sessions(pools, error)
     end
+  end
+
+  defp release_all(%State{locks: locks} = state) do
+    release_from_tracking(locks, :session_lost)
+
+    %State{state | locks: %{}}
   end
 
   # Cleaning up after a lost lock failed, so the pool's session may still hold a
@@ -373,6 +399,15 @@ defmodule Decree.Store.AdvisoryLocks do
     Process.exit(pool, :kill)
 
     release_pool_locks(state, pool, :session_lost)
+  end
+
+  defp end_sessions(%State{} = state, pools, reason) do
+    Enum.reduce(pools, state, &end_session(&2, &1, reason))
+  end
+
+  # The pools the given locks were taken on.
+  defp lock_pools(locks) do
+    for %Lock{pool: pool} <- locks, is_pid(pool), uniq: true, do: pool
   end
 
   defp release_pool_locks(%State{} = state, pool, reason) do
@@ -425,12 +460,26 @@ defmodule Decree.Store.AdvisoryLocks do
        when backend_pid != current,
        do: state
 
+  #
+  # The cleanup is complete only when the unlock succeeds, or when the lock's pool
+  # is confirmed down or replaced; otherwise the lock's own pool is ended.
   defp release_lock(%Lock{key: key, pool: lock_pool}, %State{} = state) do
-    with {:ok, ^lock_pool = pool} <- whereis_pool(state),
-         {:error, error} <- unlock(pool, key, state) do
-      end_session(state, pool, {:unlock_failed, error})
-    else
-      _unlocked_or_gone -> state
+    case whereis_pool(state) do
+      {:ok, ^lock_pool} ->
+        case unlock(lock_pool, key, state) do
+          :ok -> state
+          {:error, error} -> end_session(state, lock_pool, {:unlock_failed, error})
+        end
+
+      # Its pool was replaced or is down, and its session with it.
+      {:ok, _replacement} ->
+        state
+
+      {:error, :not_connected} ->
+        state
+
+      {:error, {:pool_lookup_failed, _reason} = error} ->
+        end_sessions(state, lock_pools([%Lock{pool: lock_pool}]), error)
     end
   end
 
@@ -463,17 +512,19 @@ defmodule Decree.Store.AdvisoryLocks do
     end
   end
 
-  # The lock pool's pid (see the module comment), or `{:error, :not_connected}`
-  # while the pool is down.
+  # The lock pool's pid (see the module comment), `{:error, :not_connected}` while
+  # the pool is confirmed down, or `{:error, {:pool_lookup_failed, reason}}` when
+  # `MonitoredServer` did not answer, so the pool is unknown.
   defp whereis_pool(%State{conn: conn}, timeout \\ 5_000) do
-    case MonitoredServer.whereis(conn, timeout) do
-      nil -> {:error, :not_connected}
-      pool when is_pid(pool) -> {:ok, pool}
+    case MonitoredServer.lookup(conn, timeout) do
+      {:ok, nil} -> {:error, :not_connected}
+      {:ok, pool} when is_pid(pool) -> {:ok, pool}
+      {:error, reason} -> {:error, {:pool_lookup_failed, reason}}
     end
   end
 
-  # Run `fun` against the lock pool's pid. Returns `{:error, :not_connected}` while
-  # the pool is down, and the reason of an exit (the pool died while the query
+  # Run `fun` against the lock pool's pid. Returns the `whereis_pool/2` error when
+  # there is no known pool, and the reason of an exit (the pool died while the query
   # waited for, or held, its connection) as `{:error, reason}`.
   defp with_pool(%State{} = state, fun) do
     with {:ok, pool} <- whereis_pool(state) do
