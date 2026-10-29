@@ -111,7 +111,7 @@ defmodule Decree.Event.Handler do
   provides a convenience macro that implements the behaviour, allowing you to
   handle only the events you are interested in processing.
 
-  You should start your event handlers using a [Supervisor](supervision.html) to
+  You should start your event handlers using a `Supervisor` to
   ensure they are restarted on error.
 
   ### Example
@@ -127,7 +127,7 @@ defmodule Decree.Event.Handler do
         end
       end
 
-  Start your event handler process (or use a [Supervisor](supervision.html)):
+  Start your event handler process (or use a `Supervisor`):
 
       {:ok, _handler} = ExampleHandler.start_link()
 

@@ -72,7 +72,7 @@ defmodule Decree.Application do
       {:ok, _pid} = MyApp.Application.start_link()
 
   Instead of starting the application manually, you should use a
-  [Supervisor](supervision.html).
+  `Supervisor`.
 
   ## Supervision
 
