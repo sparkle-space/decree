@@ -45,7 +45,7 @@ defmodule Decree.Store.Tasks.Migrations do
     event_store = Keyword.get(opts, :decree, "default")
     event_store_name = event_store |> to_string() |> String.replace_prefix("Elixir.", "")
 
-    write_info("\nEventStore: #{event_store_name}\n", opts)
+    write_info("\nDecree.Store: #{event_store_name}\n", opts)
     write_table_header(opts)
 
     Enum.each(migrations, &list_migration(&1, opts))

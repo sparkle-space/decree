@@ -1,5 +1,5 @@
 defmodule Decree.Middleware.ApplicationMiddlewareTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Middleware.Tenant.Commands.RegisterTenant
   alias Decree.Middleware.TenantApp

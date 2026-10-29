@@ -1,5 +1,5 @@
 defmodule Decree.Serialization.JsonDecoderTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Serialization.{JsonDecoder, JsonSerializer}
 

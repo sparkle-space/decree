@@ -44,7 +44,7 @@ defmodule Decree.Store.StorageCase do
     Decree.Store.Storage.Database.drop(config)
     :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore.dump")
   end
 
   defp migrate_eventstore(config) do

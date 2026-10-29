@@ -4,8 +4,8 @@
 #   MIX_ENV=test mix es.reset
 #   MIX_ENV=test mix run test/manual/seed_eventstore.exs
 #
-#   pg_dump eventstore_test > test/fixture/eventstore_seed.sql
-#   pg_dump -Fc eventstore_test > test/fixture/eventstore_seed.dump
+#   pg_dump eventstore_test > test/store/fixture/eventstore_seed.sql
+#   pg_dump -Fc eventstore_test > test/store/fixture/eventstore_seed.dump
 #
 
 defmodule Event do

@@ -1,5 +1,5 @@
 defmodule Decree.Middleware.HaltingMiddlewareTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
   alias Decree.HaltingRouter

@@ -9,7 +9,7 @@ defmodule Decree.EventStore.Adapters.EventStore.Storage do
   end
 
   def config(schema \\ "public") do
-    TestEventStore
+    ConformanceEventStore
     |> Config.parsed(:decree)
     |> Keyword.put(:schema, schema)
   end

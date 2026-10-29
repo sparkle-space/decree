@@ -1,3 +1,2 @@
-exclude = [:ignore, :manual, :migration]
-
-ExUnit.start(exclude: exclude)
+# Exclusions (:ignore, :manual, :migration) are configured in config/test.exs.
+ExUnit.start()

@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.EventPersistenceTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Enumerable, only: [pluck: 2]
 

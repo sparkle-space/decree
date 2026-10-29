@@ -1,5 +1,5 @@
 defmodule Decree.Projections.EctoProjectionTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Projections.ProjectionAssertions
 

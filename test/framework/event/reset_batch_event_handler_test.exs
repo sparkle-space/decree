@@ -1,5 +1,5 @@
 defmodule Decree.Event.BatchResetEventHandlerTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Assertions.EventAssertions
 

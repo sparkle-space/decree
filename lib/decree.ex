@@ -26,6 +26,7 @@ defmodule Decree do
   @doc false
   def start(_type, _args) do
     children = [
+      Decree.Store.Application,
       Config
     ]
 

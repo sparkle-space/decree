@@ -5,7 +5,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   alias Decree.Store.Streams.Stream
   alias Decree.Store.Subscriptions.{SubscriptionState, Subscriber}
 
-  use Fsm, initial_state: :initial, initial_data: %SubscriptionState{}
+  use Decree.Store.Subscriptions.GeneratedFsm,
+    initial_state: :initial,
+    initial_data: %SubscriptionState{}
 
   require Logger
 

@@ -87,7 +87,7 @@ defmodule Decree.Store.ListEventStoreMigrationsTest do
     Decree.Store.Storage.Database.drop(config)
     :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore.dump")
   end
 
   defp list_migrations(config, opts) do

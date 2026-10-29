@@ -1,7 +1,8 @@
 defmodule Decree.DynamicApplicationsTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.ExampleApplication
+  alias Decree.FrameworkStorage
   alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
   alias Decree.Helpers.CommandAuditMiddleware
   alias Decree.ReplyHandler
@@ -9,6 +10,10 @@ defmodule Decree.DynamicApplicationsTest do
 
   setup_all do
     start_supervised!(CommandAuditMiddleware)
+
+    # Each named instance has its own event store: a schema of the framework database.
+    for schema <- ["example1", "example2"], do: FrameworkStorage.create_schema!(schema)
+
     :ok
   end
 
@@ -40,23 +45,21 @@ defmodule Decree.DynamicApplicationsTest do
 
   describe "dynamic application command dispatch" do
     setup do
-      start_supervised!({ExampleApplication, name: :example1})
-      start_supervised!({ExampleApplication, name: :example2})
-      :ok
+      start_instances!()
     end
 
     test "should dispatch to named application" do
       {:ok, account_number} = open_account(:example1)
 
-      assert Decree.EventStore.stream_forward(:example1, account_number) |> length() == 1
+      assert Decree.EventStore.stream_forward(:example1, account_number) |> Enum.count() == 1
 
       assert {:error, :stream_not_found} =
                Decree.EventStore.stream_forward(:example2, account_number)
 
       {:ok, ^account_number} = open_account(:example2, account_number)
 
-      assert Decree.EventStore.stream_forward(:example1, account_number) |> length() == 1
-      assert Decree.EventStore.stream_forward(:example2, account_number) |> length() == 1
+      assert Decree.EventStore.stream_forward(:example1, account_number) |> Enum.count() == 1
+      assert Decree.EventStore.stream_forward(:example2, account_number) |> Enum.count() == 1
     end
 
     test "should error without application name" do
@@ -72,9 +75,7 @@ defmodule Decree.DynamicApplicationsTest do
   describe "dynamic application event handler" do
     setup do
       start_reply_to_agent!()
-      start_supervised!({ExampleApplication, name: :example1})
-      start_supervised!({ExampleApplication, name: :example2})
-      :ok
+      start_instances!()
     end
 
     test "should only receive events from named application" do
@@ -91,6 +92,20 @@ defmodule Decree.DynamicApplicationsTest do
       assert_receive {:event, ^pid2, _event}
       refute_receive {:event, ^pid1, _event}
     end
+  end
+
+  defp start_instances! do
+    for name <- [:example1, :example2] do
+      schema = Atom.to_string(name)
+      FrameworkStorage.reset!(schema)
+
+      start_supervised!(
+        {ExampleApplication,
+         name: name, event_store: FrameworkStorage.event_store_config(prefix: schema)}
+      )
+    end
+
+    :ok
   end
 
   defp start_reply_to_agent! do

@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.AggregateTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import ExUnit.CaptureLog
 

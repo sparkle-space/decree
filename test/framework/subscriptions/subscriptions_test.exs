@@ -1,5 +1,5 @@
 defmodule Decree.SubscriptionsTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
   alias Decree.EventStore.RecordedEvent

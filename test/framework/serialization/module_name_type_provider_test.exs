@@ -1,5 +1,5 @@
 defmodule Decree.Serialization.ModuleNameTypeProviderTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
   alias Decree.Serialization.ModuleNameTypeProvider

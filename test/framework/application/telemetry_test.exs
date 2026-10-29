@@ -1,5 +1,5 @@
 defmodule Decree.Application.TelemetryTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
   alias Decree.Middleware.Commands.Fail

@@ -1,7 +1,7 @@
 defmodule Decree.Store.EventFactory do
   alias Decree.Store.{EventData, RecordedEvent, UUID}
 
-  @serializer Application.compile_env(:decree, TestEventStore)[:serializer] ||
+  @serializer Application.compile_env(:decree, [TestEventStore, :serializer]) ||
                 Decree.Store.JsonSerializer
 
   defmodule Event do

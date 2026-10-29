@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.ExecuteCommandTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Helpers.ProcessHelper, only: [shutdown_aggregate: 3]
 

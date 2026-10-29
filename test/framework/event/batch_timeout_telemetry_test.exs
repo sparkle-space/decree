@@ -5,7 +5,7 @@ defmodule Decree.Event.BatchTimeoutTelemetryTest do
   Verifies that flush_reason is correctly included in telemetry metadata.
   """
 
-  use ExUnit.Case, async: false
+  use Decree.PostgresCase, async: false
 
   alias Decree.Application.Config
   alias Decree.Event.Handler

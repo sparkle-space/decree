@@ -1,5 +1,5 @@
 defmodule Decree.EventStore.TelemetryTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
   alias Decree.EventStore
@@ -36,7 +36,14 @@ defmodule Decree.EventStore.TelemetryTest do
 
   describe "snapshotting telemetry events" do
     test "emit `[:decree, :event_store, :record_snapshot, :start | :stop]` event" do
-      snapshot = %SnapshotData{}
+      snapshot = %SnapshotData{
+        source_uuid: UUID.uuid4(),
+        source_version: 1,
+        source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
+        data: %{},
+        metadata: %{}
+      }
+
       assert :ok = EventStore.record_snapshot(DefaultApp, snapshot)
 
       assert_receive {[:decree, :event_store, :record_snapshot, :start], 1, _meas, _meta}
@@ -82,12 +89,18 @@ defmodule Decree.EventStore.TelemetryTest do
 
   describe "ack_event telemetry events" do
     test "emit `[:decree, :event_store, :ack_event, :start | :stop]` event" do
-      pid = self()
-      event = %RecordedEvent{}
+      # The Postgres store acks an event on a live subscription.
+      {:ok, pid} = EventStore.subscribe_to(DefaultApp, :all, "Test", self(), :origin)
+      assert_receive {:subscribed, ^pid}
+
+      event_data = %EventData{event_type: "Elixir.Decree.Event.ReplyEvent", data: %{}}
+      :ok = EventStore.append_to_stream(DefaultApp, UUID.uuid4(), 0, [event_data])
+      assert_receive {:events, [%RecordedEvent{} = event]}
+
       assert :ok = EventStore.ack_event(DefaultApp, pid, event)
 
-      assert_receive {[:decree, :event_store, :ack_event, :start], 1, _meas, _meta}
-      assert_receive {[:decree, :event_store, :ack_event, :stop], 2, _meas, meta}
+      assert_receive {[:decree, :event_store, :ack_event, :start], 5, _meas, _meta}
+      assert_receive {[:decree, :event_store, :ack_event, :stop], 6, _meas, meta}
       assert %{application: DefaultApp, subscription: ^pid, event: ^event} = meta
     end
   end
@@ -95,7 +108,8 @@ defmodule Decree.EventStore.TelemetryTest do
   describe "append_to_stream telemetry events" do
     test "emit `[:decree, :event_store, :append_to_stream, :start | :stop]` event" do
       uuid = UUID.uuid4()
-      assert :ok = EventStore.append_to_stream(DefaultApp, uuid, 0, [%EventData{}])
+      event = %EventData{event_type: "Elixir.Decree.Event.ReplyEvent", data: %{}, metadata: %{}}
+      assert :ok = EventStore.append_to_stream(DefaultApp, uuid, 0, [event])
 
       assert_receive {[:decree, :event_store, :append_to_stream, :start], 1, _meas, _meta}
       assert_receive {[:decree, :event_store, :append_to_stream, :stop], 2, _meas, meta}
@@ -146,8 +160,8 @@ defmodule Decree.EventStore.TelemetryTest do
     end
 
     test "emit `[:decree, :event_store, :delete_subscription, :start | :stop]` event" do
-      assert {:error, :subscription_not_found} =
-               EventStore.delete_subscription(DefaultApp, :all, "Test")
+      # The Postgres store treats deleting an unknown subscription as done.
+      assert :ok = EventStore.delete_subscription(DefaultApp, :all, "Test")
 
       assert_receive {[:decree, :event_store, :delete_subscription, :start], 1, _meas, _meta}
       assert_receive {[:decree, :event_store, :delete_subscription, :stop], 2, _meas, meta}

@@ -1,5 +1,5 @@
 defmodule Decree.Event.EventHandlerSubscribeToStreamTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.{DefaultApp, EventStore}
   alias Decree.Event.Mapper

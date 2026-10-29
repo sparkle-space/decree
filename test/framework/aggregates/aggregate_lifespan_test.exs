@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.AggregateLifespanTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Aggregates.{Aggregate, DefaultLifespanRouter, LifespanAggregate, LifespanRouter}
   alias Decree.Aggregates.LifespanAggregate.{Command, Event}

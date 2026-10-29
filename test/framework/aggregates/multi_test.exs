@@ -1,5 +1,5 @@
 defmodule Decree.Aggregate.MultiTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Enumerable
 

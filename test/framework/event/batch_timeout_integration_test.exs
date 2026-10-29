@@ -5,7 +5,7 @@ defmodule Decree.Event.BatchTimeoutIntegrationTest do
   Tests edge cases like timer cleanup, multiple flush cycles, and race conditions.
   """
 
-  use ExUnit.Case, async: false
+  use Decree.PostgresCase, async: false
 
   alias Decree.Application.Config
   alias Decree.Event.Handler

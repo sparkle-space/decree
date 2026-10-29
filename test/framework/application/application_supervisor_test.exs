@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.ApplicationSupervisorTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
   alias Decree.Helpers.Wait

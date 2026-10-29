@@ -4,8 +4,8 @@ defmodule Decree.Store.AdvisoryLocksTest do
   alias Decree.Store.{AdvisoryLocks, Config, Wait}
   alias Decree.Store.Storage
 
-  @locks TestEventStore.EventStore.AdvisoryLocks
-  @conn TestEventStore.EventStore.AdvisoryLocks.Postgrex
+  @locks TestEventStore.Decree.Store.AdvisoryLocks
+  @conn TestEventStore.Decree.Store.AdvisoryLocks.Postgrex
 
   setup do
     postgrex_config = Config.parsed(TestEventStore, :decree) |> Config.default_postgrex_opts()

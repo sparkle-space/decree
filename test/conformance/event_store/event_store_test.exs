@@ -8,7 +8,7 @@ defmodule Decree.EventStore.Adapters.EventStore.EventStoreTest do
   end
 
   test "should configure event store in application" do
-    assert {Decree.EventStore.Adapters.EventStore, %{event_store: TestEventStore}} =
+    assert {Decree.EventStore.Adapters.EventStore, %{event_store: ConformanceEventStore}} =
              Decree.Application.event_store_adapter(EventStoreApplication)
   end
 end

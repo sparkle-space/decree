@@ -1,5 +1,5 @@
 defmodule Decree.Projections.ErrorCallbackTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Projections.ProjectionAssertions
   import ExUnit.CaptureLog
@@ -63,7 +63,7 @@ defmodule Decree.Projections.ErrorCallbackTest do
       assert log =~ "** (RuntimeError) it crashed, it crashed, it crashed"
 
       assert log =~
-               "test/support/error_projector.ex:34: anonymous fn/2 in ErrorProjector.handle/2"
+               "test/projections/support/error_projector.ex:34: anonymous fn/2 in ErrorProjector.handle/2"
     end
   end
 

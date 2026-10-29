@@ -1,5 +1,5 @@
 defmodule Decree.Projections.DeprecatedProjectionTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Projections.ProjectionAssertions
   import ExUnit.CaptureIO

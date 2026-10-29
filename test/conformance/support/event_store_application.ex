@@ -3,6 +3,6 @@ defmodule EventStoreApplication do
     otp_app: :decree,
     event_store: [
       adapter: Decree.EventStore.Adapters.EventStore,
-      event_store: TestEventStore
+      event_store: ConformanceEventStore
     ]
 end

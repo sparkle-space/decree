@@ -1,15 +1,15 @@
 defmodule Decree.ExampleApplication do
-  alias Decree.EventStore.Adapters.InMemory
-  alias Decree.Serialization.JsonSerializer
-
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: InMemory,
-      serializer: JsonSerializer
+      adapter: Decree.EventStore.Adapters.EventStore,
+      event_store: Decree.FrameworkEventStore
     ]
 
   alias Decree.ExampleDomain.BankRouter
 
   router(BankRouter)
+
+  # One event store process per application instance (see Decree.FrameworkStorage).
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
 end

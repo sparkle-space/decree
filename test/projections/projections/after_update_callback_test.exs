@@ -1,5 +1,5 @@
 defmodule Decree.Projections.AfterUpdateCallbackTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Projections.Events.AnEvent
   alias Decree.Projections.Projection

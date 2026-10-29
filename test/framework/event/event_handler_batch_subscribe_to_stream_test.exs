@@ -1,5 +1,5 @@
 defmodule Decree.Event.EventHandlerBatchSubscribeToStreamTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.{DefaultApp, EventStore}
   alias Decree.Event.Mapper
@@ -16,11 +16,12 @@ defmodule Decree.Event.EventHandlerBatchSubscribeToStreamTest do
       subscribe_to: "stream2",
       batch_size: 3
 
-    def handle_batch([
-          {%AnEvent{stream_uuid: stream_uuid, reply_to: reply_to}, _metadata} | _rest
-        ]) do
-      pid = :erlang.list_to_pid(reply_to)
-      Process.send(pid, {:event, stream_uuid}, [])
+    # One reply per event: the Postgres store may deliver the three events in one batch.
+    def handle_batch(events) do
+      for {%AnEvent{stream_uuid: stream_uuid, reply_to: reply_to}, _metadata} <- events do
+        pid = :erlang.list_to_pid(reply_to)
+        Process.send(pid, {:event, stream_uuid}, [])
+      end
 
       :ok
     end

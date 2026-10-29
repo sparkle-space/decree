@@ -1,5 +1,5 @@
 defmodule Decree.EventAssertionsTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Assertions.EventAssertions
 

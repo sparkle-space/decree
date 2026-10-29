@@ -1,5 +1,5 @@
 defmodule Decree.Commands.CommandIdentityTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
   alias Decree.ExampleDomain.BankApp

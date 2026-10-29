@@ -127,7 +127,7 @@ defmodule Decree.Store.MigratedEventStoreTest do
     Decree.Store.Storage.Database.drop(config)
     :ok = Decree.Store.Storage.Database.create(config)
 
-    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/fixture/eventstore_seed.dump")
+    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore_seed.dump")
   end
 
   defp migrate_eventstore(config) do

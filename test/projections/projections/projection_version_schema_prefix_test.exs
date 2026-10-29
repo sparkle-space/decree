@@ -1,5 +1,5 @@
 defmodule Decree.Projections.ProjectionVersionSchemaPrefixTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Projections.Repo
   alias Decree.Projections.Events.SchemaEvent

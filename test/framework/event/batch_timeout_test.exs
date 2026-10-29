@@ -5,7 +5,7 @@ defmodule Decree.Event.BatchTimeoutTest do
   Verifies that batches flush based on time OR size, whichever comes first.
   """
 
-  use ExUnit.Case, async: false
+  use Decree.PostgresCase, async: false
 
   alias Decree.Application.Config
   alias Decree.Event.Handler

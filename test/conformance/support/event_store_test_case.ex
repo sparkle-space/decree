@@ -25,7 +25,7 @@ defmodule Decree.EventStore.EventStoreTestCase do
   def start_event_store(config \\ []) do
     alias Decree.EventStore.Adapters.EventStore
 
-    config = Keyword.put_new(config, :event_store, TestEventStore)
+    config = Keyword.put_new(config, :event_store, ConformanceEventStore)
 
     {:ok, child_spec, event_store_meta} = EventStore.child_spec(EventStoreApplication, config)
 

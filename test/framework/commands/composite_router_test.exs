@@ -1,5 +1,5 @@
 defmodule Decree.Commands.CompositeRouterTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Commands.Composite.{
     CompositeCompositeRouter,

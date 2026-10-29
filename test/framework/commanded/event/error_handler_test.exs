@@ -1,5 +1,5 @@
 defmodule Decree.Event.ErrorHandlerTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Event.ErrorHandler
   alias Decree.Event.FailureContext

@@ -1,5 +1,5 @@
 defmodule Decree.Event.EventHandlerBatchTelemetryTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Application.Config
   alias Decree.Event.Handler

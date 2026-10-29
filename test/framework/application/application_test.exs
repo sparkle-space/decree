@@ -1,5 +1,5 @@
 defmodule Decree.ApplicationTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Application
   alias Decree.ExampleApplication
@@ -23,8 +23,11 @@ defmodule Decree.ApplicationTest do
 
     test "should expose an event store adapter" do
       assert Application.event_store_adapter(ExampleApplication) ==
-               {Decree.EventStore.Adapters.InMemory,
-                %{name: Decree.ExampleApplication.EventStore}}
+               {Decree.EventStore.Adapters.EventStore,
+                %{
+                  event_store: Decree.FrameworkEventStore,
+                  name: Decree.ExampleApplication.EventStore
+                }}
     end
 
     test "should expose a pubsub adapter" do
@@ -46,8 +49,11 @@ defmodule Decree.ApplicationTest do
       start_supervised!(RuntimeConfiguredApplication)
 
       assert Application.event_store_adapter(RuntimeConfiguredApplication) ==
-               {Decree.EventStore.Adapters.InMemory,
-                %{name: Decree.RuntimeConfiguredApplication.EventStore}}
+               {Decree.EventStore.Adapters.EventStore,
+                %{
+                  event_store: Decree.FrameworkEventStore,
+                  name: Decree.RuntimeConfiguredApplication.EventStore
+                }}
 
       assert Application.pubsub_adapter(RuntimeConfiguredApplication) ==
                {Decree.PubSub.PhoenixPubSub,

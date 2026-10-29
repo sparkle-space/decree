@@ -1,5 +1,5 @@
 defmodule Decree.Commands.DispatchReturnTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Commands.ExecutionResult
   alias Decree.ExampleDomain.{BankAccount, BankApp}

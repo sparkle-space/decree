@@ -1,5 +1,5 @@
 defmodule Decree.Commands.CorrelationCasuationTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Assertions.EventAssertions
 
@@ -9,8 +9,6 @@ defmodule Decree.Commands.CorrelationCasuationTest do
   alias Decree.ExampleDomain.BankAccount.Commands.{OpenAccount, WithdrawMoney}
   alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
   alias Decree.ExampleDomain.BankRouter
-  alias Decree.ExampleDomain.MoneyTransfer.Commands.TransferMoney
-  alias Decree.ExampleDomain.TransferMoneyProcessManager
   alias Decree.Helpers.CommandAuditMiddleware
   alias Decree.Helpers.ProcessHelper
   alias Decree.UUID
@@ -18,7 +16,6 @@ defmodule Decree.Commands.CorrelationCasuationTest do
   setup do
     start_supervised!(CommandAuditMiddleware)
     start_supervised!(BankApp)
-    start_supervised!(TransferMoneyProcessManager)
 
     :ok
   end
@@ -64,52 +61,6 @@ defmodule Decree.Commands.CorrelationCasuationTest do
       assert event.causation_id == causation_id
     end
 
-    test "should be copied onto commands/events by process manager" do
-      transfer_uuid = UUID.uuid4()
-
-      :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 500},
-          application: BankApp
-        )
-
-      :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC456", initial_balance: 100},
-          application: BankApp
-        )
-
-      CommandAuditMiddleware.reset()
-
-      :ok =
-        BankRouter.dispatch(
-          %TransferMoney{
-            transfer_uuid: transfer_uuid,
-            debit_account: "ACC123",
-            credit_account: "ACC456",
-            amount: 100
-          },
-          application: BankApp
-        )
-
-      assert_receive_event(BankApp, MoneyDeposited, fn event ->
-        assert event.transfer_uuid == transfer_uuid
-      end)
-
-      # withdraw money command's `causation_id` should be money transfer requested event's id
-      transfer_requested = EventStore.stream_forward(BankApp, transfer_uuid) |> Enum.at(0)
-      [_, causation_id, _] = CommandAuditMiddleware.dispatched_commands(& &1.causation_id)
-      assert causation_id == transfer_requested.event_id
-
-      # events emitted by a ProcessManager-dispatched command carry the handled event's
-      # id as their `causation_id`
-      money_withdrawn =
-        EventStore.stream_forward(BankApp, "ACC123") |> Enum.to_list() |> Enum.at(-1)
-
-      money_deposited =
-        EventStore.stream_forward(BankApp, "ACC456") |> Enum.to_list() |> Enum.at(-1)
-
-      assert money_withdrawn.causation_id == transfer_requested.event_id
-      assert money_deposited.causation_id == money_withdrawn.event_id
-    end
   end
 
   describe "`correlation_id`" do
@@ -154,45 +105,6 @@ defmodule Decree.Commands.CorrelationCasuationTest do
       end
     end
 
-    test "should be copied onto commands/events by process manager" do
-      correlation_id = UUID.uuid4()
-      transfer_uuid = UUID.uuid4()
-
-      :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 500},
-          application: BankApp
-        )
-
-      :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC456", initial_balance: 100},
-          application: BankApp
-        )
-
-      CommandAuditMiddleware.reset()
-
-      :ok =
-        BankRouter.dispatch(
-          %TransferMoney{
-            transfer_uuid: transfer_uuid,
-            debit_account: "ACC123",
-            credit_account: "ACC456",
-            amount: 100
-          },
-          application: BankApp,
-          correlation_id: correlation_id
-        )
-
-      assert_receive_event(BankApp, MoneyDeposited, fn event ->
-        assert event.transfer_uuid == transfer_uuid
-      end)
-
-      # `correlation_id` should be the same for all commands & events related to money transfer
-      assert [correlation_id, correlation_id, correlation_id] =
-               CommandAuditMiddleware.dispatched_commands(& &1.correlation_id)
-
-      event = EventStore.stream_forward(BankApp, transfer_uuid) |> Enum.at(0)
-      assert event.correlation_id == correlation_id
-    end
   end
 
   describe "event handler dispatch command" do

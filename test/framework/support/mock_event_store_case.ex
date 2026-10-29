@@ -19,6 +19,9 @@ defmodule Decree.MockEventStoreCase do
   setup [:set_mox_global, :stub_event_store]
 
   setup do
+    # Tests here also start Postgres-backed applications: start them on an empty store.
+    Decree.FrameworkStorage.reset!()
+
     start_supervised!(MockedApp)
 
     :ok

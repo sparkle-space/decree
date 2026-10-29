@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.AggregateSubscriptionTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Aggregates.{Aggregate, ExecutionContext}
   alias Decree.Aggregates.Supervisor, as: AggregateSupervisor
@@ -8,6 +8,7 @@ defmodule Decree.Aggregates.AggregateSubscriptionTest do
   alias Decree.ExampleDomain.{BankAccount, OpenAccountHandler}
   alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
   alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
+  alias Decree.Helpers.Wait
   alias Decree.UUID
 
   setup do
@@ -105,6 +106,13 @@ defmodule Decree.Aggregates.AggregateSubscriptionTest do
       }
     }
 
-    EventStore.append_to_stream(DefaultApp, account_number, 1, [event])
+    :ok = EventStore.append_to_stream(DefaultApp, account_number, 1, [event])
+
+    # The aggregate learns of the event through a Postgres notification.
+    Wait.until(2_000, fn ->
+      assert Aggregate.aggregate_version(DefaultApp, BankAccount, account_number) == 2
+    end)
+
+    :ok
   end
 end

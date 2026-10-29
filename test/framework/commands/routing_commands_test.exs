@@ -1,5 +1,5 @@
 defmodule Decree.Commands.RoutingCommandsTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Commands.AggregateRoot.{Command, Command2}
 

@@ -1,5 +1,5 @@
 defmodule Decree.EventStore.RecordedEventTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.EventStore.RecordedEvent
   alias Decree.Helpers.EventFactory

@@ -1,5 +1,5 @@
 defmodule Decree.Event.HandlerConfigTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
 

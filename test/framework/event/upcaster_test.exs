@@ -1,10 +1,10 @@
 defmodule Event.UpcasterTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Aggregates.Aggregate
   alias Decree.{DefaultApp, EventStore}
   alias Decree.EventStore.{EventData, RecordedEvent}
-  alias Decree.Event.Upcast.Events.{EventFive, EventFour, EventOne, EventThree, EventTwo, Stop}
+  alias Decree.Event.Upcast.Events.{EventFive, EventFour, EventOne, EventThree, EventTwo}
   alias Decree.Event.Upcast.UpcastAggregate
   alias Decree.UUID
 
@@ -125,11 +125,15 @@ defmodule Event.UpcasterTest do
         ]
       )
 
-      assert_receive [{%EventOne{version: 1}, metadata1}]
-      assert_receive [{%EventTwo{version: 2}, metadata2}]
-      assert_receive [{%EventFour{version: 2, name: "Chris"}, metadata4}]
-      assert_receive [{%EventFive{version: 2, event_metadata: event_metadata}, metadata5}]
-      refute_receive [{%EventThree{}, _metadata3}]
+      # The Postgres store delivers events appended together in one batch, or a few.
+      assert [
+               {%EventOne{version: 1}, metadata1},
+               {%EventTwo{version: 2}, metadata2},
+               {%EventFour{version: 2, name: "Chris"}, metadata4},
+               {%EventFive{version: 2, event_metadata: event_metadata}, metadata5}
+             ] = receive_batched_events(4)
+
+      refute_receive [_ | _]
 
       assert_metadata(metadata1)
       assert_metadata(metadata2)
@@ -139,34 +143,14 @@ defmodule Event.UpcasterTest do
     end
   end
 
-  describe "upcast events received by process manager" do
-    alias Decree.Event.Upcast.ProcessManager
-    alias Decree.Event.Upcast.ProcessManager.Application
+  defp receive_batched_events(count, received \\ [])
 
-    setup do
-      start_supervised!(Application)
-      start_supervised!(ProcessManager)
+  defp receive_batched_events(count, received) when length(received) >= count, do: received
 
-      :ok
-    end
+  defp receive_batched_events(count, received) do
+    assert_receive [_ | _] = batch
 
-    test "will receive upcasted events" do
-      process_id = UUID.uuid4()
-      reply_to = :erlang.pid_to_list(self())
-
-      write_events(Application, [
-        struct(EventOne, version: 1, reply_to: reply_to, process_id: process_id),
-        struct(EventTwo, version: 1, reply_to: reply_to, process_id: process_id),
-        struct(EventThree, version: 1, reply_to: reply_to, process_id: process_id),
-        struct(Stop, process_id: process_id)
-      ])
-
-      refute_receive %EventThree{}
-
-      assert_receive %EventOne{version: 1}
-      assert_receive %EventTwo{version: 2}
-      assert_receive %EventFour{version: 2, name: "Chris"}
-    end
+    receive_batched_events(count, received ++ batch)
   end
 
   defp assert_metadata(metadata) do

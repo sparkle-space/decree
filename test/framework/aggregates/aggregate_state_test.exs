@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.AggregateStateTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
 

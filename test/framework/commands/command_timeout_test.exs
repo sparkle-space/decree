@@ -1,5 +1,5 @@
 defmodule Decree.Commands.CommandTimeoutTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Commands.{TimeoutCommand, TimeoutRouter}
   alias Decree.{DefaultApp, UUID}

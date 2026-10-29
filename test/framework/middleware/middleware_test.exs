@@ -1,5 +1,5 @@
 defmodule Decree.Middleware.MiddlewareTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   import Decree.Enumerable
 
@@ -51,7 +51,6 @@ defmodule Decree.Middleware.MiddlewareTest do
 
     middleware FirstMiddleware
     middleware ModifyMetadataMiddleware
-    middleware Decree.Middleware.Logger
     middleware CommandAuditMiddleware
     middleware LastMiddleware
 

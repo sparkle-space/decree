@@ -1,8 +1,9 @@
 defmodule Decree.Projections.RuntimeConfigProjectorTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.EventStore.Adapters.Mock, as: MockEventStore
   alias Decree.EventStore.RecordedEvent
+  alias Decree.Helpers.Wait
   alias Decree.Projections.Events.AnEvent
   alias Decree.Projections.{Projection, ProjectionAssertions, Repo, RuntimeConfigProjector}
   alias Decree.UUID
@@ -47,8 +48,13 @@ defmodule Decree.Projections.RuntimeConfigProjectorTest do
 
       assert_receive {:project, "AnEvent"}
 
-      assert_projections(Projection, ["AnEvent"])
-      assert last_seen_event("RuntimeProjector1") == 1
+      # The projector sends `{:project, _}` from inside its Ecto.Multi, before the
+      # transaction commits: wait for the commit rather than race it.
+      Wait.until(fn ->
+        assert_projections(Projection, ["AnEvent"])
+        assert last_seen_event("RuntimeProjector1") == 1
+      end)
+
       assert last_seen_event("RuntimeProjector2") == nil
     end
   end

@@ -1,5 +1,5 @@
 defmodule Decree.Projections.InitCallbackTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Projections.Repo
 

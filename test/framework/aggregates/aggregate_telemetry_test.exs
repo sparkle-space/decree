@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.AggregateTelemetryTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Aggregates.{Aggregate, ExecutionContext}
   alias Decree.{DefaultApp, UUID}

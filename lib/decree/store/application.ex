@@ -1,9 +1,14 @@
 defmodule Decree.Store.Application do
   @moduledoc false
 
-  use Application
+  # The store layer's process tree. decree is one OTP application: `Decree.start/2`
+  # starts this supervisor before the framework's own children.
 
-  def start(_type, _args) do
+  def child_spec(_arg) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, []}, type: :supervisor}
+  end
+
+  def start_link do
     children = [
       Decree.Store.Config.Store,
       {Registry, keys: :duplicate, name: MonitoredServer.Registry}

@@ -1,5 +1,5 @@
 defmodule Decree.Aggregates.SnapshottingTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.DefaultApp
 
@@ -89,7 +89,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
 
       assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
 
-      assert snapshot == %SnapshotData{
+      # The Postgres store stamps `created_at`.
+      assert %{snapshot | created_at: nil} == %SnapshotData{
                source_uuid: aggregate_uuid,
                source_version: 10,
                source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
@@ -109,7 +110,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
 
       assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
 
-      assert snapshot == %SnapshotData{
+      # The Postgres store stamps `created_at`.
+      assert %{snapshot | created_at: nil} == %SnapshotData{
                source_uuid: aggregate_uuid,
                source_version: 11,
                source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
@@ -138,7 +140,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
       assert_aggregate_version(ExampleAggregate, aggregate_uuid, 21)
       assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
 
-      assert snapshot == %SnapshotData{
+      # The Postgres store stamps `created_at`.
+      assert %{snapshot | created_at: nil} == %SnapshotData{
                source_uuid: aggregate_uuid,
                source_version: 21,
                source_type: "Elixir.Decree.Aggregates.ExampleAggregate",

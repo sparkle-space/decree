@@ -1,5 +1,5 @@
 defmodule Decree.Event.EventHandlerNameTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Event.Handler
 

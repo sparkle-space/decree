@@ -1,5 +1,5 @@
 defmodule Decree.Application.ConfigTest do
-  use ExUnit.Case
+  use Decree.PostgresCase
 
   alias Decree.Application.Config
   alias Decree.ExampleApplication
@@ -13,8 +13,11 @@ defmodule Decree.Application.ConfigTest do
     end
 
     test "should get application event store config" do
-      assert {Decree.EventStore.Adapters.InMemory,
-              %{name: Decree.ExampleApplication.EventStore}} ==
+      assert {Decree.EventStore.Adapters.EventStore,
+              %{
+                event_store: Decree.FrameworkEventStore,
+                name: Decree.ExampleApplication.EventStore
+              }} ==
                Config.get(ExampleApplication, :event_store)
     end
 
