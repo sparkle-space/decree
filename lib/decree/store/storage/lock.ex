@@ -53,13 +53,18 @@ defmodule Decree.Store.Storage.Lock do
   end
 
   @doc """
-  The backend process id of the database session the connection is on.
-  """
-  def session_backend_pid(conn, opts) do
-    {_schema, opts} = Keyword.pop(opts, :schema)
+  Which of the given keys the session running the query holds an advisory lock on
+  (as taken by `try_acquire_exclusive_lock/3`), read from `pg_locks`.
 
-    case Postgrex.query(conn, Statements.query_session_backend(), [], opts) do
-      {:ok, %Postgrex.Result{rows: [[backend_pid]]}} -> {:ok, backend_pid}
+  Returns `{:ok, MapSet.t(key)}` or `{:error, reason}`.
+  """
+  def held_keys(conn, keys, opts) when is_list(keys) do
+    {schema, opts} = Keyword.pop(opts, :schema)
+
+    query = Statements.query_held_advisory_locks(schema)
+
+    case Postgrex.query(conn, query, [keys], opts) do
+      {:ok, %Postgrex.Result{rows: rows}} -> {:ok, MapSet.new(rows, fn [key] -> key end)}
       {:error, _error} = reply -> reply
     end
   end

@@ -1,7 +1,7 @@
 defmodule Decree.Store.AdvisoryLocksTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{AdvisoryLocks, Config, ProcessHelper, Wait}
+  alias Decree.Store.{AdvisoryLocks, Config, MonitoredServer, Wait}
   alias Decree.Store.AdvisoryLocks.Lock
   alias Decree.Store.Storage
 
@@ -81,14 +81,27 @@ defmodule Decree.Store.AdvisoryLocksTest do
   end
 
   describe "lock session" do
-    test "a lock on the live session stays held when the connection reports a disconnect",
-         %{conn: conn} do
+    test "a disconnect releases every lock, and unlocks it on the current session", %{
+      conn: conn
+    } do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      assert is_integer(lock_backend_pid(conn, 1))
+
+      # As if the lock connection's listener reported a disconnect while the pool
+      # is still on the session the lock was taken on.
+      send(Process.whereis(@locks), {:disconnected, self()})
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :session_lost}
+      assert tracked_locks() == []
+
+      # The released lock is not left held, so the key is free.
+      assert lock_backend_pid(conn, 1) == nil
+    end
+
+    test "a connect keeps the locks the current session holds", %{conn: conn} do
       {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
       backend_pid = lock_backend_pid(conn, 1)
 
-      # As if the lock connection's listener reported a disconnect, while the pool
-      # is still on the session the lock was taken on.
-      send(Process.whereis(@locks), {:disconnected, self()})
       send(Process.whereis(@locks), {:connected, self()})
 
       refute_receive {AdvisoryLocks, :lock_released, ^lock, _reason}, 200
@@ -96,6 +109,27 @@ defmodule Decree.Store.AdvisoryLocksTest do
       assert lock_backend_pid(conn, 1) == backend_pid
       assert [%Lock{key: 1, owner: owner, backend_pid: ^backend_pid}] = tracked_locks()
       assert owner == self()
+    end
+
+    test "a connect releases the locks the session no longer holds, though its pid is the same",
+         %{conn: conn} do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      backend_pid = lock_backend_pid(conn, 1)
+
+      # The session keeps its backend pid but loses its locks, as after a pooler's
+      # server reset or a backend pid reused on a new primary.
+      pool = MonitoredServer.whereis(@conn)
+      {:ok, _result} = Postgrex.query(pool, "SELECT pg_advisory_unlock_all()", [])
+      assert lock_backend_pid(conn, 1) == nil
+
+      send(Process.whereis(@locks), {:connected, self()})
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :session_lost}
+      assert tracked_locks() == []
+
+      # The pool is still on the same session.
+      assert {:ok, _lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      assert lock_backend_pid(conn, 1) == backend_pid
     end
 
     test "should send `lock_released` when the session ends and the pool reconnects", %{
@@ -114,18 +148,22 @@ defmodule Decree.Store.AdvisoryLocksTest do
       assert {:ok, _lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
     end
 
-    test "a lock taken on the new session while the disconnect is queued stays held", %{
-      conn: conn
-    } do
+    test "a lock taken on the new session while the disconnect is queued is released and unlocked",
+         %{conn: conn} do
       {:ok, lock1} = AdvisoryLocks.try_advisory_lock(@locks, 1)
       old_backend_pid = lock_backend_pid(conn, 1)
 
       locks = Process.whereis(@locks)
       :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
 
       # A lock call queued before the session ends...
       owner = start_lock_owner(2)
-      wait_for_message(locks, &match?({:"$gen_call", _from, {:try_advisory_lock, 2, _, _}}, &1))
+
+      wait_for_message(
+        locks,
+        &match?({:"$gen_call", _from, {:try_advisory_lock, 2, _owner, _timeout, _deadline}}, &1)
+      )
 
       # ...and the connection's disconnect and reconnect queued after it.
       terminate_backend(conn, old_backend_pid)
@@ -136,27 +174,115 @@ defmodule Decree.Store.AdvisoryLocksTest do
       # The call is served by the new session.
       assert_receive {:lock_owner, ^owner, {:ok, lock2}}
 
-      # The lock on the old session is released; the one on the new session is not.
+      # Both locks are released: the disconnect ends the locks of the session.
       assert_receive {AdvisoryLocks, :lock_released, ^lock1, :session_lost}
-      refute_receive {:lock_owner, ^owner, {AdvisoryLocks, :lock_released, ^lock2, _reason}}, 300
+      assert_receive {:lock_owner, ^owner, {AdvisoryLocks, :lock_released, ^lock2, :session_lost}}
 
-      new_backend_pid = lock_backend_pid(conn, 2)
-      assert is_integer(new_backend_pid) and new_backend_pid != old_backend_pid
-      assert [%Lock{key: 2, owner: ^owner, backend_pid: ^new_backend_pid}] = tracked_locks()
+      assert tracked_locks() == []
 
-      # The owner's lock count on that session is one: when it stops, the single
-      # unlock frees the key.
-      ProcessHelper.shutdown(owner)
+      # The lock the new session took was unlocked once: no session holds the key,
+      # so no lock count is left behind.
+      assert lock_backend_pid(conn, 2) == nil
+      assert :ok = Storage.Lock.try_acquire_exclusive_lock(conn, 2, schema: "public")
+    end
 
-      Wait.until(fn ->
-        assert :ok = Storage.Lock.try_acquire_exclusive_lock(conn, 2, schema: "public")
-      end)
+    test "a `:DOWN` of an earlier pool keeps the locks taken on the current pool" do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      %AdvisoryLocks.State{ref: ref} = :sys.get_state(@locks)
+
+      earlier_pool = spawn(fn -> :ok end)
+      send(Process.whereis(@locks), {:DOWN, ref, :process, earlier_pool, :shutdown})
+
+      refute_receive {AdvisoryLocks, :lock_released, ^lock, _reason}, 200
+      assert [%Lock{key: 1}] = tracked_locks()
+
+      # The current pool going down releases it.
+      pool = MonitoredServer.whereis(@conn)
+      send(Process.whereis(@locks), {:DOWN, ref, :process, pool, :shutdown})
+
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, :shutdown}
+      assert tracked_locks() == []
+    end
+
+    test "a lock request whose caller stopped waiting takes no lock", %{conn: conn} do
+      locks = Process.whereis(@locks)
+      :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
+
+      test = self()
+
+      caller =
+        spawn(fn ->
+          reply =
+            try do
+              AdvisoryLocks.try_advisory_lock(@locks, 3, 100)
+            catch
+              :exit, reason -> {:exit, reason}
+            end
+
+          send(test, {:caller, reply})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert_receive {:caller, {:exit, {:timeout, _call}}}, 1_000
+
+      :ok = :sys.resume(locks)
+
+      # The request is answered without a lock: none is tracked, none is held.
+      assert tracked_locks() == []
+      assert lock_backend_pid(conn, 3) == nil
+
+      send(caller, :stop)
     end
 
     test "should answer `{:error, :not_connected}` while the lock pool is down" do
       shutdown_database_connection()
 
       assert {:error, :not_connected} = AdvisoryLocks.try_advisory_lock(@locks, 1, 1_000)
+    end
+  end
+
+  describe "lock pool dies holding a checkout" do
+    defmodule SilentPool do
+      # Stands in for a connection pool that takes a checkout request and never
+      # answers it, then dies.
+      use GenServer
+
+      def start_link(test), do: GenServer.start_link(__MODULE__, test)
+
+      def init(test), do: {:ok, test}
+
+      def handle_info({:db_connection, _from, {:checkout, _callers, _start, _queue?}}, test) do
+        send(test, {:checkout_received, self()})
+
+        {:noreply, test}
+      end
+    end
+
+    test "a lock call answers with an error instead of waiting forever" do
+      monitored =
+        start_supervised!(
+          {MonitoredServer,
+           mfa: {SilentPool, :start_link, [self()]}, name: :silent_pool, backoff_min: 60_000}
+        )
+
+      locks =
+        start_supervised!(
+          {AdvisoryLocks, conn: :silent_pool, query_timeout: 15_000, schema: "public"},
+          id: :silent_pool_locks
+        )
+
+      task = Task.async(fn -> AdvisoryLocks.try_advisory_lock(locks, 1, 10_000) end)
+
+      assert_receive {:checkout_received, pool}
+      assert MonitoredServer.whereis(monitored) == pool
+
+      Process.exit(pool, :kill)
+
+      assert {:ok, {:error, _reason}} = Task.yield(task, 2_000) || Task.shutdown(task)
     end
   end
 
@@ -232,7 +358,7 @@ defmodule Decree.Store.AdvisoryLocksTest do
     test = self()
 
     spawn(fn ->
-      reply = AdvisoryLocks.try_advisory_lock(@locks, key)
+      reply = AdvisoryLocks.try_advisory_lock(@locks, key, 15_000)
       send(test, {:lock_owner, self(), reply})
 
       forward = fn forward ->
@@ -245,6 +371,12 @@ defmodule Decree.Store.AdvisoryLocksTest do
 
       forward.(forward)
     end)
+  end
+
+  defp resume(pid) do
+    :sys.resume(pid)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp wait_for_message(pid, match?) do
