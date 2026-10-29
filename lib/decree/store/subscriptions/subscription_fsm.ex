@@ -30,6 +30,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         checkpoint_after: opts[:checkpoint_after] || 0,
         checkpoint_threshold: opts[:checkpoint_threshold] || 1,
         query_timeout: opts[:query_timeout] || 15_000,
+        # A started subscription always passes the event store's
+        # `subscription_retry_interval` (or the caller's `retry_interval`); the default
+        # is that setting's default, for an FSM built without one.
+        retry_interval: Keyword.get(opts, :retry_interval, 60_000),
         max_size: opts[:max_size] || 1_000,
         transient: Keyword.get(opts, :transient, false)
       }
@@ -39,6 +43,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # The main flow between states in this finite state machine is:
   #
   #   initial -> request_catch_up -> catching_up -> subscribed
+  #
+  # A catch-up read that returns `{:error, reason}` holds the subscription in
+  # `catch_up_retry` until a retry timer fires, then reads again:
+  #
+  #   request_catch_up | catching_up -> catch_up_retry -> (read again)
   #
 
   defstate initial do
@@ -205,6 +214,48 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     end
   end
 
+  # Holding after a catch-up read returned `{:error, reason}`, until the retry timer
+  # armed by `hold_catch_up/2` fires (sparkle-space/sparklespace#7307).
+  #
+  # The read changed nothing, so the cursor (`last_sent`, `last_received`, `last_ack`),
+  # the subscribers and their in-flight events are as they were. Retrying reads from
+  # `last_sent + 1` again: events already sent are not read twice, and none is skipped.
+  #
+  # Only the timer's `retry_catch_up` event reads. Every other event either keeps the
+  # state or leaves it through the catch-all handlers:
+  #
+  #   - `ack`: records the ack, sends any queued events and checkpoints, like the other
+  #     states, but does not read (in `catching_up` an ack reads, which would tie the
+  #     read rate to the ack rate);
+  #   - `checkpoint`: persists the checkpoint;
+  #   - `notify_events` (catch-all): tracks `last_received` only; the retried read
+  #     fetches those events from storage;
+  #   - `catch_up` (catch-all): ignored, so a `:catch_up` cast queued before the read
+  #     failed does not read early;
+  #   - `connect_subscriber`, `subscribe`, `unsubscribe`, `terminate` (catch-all): as
+  #     in the other states; an `unsubscribe` of the last subscriber still persists
+  #     the checkpoint and unsubscribes;
+  #   - `disconnect` (catch-all): the advisory lock was lost, so go to `disconnected`;
+  #     the pending timer's token no longer matches and its event is ignored.
+  defstate catch_up_retry do
+    defevent retry_catch_up(token),
+      data: %SubscriptionState{catch_up_retry_token: token} = data do
+      catch_up_from_stream(%SubscriptionState{data | catch_up_retry_token: nil})
+    end
+
+    defevent ack(ack, subscriber), data: %SubscriptionState{} = data do
+      with {:ok, data} <- ack_events(data, ack, subscriber) do
+        next_state(:catch_up_retry, data)
+      else
+        reply -> respond(reply)
+      end
+    end
+
+    defevent checkpoint(), data: %SubscriptionState{} = data do
+      next_state(:catch_up_retry, persist_checkpoint(data))
+    end
+  end
+
   defstate disconnected do
     # Attempt to subscribe
     defevent subscribe, data: %SubscriptionState{} = data do
@@ -274,6 +325,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   end
 
   defevent catch_up, data: %SubscriptionState{} = data, state: state do
+    next_state(state, data)
+  end
+
+  # A retry timer from an earlier hold, whose token is no longer the pending one.
+  defevent retry_catch_up(_token), data: %SubscriptionState{} = data, state: state do
     next_state(state, data)
   end
 
@@ -447,11 +503,56 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       {:error, :stream_not_found} ->
         # Allow subscriptions to streams which don't yet exist, but might be created later
         next_state(:subscribed, data)
+
+      {:error, reason} ->
+        # Any other read error, such as a Postgres error or a query or queue timeout:
+        # hold the subscription and retry the read on a timer. This covers a read that
+        # returns an error, not one that raises: an event that fails to deserialize
+        # raises in the read and still crashes the subscription.
+        hold_catch_up(data, reason)
     end
   end
 
   def catch_up_from_stream(%SubscriptionState{} = data) do
     next_state(:catching_up, data)
+  end
+
+  # Keep the cursor and the subscribers, and retry the catch-up read after the retry
+  # interval. Retrying on a timer, never with an immediate `:catch_up` cast, bounds the
+  # read rate while the error persists. Each held read logs a warning and emits the
+  # `[:decree, :store, :subscription, :catch_up, :error]` telemetry event.
+  defp hold_catch_up(%SubscriptionState{} = data, reason) do
+    %SubscriptionState{
+      event_store: event_store,
+      stream_uuid: stream_uuid,
+      subscription_name: subscription_name,
+      retry_interval: retry_interval
+    } = data
+
+    Logger.warning(
+      describe(data) <>
+        " failed to catch up due to: " <>
+        inspect(reason) <> ", retrying in #{retry_interval}ms"
+    )
+
+    :telemetry.execute(
+      [:decree, :store, :subscription, :catch_up, :error],
+      %{system_time: System.system_time()},
+      %{
+        event_store: event_store,
+        subscription_name: subscription_name,
+        stream_uuid: stream_uuid,
+        reason: reason,
+        retry_interval: retry_interval
+      }
+    )
+
+    # A new token per hold: a timer left from an earlier hold is ignored.
+    token = make_ref()
+
+    Process.send_after(self(), {:retry_catch_up, token}, retry_interval)
+
+    next_state(:catch_up_retry, %SubscriptionState{data | catch_up_retry_token: token})
   end
 
   defp read_stream_forward(%SubscriptionState{} = data) do

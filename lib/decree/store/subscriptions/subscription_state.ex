@@ -19,6 +19,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     :partition_by,
     :query_timeout,
     :lock_ref,
+    # The delay before a catch-up read that returned `{:error, reason}` is retried,
+    # and the token of the pending retry timer (see `SubscriptionFsm`).
+    :retry_interval,
+    :catch_up_retry_token,
     correlation_id_type: "uuid",
     causation_id_type: "uuid",
     last_received: 0,

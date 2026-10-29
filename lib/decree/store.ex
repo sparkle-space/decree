@@ -1243,6 +1243,17 @@ defmodule Decree.Store do
   will still be written after a period of inactivity even when the threshold has
   not been met. This ensures bursts of event processing can be safely handled.
 
+  ## Catch-up read errors
+
+  When a subscription's read of events from storage returns an error, such as a
+  query timeout, the subscription holds: it keeps its position and its subscribers,
+  and retries the read after the event store's `subscription_retry_interval`
+  (default one minute). Each failed read logs a warning and emits the telemetry event
+  `[:decree, :store, :subscription, :catch_up, :error]`, with the measurement
+  `system_time` and the metadata `event_store`, `subscription_name`, `stream_uuid`,
+  `reason` and `retry_interval`. A read that raises, such as an event that fails to
+  deserialize, still stops the subscription.
+
   """
   @callback subscribe_to_stream(
               stream_uuid :: String.t(),

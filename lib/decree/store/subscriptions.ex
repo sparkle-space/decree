@@ -29,6 +29,10 @@ defmodule Decree.Store.Subscriptions do
   Get the delay between subscription retry attempts, in milliseconds, from the
   event store config.
 
+  A subscription waits this long before it retries subscribing (for example, after
+  failing to take or losing its advisory lock), and before it retries a catch-up read
+  that returned an error.
+
   The default value is one minute and the minimum allowed value is one second.
   """
   def retry_interval(event_store, config) do
