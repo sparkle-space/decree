@@ -48,7 +48,7 @@ The `test` alias creates and initialises every test event store (`decree.store.c
 | conformance | `test/conformance` | the store conformance suite (below) |
 | projections | `test/projections` | Commanded Ecto projections: projection versions, schema prefixes, error and after-update callbacks |
 
-Framework and projections tests run their applications on `Decree.EventStore.Adapters.EventStore` over the `decree_framework_test` database; `Decree.PostgresCase` empties it before each test. Tests tagged `:migration` (they restore old database dumps with `pg_restore`), `:manual`, `:ignore` and `:distributed` are excluded. `DROPPED_TESTS.md` lists every upstream test not carried over, and why.
+Framework and projections tests run their applications on `Decree.EventStore.Adapters.EventStore` over the `decree_framework_test` database; `Decree.PostgresCase` empties it before each test. Tests tagged `:migration` (they restore old database dumps with `pg_restore` and compare schemas with `pg_dump`), `:manual`, `:ignore` and `:distributed` are excluded. CI installs the Postgres 18 client and runs `mix test --include migration`; run the same locally when a Postgres 18 `pg_restore` and `pg_dump` are on `PATH`. `DROPPED_TESTS.md` lists every upstream test not carried over, and why.
 
 ## The conformance suite
 

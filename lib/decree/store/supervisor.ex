@@ -58,7 +58,22 @@ defmodule Decree.Store.Supervisor do
 
         advisory_locks_name = Module.concat([name, AdvisoryLocks])
         advisory_locks_postgrex_conn = Module.concat([advisory_locks_name, Postgrex])
-        advisory_locks_config = Config.advisory_locks_postgrex_opts(config)
+
+        # The lock pool's connection tells `AdvisoryLocks` when it connects or
+        # disconnects, so that locks lost with a session the pool replaced are
+        # released (see `AdvisoryLocks`). The pool may connect before
+        # `AdvisoryLocks` has registered its name; a message sent to a `{name, node}`
+        # destination that is not registered is dropped, and no lock is held then.
+        advisory_locks_config =
+          config
+          |> Config.advisory_locks_postgrex_opts()
+          |> add_connection_listener({advisory_locks_name, node()})
+
+        # The delay before the lock pool is started again after it stopped, including
+        # when `AdvisoryLocks` ends the session because a lock cleanup could not be
+        # confirmed; every persistent subscription of the instance stays parked until
+        # then. Configurable (`:advisory_locks_restart_delay`); tests shorten it.
+        advisory_locks_restart_delay = Keyword.get(config, :advisory_locks_restart_delay, 30_000)
 
         subscriptions_name = Module.concat([name, Subscriptions.Supervisor])
         subscriptions_registry_name = Module.concat([name, Subscriptions.Registry])
@@ -78,7 +93,8 @@ defmodule Decree.Store.Supervisor do
               {MonitoredServer,
                mfa: {Postgrex, :start_link, [advisory_locks_config]},
                name: advisory_locks_postgrex_conn,
-               backoff_min: 30_000},
+               backoff_min: advisory_locks_restart_delay,
+               backoff_max: advisory_locks_restart_delay},
               id: Module.concat([advisory_locks_postgrex_conn, MonitoredServer])
             ),
             {AdvisoryLocks,
@@ -133,6 +149,16 @@ defmodule Decree.Store.Supervisor do
       subscription_retry_interval: subscription_retry_interval,
       subscription_hibernate_after: subscription_hibernate_after
     )
+  end
+
+  # Add a listener to the configured `:connection_listeners`, in either of the forms
+  # DBConnection accepts (a list, or `{list, tag}`).
+  defp add_connection_listener(postgrex_opts, listener) do
+    Keyword.update(postgrex_opts, :connection_listeners, [listener], fn
+      {listeners, tag} when is_list(listeners) -> {[listener | listeners], tag}
+      listeners when is_list(listeners) -> [listener | listeners]
+      nil -> [listener]
+    end)
   end
 
   # Get the name of the main Postgres database connection pool.

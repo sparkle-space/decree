@@ -1,0 +1,18 @@
+SELECT
+  c.id,
+  EXISTS (
+    SELECT 1 FROM "<%= schema %>".subscriptions s WHERE s.subscription_id = c.id
+  ),
+  EXISTS (
+    SELECT 1 FROM pg_locks l
+    WHERE l.pid = pg_backend_pid()
+      AND l.locktype = 'advisory'
+      AND l.granted
+      AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      AND l.classid = '"<%= schema %>".subscriptions'::regclass::oid
+      AND l.objid::bigint =
+        (CASE WHEN c.id > 2147483647 THEN mod(c.id, 2147483647) ELSE c.id END)
+      AND l.objsubid = 2
+  ),
+  pg_backend_pid()
+FROM unnest($1::bigint[]) AS c(id);

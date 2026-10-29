@@ -78,6 +78,14 @@ defmodule Decree.Store.Storage do
     to: Subscription
 
   @doc """
+  Acknowledge receipt of an event by its number, for the subscription row with the
+  given `subscription_id`. Returns `{:error, :subscription_not_found}` when no
+  such row exists.
+  """
+  defdelegate ack_last_seen_event_by_id(conn, subscription_id, last_seen, opts),
+    to: Subscription
+
+  @doc """
   Delete an existing named subscription to a stream.
   """
   defdelegate delete_subscription(conn, stream_uuid, subscription_name, opts), to: Subscription

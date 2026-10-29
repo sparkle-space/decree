@@ -90,6 +90,13 @@ defmodule Decree.Store.Subscriptions.Subscription do
   end
 
   @doc false
+  # What `Decree.Store.Subscriptions.local_subscriptions/2` reports for this
+  # subscription.
+  def info(subscription, timeout) do
+    GenServer.call(subscription, :info, timeout)
+  end
+
+  @doc false
   @impl GenServer
   def init(%Subscription{} = state) do
     Process.flag(:trap_exit, true)
@@ -265,6 +272,22 @@ defmodule Decree.Store.Subscriptions.Subscription do
   end
 
   @impl GenServer
+  def handle_call(:info, _from, %Subscription{subscription: subscription} = state) do
+    %SubscriptionFsm{state: fsm_state, data: %SubscriptionState{} = data} = subscription
+
+    info = %{
+      subscription_name: data.subscription_name,
+      stream_uuid: data.stream_uuid,
+      subscription_id: data.subscription_id,
+      pid: self(),
+      transient: data.transient,
+      status: status(fsm_state)
+    }
+
+    {:reply, info, state}
+  end
+
+  @impl GenServer
   def terminate(_reason, state) do
     %Subscription{subscription: subscription} = state
 
@@ -344,6 +367,13 @@ defmodule Decree.Store.Subscriptions.Subscription do
       {:error, :too_many_subscribers}
     end
   end
+
+  # Parked: not yet subscribed, or lost its advisory lock and waiting to take it
+  # again. Every state past those holds the lock (a persistent subscription) and
+  # delivers events.
+  defp status(:unsubscribed), do: :unsubscribed
+  defp status(fsm_state) when fsm_state in [:initial, :disconnected], do: :parked
+  defp status(_fsm_state), do: :subscribed
 
   def unsubscribed?(%Subscription{subscription: %SubscriptionFsm{state: :unsubscribed}}), do: true
   def unsubscribed?(%Subscription{}), do: false

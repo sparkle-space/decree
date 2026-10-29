@@ -258,6 +258,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     end
   end
 
+  # Lost the advisory lock: parked until the lock is taken again, after the retry
+  # interval. Subscribers were sent `{:subscription_lock_lost, subscription}` on the
+  # way in, and are sent `{:subscribed, subscription}` again on the way out.
   defstate disconnected do
     # Attempt to subscribe
     defevent subscribe, data: %SubscriptionState{} = data do
@@ -277,6 +280,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
             last_sent: last_ack,
             last_ack: last_ack
         }
+
+        notify_subscribed(data)
 
         next_state(:request_catch_up, data)
       else
@@ -310,7 +315,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       |> monitor_subscriber(subscriber, opts)
       |> notify_subscribers()
 
-    unless state == :initial do
+    # A subscriber connecting while the subscription is parked without its lock is
+    # told it is subscribed once the lock is taken.
+    unless state in [:initial, :disconnected] do
       notify_subscribed(subscriber)
     end
 
@@ -338,13 +345,24 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # Losing the advisory lock also ends any run of failed catch-up reads: the pending
   # retry timer's token is cleared, so its event is ignored, and the backoff starts
   # again from its shortest wait once the subscription has resubscribed.
+  #
+  # Every subscriber is told (`{:subscription_lock_lost, subscription}`), as another
+  # instance may take the lock and deliver the same events from now on.
   defevent disconnect(lock_ref), data: %SubscriptionState{lock_ref: lock_ref} = data do
+    notify_lock_lost(data)
+
     data =
       %SubscriptionState{data | lock_ref: nil, catch_up_retry_token: nil, catch_up_failures: 0}
       |> SubscriptionState.reset_event_tracking()
       |> purge_in_flight_events()
 
     next_state(:disconnected, data)
+  end
+
+  # A lock released that is not the subscription's current lock: one taken by a
+  # lock attempt whose call timed out here, and was served afterwards.
+  defevent disconnect(_lock_ref), data: %SubscriptionState{} = data, state: state do
+    next_state(state, data)
   end
 
   defevent unsubscribe(pid), data: %SubscriptionState{} = data, state: state do
@@ -397,7 +415,19 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
     server = Module.concat(event_store, AdvisoryLocks)
 
-    AdvisoryLocks.try_advisory_lock(server, subscription_id, timeout)
+    # A lock attempt that does not answer in time (or an `AdvisoryLocks` that is
+    # not running) leaves the subscription where it is, to retry after the retry
+    # interval, rather than crashing it.
+    try do
+      AdvisoryLocks.try_advisory_lock(server, subscription_id, timeout)
+    catch
+      :exit, reason ->
+        Logger.warning(
+          describe(data) <> " failed to take its advisory lock due to: " <> inspect(reason)
+        )
+
+        {:error, reason}
+    end
   end
 
   defp subscribe_to_events(%SubscriptionState{} = data) do
@@ -453,6 +483,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   defp notify_subscribed(subscriber) when is_pid(subscriber) do
     send(subscriber, {:subscribed, self()})
+  end
+
+  # Notify all connected subscribers that this subscription has lost its advisory lock.
+  defp notify_lock_lost(%SubscriptionState{subscribers: subscribers}) do
+    for {pid, _subscriber} <- subscribers do
+      send(pid, {:subscription_lock_lost, self()})
+    end
+
+    :ok
   end
 
   defp track_last_received(%SubscriptionState{} = data, events) when is_list(events) do
@@ -866,24 +905,63 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   end
 
   defp persist_checkpoint(%SubscriptionState{transient: false} = data) do
+    %SubscriptionState{checkpoints_pending: checkpoints_pending} = data
+
+    if checkpoints_pending > 0 do
+      write_checkpoint(data)
+    end
+
+    %SubscriptionState{data | checkpoints_pending: 0}
+  end
+
+  # Write the position to the subscription's own row, by its `subscription_id`.
+  # Keyed by name, a subscription whose row was deleted and created again (with a
+  # new id, by an operator reset or another instance) would write its position
+  # into the new row, past where that row's subscription starts.
+  #
+  # A row that no longer exists is only logged: the subscription keeps running,
+  # and its position is not written anywhere.
+  defp write_checkpoint(%SubscriptionState{subscription_id: subscription_id} = data)
+       when is_integer(subscription_id) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      last_ack: last_ack,
+      query_timeout: query_timeout
+    } = data
+
+    case Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, last_ack,
+           schema: schema,
+           timeout: query_timeout
+         ) do
+      {:error, :subscription_not_found} ->
+        Logger.warning(
+          describe(data) <>
+            " (subscription_id #{subscription_id}) did not write its checkpoint " <>
+            "(event #{last_ack}): its subscription row no longer exists"
+        )
+
+      _reply ->
+        :ok
+    end
+  end
+
+  # No row id is known: the subscription has never taken its lock, so it has
+  # acknowledged nothing. Kept for completeness.
+  defp write_checkpoint(%SubscriptionState{} = data) do
     %SubscriptionState{
       conn: conn,
       schema: schema,
       stream_uuid: stream_uuid,
       subscription_name: subscription_name,
       last_ack: last_ack,
-      query_timeout: query_timeout,
-      checkpoints_pending: checkpoints_pending
+      query_timeout: query_timeout
     } = data
 
-    if checkpoints_pending > 0 do
-      Storage.Subscription.ack_last_seen_event(conn, stream_uuid, subscription_name, last_ack,
-        schema: schema,
-        timeout: query_timeout
-      )
-    end
-
-    %SubscriptionState{data | checkpoints_pending: 0}
+    Storage.Subscription.ack_last_seen_event(conn, stream_uuid, subscription_name, last_ack,
+      schema: schema,
+      timeout: query_timeout
+    )
   end
 
   # Purge all subscriber in-flight events and subscription event queue.

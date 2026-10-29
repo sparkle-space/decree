@@ -51,6 +51,12 @@ defmodule Decree.Store.Subscriptions.Supervisor do
     end
   end
 
+  def stop_subscription(event_store, subscription) when is_pid(subscription) do
+    supervisor = Module.concat(event_store, __MODULE__)
+
+    DynamicSupervisor.terminate_child(supervisor, subscription)
+  end
+
   @impl DynamicSupervisor
   def init(_init_arg) do
     DynamicSupervisor.init(strategy: :one_for_one)

@@ -233,6 +233,14 @@ defmodule Decree.Store do
   @type persistent_subscription_options :: [persistent_subscription_option]
   @type expected_version :: :any_version | :no_stream | :stream_exists | non_neg_integer
   @type start_from :: :origin | :current | non_neg_integer
+  @type subscription_info :: %{
+          subscription_name: String.t(),
+          stream_uuid: String.t(),
+          subscription_id: pos_integer() | nil,
+          pid: pid(),
+          transient: boolean(),
+          status: :subscribed | :parked | :unsubscribed
+        }
 
   @doc false
   defmacro __using__(opts) do
@@ -501,6 +509,28 @@ defmodule Decree.Store do
 
       def delete_all_streams_subscription(subscription_name, opts \\ []),
         do: delete_subscription(@all_stream, subscription_name, opts)
+
+      @default_local_subscriptions_timeout 1_000
+
+      def local_subscriptions(opts \\ []) do
+        name = name(opts)
+        timeout = Keyword.get(opts, :timeout, @default_local_subscriptions_timeout)
+
+        Subscriptions.local_subscriptions(name, timeout)
+      end
+
+      def subscription_locks(subscription_ids, opts \\ []) when is_list(subscription_ids) do
+        name = name(opts)
+        timeout = timeout(opts, Config.lookup(name))
+
+        Subscriptions.subscription_locks(name, subscription_ids, timeout)
+      end
+
+      def stop_subscription(subscription, opts \\ []) when is_pid(subscription) do
+        name = name(opts)
+
+        Subscriptions.stop_subscription(name, subscription)
+      end
 
       def read_snapshot(source_uuid, opts \\ []) do
         {conn, opts} = parse_opts(opts)
@@ -1208,6 +1238,21 @@ defmodule Decree.Store do
   `{:events, events}` where events is a collection of `Decree.Store.RecordedEvent`
   structs.
 
+  A persistent subscription delivers events only while it holds its advisory lock,
+  which keeps one subscription of a given name delivering at a time across every
+  instance of the event store on the database. When the lock is lost (its
+  database session ended, for example when the lock connection reconnects or the
+  database restarts), subscribers receive `{:subscription_lock_lost, subscription}`.
+  From then on another instance may take the lock and deliver the same events, so
+  a subscriber treats this as the end of its ownership: work it still holds for
+  events it has not acknowledged belongs to whichever instance takes the lock, and
+  acknowledgements it sends are ignored. The subscription retries the lock every
+  `subscription_retry_interval` and, on taking it, sends `{:subscribed,
+  subscription}` again and resumes from the last acknowledged event, so events
+  sent but not acknowledged before the loss are sent again. A subscriber that
+  connects while the subscription is waiting for its lock receives `{:subscribed,
+  subscription}` only once the lock is taken.
+
   ## Example
 
       {:ok, subscription} = Decree.Store.subscribe_to_stream(stream_uuid, "example", self())
@@ -1313,6 +1358,65 @@ defmodule Decree.Store do
               | {:error, :subscription_already_exists}
               | {:error, :too_many_subscribers}
               | {:error, reason :: term}
+
+  @doc """
+  List this event store instance's running subscriptions (on this node only).
+
+  Each subscription is described by a map with:
+
+    - `subscription_name` and `stream_uuid`;
+    - `subscription_id`, the persistent subscription's row id, or `nil` until
+      the subscription first takes its advisory lock (and for a transient
+      subscription);
+    - `pid`, the subscription process;
+    - `transient`, whether the subscription is transient;
+    - `status`: `:subscribed` while delivering events (for a persistent
+      subscription, holding its advisory lock), `:parked` while waiting to
+      subscribe or to take its lock again after losing it, or `:unsubscribed`.
+
+  Each subscription is read concurrently, waiting at most `timeout` milliseconds
+  (default 1,000); a subscription that does not answer in time, or stops
+  meanwhile, is left out of the list.
+
+  ## Options
+
+    - `name` the event store instance (defaults to the event store module).
+    - `timeout` the wait for each subscription, in milliseconds.
+
+  """
+  @callback local_subscriptions(opts :: options) :: [subscription_info]
+
+  @doc """
+  For each persistent subscription id, whether its subscription row exists and
+  whether this event store instance's own advisory lock session holds the
+  subscription's lock.
+
+  The query runs on the instance's advisory lock connection, the session its
+  subscriptions take their locks on. `lock_held: false` for a subscription that
+  `local_subscriptions/1` reports as `:subscribed` means the subscription is
+  delivering without its lock.
+
+  Returns `{:ok, %{subscription_id => %{row_exists: boolean, lock_held:
+  boolean}}}`, or `{:error, reason}` when the query fails or does not answer
+  within the `timeout` option (defaults to the event store's query timeout).
+  """
+  @callback subscription_locks(subscription_ids :: [pos_integer()], opts :: options) ::
+              {:ok, %{pos_integer() => %{row_exists: boolean(), lock_held: boolean()}}}
+              | {:error, reason :: term}
+
+  @doc """
+  Stop a running subscription of this event store instance, given its pid (see
+  `local_subscriptions/1`).
+
+  The subscription process exits with reason `:shutdown`; its subscribers that
+  monitor it see it stop, and the subscription's lock is released. A subscriber
+  can subscribe again to resume from the last acknowledged event.
+
+  Returns `:ok`, or `{:error, :not_found}` when the pid is not a running
+  subscription of this instance.
+  """
+  @callback stop_subscription(subscription :: pid, opts :: options) ::
+              :ok | {:error, :not_found}
 
   @doc """
   Acknowledge receipt of the given events received from a subscription.

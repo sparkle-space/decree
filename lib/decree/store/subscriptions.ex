@@ -1,7 +1,7 @@
 defmodule Decree.Store.Subscriptions do
   @moduledoc false
 
-  alias Decree.Store.Storage
+  alias Decree.Store.{AdvisoryLocks, Storage}
   alias Decree.Store.Subscriptions.Subscription
   alias Decree.Store.Subscriptions.Supervisor, as: SubscriptionsSupervisor
 
@@ -23,6 +23,51 @@ defmodule Decree.Store.Subscriptions do
 
   defdelegate unsubscribe_from_stream(event_store, stream_uuid, name), to: SubscriptionsSupervisor
   defdelegate stop_subscription(event_store, stream_uuid, name), to: SubscriptionsSupervisor
+  defdelegate stop_subscription(event_store, subscription), to: SubscriptionsSupervisor
+
+  @doc """
+  The subscriptions running in the event store instance `event_store`, each read
+  with a bounded wait of `timeout` milliseconds. The reads run concurrently, and a
+  subscription that does not answer in time, or stops meanwhile, is omitted.
+  """
+  def local_subscriptions(event_store, timeout) do
+    supervisor = Module.concat(event_store, SubscriptionsSupervisor)
+
+    pids =
+      for {_id, pid, _type, _modules} <- DynamicSupervisor.which_children(supervisor),
+          is_pid(pid),
+          do: pid
+
+    pids
+    |> Task.async_stream(&subscription_info/1,
+      timeout: timeout,
+      on_timeout: :kill_task,
+      max_concurrency: max(length(pids), 1)
+    )
+    |> Enum.flat_map(fn
+      {:ok, {:ok, info}} -> [info]
+      _omitted -> []
+    end)
+  end
+
+  defp subscription_info(pid) do
+    {:ok, Subscription.info(pid, :infinity)}
+  catch
+    :exit, _reason -> :error
+  end
+
+  @doc """
+  For each subscription id, whether its `subscriptions` row exists and whether the
+  event store instance's own lock session holds its advisory lock.
+  """
+  def subscription_locks(event_store, subscription_ids, timeout) do
+    AdvisoryLocks.subscription_locks(
+      Module.concat(event_store, AdvisoryLocks),
+      subscription_ids,
+      timeout
+    )
+  end
+
   defdelegate delete_subscription(conn, stream_uuid, subscription_name, opts), to: Storage
 
   @doc """

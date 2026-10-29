@@ -84,6 +84,38 @@ defmodule Decree.Event.HandlerAfterStartTest do
       assert_receive {^ref, :after_start, :ok}
     end
 
+    test "should not be called again when the subscription resubscribes after a lock loss" do
+      ref = make_ref()
+      state = %{test: self(), ref: ref}
+      handler = start_supervised!({AfterStartHandler, state: state})
+
+      send_subscribed(handler)
+      assert_receive {^ref, :after_start, :ok}
+
+      send(handler, {:subscription_lock_lost, handler})
+      send_subscribed(handler)
+
+      refute_receive {^ref, :after_start, :ok}
+      assert Process.alive?(handler)
+    end
+
+    test "should be called again after a reset" do
+      stub(MockEventStore, :unsubscribe, fn _event_store, _subscription -> :ok end)
+      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
+
+      ref = make_ref()
+      state = %{test: self(), ref: ref}
+      handler = start_supervised!({AfterStartHandler, state: state})
+
+      send_subscribed(handler)
+      assert_receive {^ref, :after_start, :ok}
+
+      send(handler, :reset)
+      send_subscribed(handler)
+
+      assert_receive {^ref, :after_start, :ok}
+    end
+
     test "should reply with new state" do
       ref = make_ref()
       state = %{test: self(), ref: ref, reply: {:ok, %{something: :new}}}
@@ -93,6 +125,97 @@ defmodule Decree.Event.HandlerAfterStartTest do
 
       assert_receive {^ref, :after_start, {:ok, new_state}}
       assert new_state == %{something: :new}
+    end
+  end
+
+  describe "subscription lock lost" do
+    defmodule BatchHandler do
+      use Decree.Event.Handler,
+        application: Decree.MockedApp,
+        name: __MODULE__,
+        batch_size: 10,
+        batch_timeout: 60_000
+
+      def handle_batch(_events), do: :ok
+    end
+
+    test "should drop the events buffered for a batch, without an error log" do
+      handler = start_supervised!(BatchHandler)
+      send_subscribed(handler)
+
+      :sys.replace_state(handler, fn state ->
+        timer = Process.send_after(handler, :flush_batch_timeout, 60_000)
+        %{state | batch_buffer: [:buffered_event], batch_timer_ref: timer}
+      end)
+
+      log =
+        capture_log(fn ->
+          send(handler, {:subscription_lock_lost, handler})
+
+          assert %{batch_buffer: [], batch_timer_ref: nil} = :sys.get_state(handler)
+        end)
+
+      assert log =~ "lost its advisory lock"
+      refute log =~ "unexpected message"
+    end
+
+    test "should ignore a lock loss from a subscription it no longer uses" do
+      handler = start_supervised!(BatchHandler)
+      send_subscribed(handler)
+
+      log =
+        capture_log(fn ->
+          send(handler, {:subscription_lock_lost, self()})
+          assert %{batch_buffer: []} = :sys.get_state(handler)
+        end)
+
+      refute log =~ "unexpected message"
+      refute log =~ "lost its advisory lock"
+    end
+  end
+
+  describe "reset" do
+    defmodule ReplayedEvent do
+      @derive Jason.Encoder
+      defstruct [:reply_to]
+    end
+
+    defmodule BufferingHandler do
+      use Decree.Event.Handler,
+        application: Decree.MockedApp,
+        name: __MODULE__,
+        batch_size: 10,
+        batch_timeout: 60_000
+
+      def handle_batch([{%{reply_to: reply_to}, _metadata} | _rest] = events) do
+        send(reply_to, {:batch_handled, length(events)})
+
+        :ok
+      end
+    end
+
+    test "should not apply events buffered before the reset" do
+      stub(MockEventStore, :unsubscribe, fn _event_store, _subscription -> :ok end)
+      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
+      stub(MockEventStore, :ack_event, fn _event_store, _subscription, _event -> :ok end)
+
+      handler = start_supervised!(BufferingHandler)
+      send_subscribed(handler)
+
+      events =
+        Decree.Helpers.EventFactory.map_to_recorded_events([%ReplayedEvent{reply_to: self()}])
+
+      # Buffered, not yet handled, when the handler is reset.
+      send(handler, {:events, events})
+      send(handler, :reset)
+
+      # The reset subscription delivers the event again.
+      send_subscribed(handler)
+      send(handler, {:events, events})
+      send(handler, :flush_batch_timeout)
+
+      assert_receive {:batch_handled, 1}
+      refute_receive {:batch_handled, _count}
     end
   end
 

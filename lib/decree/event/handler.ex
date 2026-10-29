@@ -937,6 +937,10 @@ defmodule Decree.Event.Handler do
     :last_seen_event,
     :subscription,
     :subscribe_timer,
+    # The subscription process `after_start/1` last ran for: a subscription sends
+    # `{:subscribed, subscription}` again when it takes back a lost advisory lock,
+    # and `after_start/1` runs once per subscription (again after a reset).
+    :started_subscription,
     # Batch timeout support
     :batch_size,
     :batch_timeout,
@@ -1032,6 +1036,22 @@ defmodule Decree.Event.Handler do
   end
 
   @doc false
+  # The subscription has taken back its lost advisory lock and resumes delivering
+  # events; `after_start/1` already ran for it.
+  @impl GenServer
+  def handle_info(
+        {:subscribed, subscription},
+        %Handler{
+          subscription: %Subscription{subscription_pid: subscription},
+          started_subscription: subscription
+        } = state
+      ) do
+    Logger.info(describe(state) <> " has resubscribed to event store after losing its lock")
+
+    {:noreply, state}
+  end
+
+  @doc false
   # Subscription to event store has successfully subscribed, init event handler
   @impl GenServer
   def handle_info(
@@ -1039,6 +1059,8 @@ defmodule Decree.Event.Handler do
         %Handler{subscription: %Subscription{subscription_pid: subscription}} = state
       ) do
     Logger.debug(describe(state) <> " has successfully subscribed to event store")
+
+    state = %Handler{state | started_subscription: subscription}
 
     %Handler{handler_module: handler_module} = state
 
@@ -1059,6 +1081,30 @@ defmodule Decree.Event.Handler do
 
         {:stop, reason, state}
     end
+  end
+
+  @doc false
+  # The subscription lost its advisory lock: another instance may now deliver the
+  # same events. Events buffered for a batch are dropped unhandled; they were not
+  # acknowledged, so they are delivered again from the last acknowledged event to
+  # whichever instance holds the lock. The subscription sends `{:subscribed,
+  # subscription}` once it takes the lock back.
+  @impl GenServer
+  def handle_info(
+        {:subscription_lock_lost, subscription},
+        %Handler{subscription: %Subscription{subscription_pid: subscription}} = state
+      ) do
+    Logger.warning(describe(state) <> " subscription lost its advisory lock, waiting to resume")
+
+    state = cancel_batch_timer(state)
+
+    {:noreply, %Handler{state | batch_buffer: []}}
+  end
+
+  # From a subscription process the handler no longer uses (one replaced by a reset).
+  @impl GenServer
+  def handle_info({:subscription_lock_lost, _subscription}, state) do
+    {:noreply, state}
   end
 
   @doc false
@@ -1149,12 +1195,23 @@ defmodule Decree.Event.Handler do
     {:noreply, state}
   end
 
+  # Events buffered for a batch belong to the subscription being reset: they are
+  # dropped unhandled, and the new subscription delivers them again.
   defp reset_subscription(%Handler{} = state) do
     %Handler{subscription: subscription} = state
 
     subscription = Subscription.reset(subscription)
 
-    %Handler{state | last_seen_event: nil, subscription: subscription, subscribe_timer: nil}
+    state = cancel_batch_timer(state)
+
+    %Handler{
+      state
+      | last_seen_event: nil,
+        subscription: subscription,
+        subscribe_timer: nil,
+        started_subscription: nil,
+        batch_buffer: []
+    }
   end
 
   defp subscribe_to_events(%Handler{} = state) do

@@ -1,0 +1,13 @@
+SELECT c.key
+FROM unnest($1::bigint[]) AS c(key)
+WHERE EXISTS (
+  SELECT 1 FROM pg_locks l
+  WHERE l.pid = pg_backend_pid()
+    AND l.locktype = 'advisory'
+    AND l.granted
+    AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    AND l.classid = '"<%= schema %>".subscriptions'::regclass::oid
+    AND l.objid::bigint =
+      (CASE WHEN c.key > 2147483647 THEN mod(c.key, 2147483647) ELSE c.key END)
+    AND l.objsubid = 2
+);

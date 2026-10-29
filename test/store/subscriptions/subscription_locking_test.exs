@@ -105,6 +105,96 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
     end
   end
 
+  describe "subscriber notifications on lock loss" do
+    setup [:create_subscription]
+
+    test "should notify the lock loss, and the resubscribe", %{subscription: subscription} do
+      assert_receive {:subscribed, ^subscription}
+
+      :ok = disconnect(subscription)
+
+      assert_receive {:subscription_lock_lost, ^subscription}
+      refute_receive {:subscribed, ^subscription}
+
+      :ok = reconnect(subscription)
+
+      assert_receive {:subscribed, ^subscription}
+    end
+
+    @tag query_timeout: 200
+    test "should tell a subscriber connecting without the lock only once resubscribed", %{
+      subscription: subscription
+    } do
+      assert_receive {:subscribed, ^subscription}
+
+      :ok = disconnect(subscription)
+
+      assert_receive {:subscription_lock_lost, ^subscription}
+
+      # Connecting tries the lock at once; keep that attempt from succeeding.
+      locks = Process.whereis(TestEventStore.Decree.Store.AdvisoryLocks)
+      :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
+
+      test = self()
+
+      subscriber =
+        spawn_link(fn ->
+          receive do
+            message -> send(test, {:second_subscriber, message})
+          end
+        end)
+
+      {:ok, ^subscription} =
+        Subscription.connect(subscription, subscriber, concurrency_limit: 2)
+
+      refute_receive {:second_subscriber, {:subscribed, ^subscription}}
+      assert %Subscription{subscription: %{state: :disconnected}} = :sys.get_state(subscription)
+
+      :ok = :sys.resume(locks)
+      :ok = reconnect(subscription)
+
+      assert_receive {:second_subscriber, {:subscribed, ^subscription}}
+    end
+
+    test "should ignore the release of a lock that is not its current lock", %{
+      subscription: subscription
+    } do
+      assert_receive {:subscribed, ^subscription}
+
+      %Subscription{subscription: %{data: %{lock_ref: lock_ref}}} = :sys.get_state(subscription)
+
+      send(subscription, {Decree.Store.AdvisoryLocks, :lock_released, make_ref(), :session_lost})
+
+      refute_receive {:subscription_lock_lost, ^subscription}
+
+      assert %Subscription{subscription: %{state: state, data: %{lock_ref: ^lock_ref}}} =
+               :sys.get_state(subscription)
+
+      refute state == :disconnected
+    end
+  end
+
+  describe "slow advisory locks" do
+    test "should stay parked and retry when the lock call times out", context do
+      locks = Process.whereis(TestEventStore.Decree.Store.AdvisoryLocks)
+      :ok = :sys.suspend(locks)
+      on_exit(fn -> resume(locks) end)
+
+      [subscription: subscription] = create_subscription(Map.put(context, :query_timeout, 200))
+
+      ref = Process.monitor(subscription)
+
+      refute_receive {:subscribed, ^subscription}, 500
+      assert %Subscription{subscription: %{state: :initial}} = :sys.get_state(subscription)
+
+      :ok = :sys.resume(locks)
+
+      assert_receive {:subscribed, ^subscription}, 3_000
+      refute_received {:DOWN, ^ref, :process, _pid, _reason}
+    end
+  end
+
   describe "duplicate subscriptions" do
     setup [:lock_subscription, :create_subscription]
 
@@ -174,6 +264,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
         correlation_id_type: correlation_id_type,
         causation_id_type: causation_id_type,
         retry_interval: 1_000,
+        query_timeout: Map.get(context, :query_timeout, 15_000),
         stream_uuid: "$all",
         subscription_name: subscription_name,
         buffer_size: 3,
@@ -183,6 +274,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
     {:ok, ^subscription} = Subscription.connect(subscription, self(), buffer_size: 3)
 
     [subscription: subscription]
+  end
+
+  # Resume a suspended process, if it still runs.
+  defp resume(pid) do
+    :sys.resume(pid)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp reconnect(subscription) do
