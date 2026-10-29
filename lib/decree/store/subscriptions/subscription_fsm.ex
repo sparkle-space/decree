@@ -30,9 +30,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         checkpoint_after: opts[:checkpoint_after] || 0,
         checkpoint_threshold: opts[:checkpoint_threshold] || 1,
         query_timeout: opts[:query_timeout] || 15_000,
-        # A started subscription always passes the event store's
-        # `subscription_retry_interval` (or the caller's `retry_interval`); the default
-        # is that setting's default, for an FSM built without one.
+        # The cap of the catch-up read backoff. A started subscription always passes
+        # the event store's `subscription_retry_interval` (or the caller's
+        # `retry_interval`); the default is that setting's default, for an FSM built
+        # without one.
         retry_interval: Keyword.get(opts, :retry_interval, 60_000),
         max_size: opts[:max_size] || 1_000,
         transient: Keyword.get(opts, :transient, false)
@@ -214,7 +215,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     end
   end
 
-  # Holding after a catch-up read returned `{:error, reason}`, until the retry timer
+  # Holding after a catch-up read returned `{:error, reason}`, until the backoff timer
   # armed by `hold_catch_up/2` fires (sparkle-space/sparklespace#7307).
   #
   # The read changed nothing, so the cursor (`last_sent`, `last_received`, `last_ack`),
@@ -475,7 +476,17 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   def catch_up_from_stream(%SubscriptionState{queue_size: 0} = data) do
     %SubscriptionState{last_sent: last_sent, last_received: last_received} = data
 
-    case read_stream_forward(data) do
+    result = read_stream_forward(data)
+
+    # A read that succeeds, or finds the stream deleted or not yet created, ends a run
+    # of failed reads, so the next failure waits the shortest backoff again.
+    data =
+      case result do
+        {:error, reason} when reason not in [:stream_deleted, :stream_not_found] -> data
+        _result -> %SubscriptionState{data | catch_up_failures: 0}
+      end
+
+    case result do
       {:ok, []} ->
         if last_sent == last_received do
           # Subscriber is up-to-date with latest published events
@@ -506,9 +517,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
       {:error, reason} ->
         # Any other read error, such as a Postgres error or a query or queue timeout:
-        # hold the subscription and retry the read on a timer. This covers a read that
-        # returns an error, not one that raises: an event that fails to deserialize
-        # raises in the read and still crashes the subscription.
+        # hold the subscription and retry the read on a backoff timer. This covers a
+        # read that returns an error, not one that raises: an event that fails to
+        # deserialize raises in the read and still crashes the subscription.
         hold_catch_up(data, reason)
     end
   end
@@ -517,22 +528,29 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     next_state(:catching_up, data)
   end
 
-  # Keep the cursor and the subscribers, and retry the catch-up read after the retry
-  # interval. Retrying on a timer, never with an immediate `:catch_up` cast, bounds the
-  # read rate while the error persists. Each held read logs a warning and emits the
-  # `[:decree, :store, :subscription, :catch_up, :error]` telemetry event.
+  # Keep the cursor and the subscribers, and retry the catch-up read on a timer, never
+  # with an immediate `:catch_up` cast, which bounds the read rate while the error
+  # persists. The wait is a capped exponential backoff over the consecutive failed
+  # reads: `min(1_000, retry_interval)` after the first, doubling after each further
+  # one, up to `retry_interval`. Each held read logs a warning and emits the
+  # `[:decree, :store, :subscription, :catch_up, :error]` telemetry event, with the
+  # wait it scheduled and the attempt number.
   defp hold_catch_up(%SubscriptionState{} = data, reason) do
     %SubscriptionState{
       event_store: event_store,
       stream_uuid: stream_uuid,
       subscription_name: subscription_name,
-      retry_interval: retry_interval
+      retry_interval: max_retry_interval,
+      catch_up_failures: catch_up_failures
     } = data
+
+    attempt = catch_up_failures + 1
+    retry_interval = catch_up_backoff(attempt, max_retry_interval)
 
     Logger.warning(
       describe(data) <>
         " failed to catch up due to: " <>
-        inspect(reason) <> ", retrying in #{retry_interval}ms"
+        inspect(reason) <> ", attempt #{attempt}, retrying in #{retry_interval}ms"
     )
 
     :telemetry.execute(
@@ -543,7 +561,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         subscription_name: subscription_name,
         stream_uuid: stream_uuid,
         reason: reason,
-        retry_interval: retry_interval
+        retry_interval: retry_interval,
+        attempt: attempt
       }
     )
 
@@ -552,7 +571,20 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
     Process.send_after(self(), {:retry_catch_up, token}, retry_interval)
 
-    next_state(:catch_up_retry, %SubscriptionState{data | catch_up_retry_token: token})
+    next_state(:catch_up_retry, %SubscriptionState{
+      data
+      | catch_up_retry_token: token,
+        catch_up_failures: attempt
+    })
+  end
+
+  # The wait before retrying after the `attempt`th consecutive failed catch-up read. A
+  # `retry_interval` below one second gives a flat wait of `retry_interval`.
+  defp catch_up_backoff(attempt, retry_interval) do
+    first = min(1_000, retry_interval)
+
+    # The exponent is capped so a long run of failures stays a small integer.
+    min(first * Integer.pow(2, min(attempt - 1, 32)), retry_interval)
   end
 
   defp read_stream_forward(%SubscriptionState{} = data) do

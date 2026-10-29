@@ -30,8 +30,10 @@ defmodule Decree.Store.Subscriptions do
   event store config.
 
   A subscription waits this long before it retries subscribing (for example, after
-  failing to take or losing its advisory lock), and before it retries a catch-up read
-  that returned an error.
+  failing to take or losing its advisory lock). It is also the cap of the backoff
+  before a subscription retries a catch-up read that returned an error: the first
+  wait is one second (or this interval, when shorter), doubling after each further
+  consecutive failed read up to this interval.
 
   The default value is one minute and the minimum allowed value is one second.
   """

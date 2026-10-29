@@ -2,8 +2,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
   use Decree.Store.StorageCase
 
   # A catch-up read that returns `{:error, reason}` holds the subscription and retries
-  # the read on a timer, keeping its cursor and its subscribers, instead of crashing the
-  # subscription (sparkle-space/sparklespace#7307).
+  # the read on a capped backoff timer, keeping its cursor and its subscribers, instead
+  # of crashing the subscription (sparkle-space/sparklespace#7307). A `retry_interval`
+  # below one second gives a flat wait of `retry_interval`, which the first two tests
+  # use; the backoff tests use a cap above one second.
   #
   # The read error is a real one: a second connection holds an ACCESS EXCLUSIVE lock on
   # `stream_events`, and the subscription runs with a short query timeout, so its
@@ -13,8 +15,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
   # of the stream's events fails. Nothing is appended while the lock is held: an
   # append writes `stream_events` too.
 
-  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
-  alias Decree.Store.Subscriptions.Subscription
+  alias Decree.Store.{EventFactory, RecordedEvent, UUID, Wait}
+  alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
   alias TestEventStore, as: EventStore
 
   @catch_up_error [:decree, :store, :subscription, :catch_up, :error]
@@ -54,12 +56,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     assert length(held_reads) >= 2
     assert length(held_reads) <= div(window, @retry_interval) + 1
 
-    for metadata <- held_reads do
+    for {metadata, attempt} <- Enum.with_index(held_reads, 1) do
       assert %{
                event_store: TestEventStore,
                subscription_name: ^subscription_name,
                stream_uuid: "$all",
                retry_interval: @retry_interval,
+               attempt: ^attempt,
                reason: reason
              } = metadata
 
@@ -100,6 +103,56 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     refute_received {:DOWN, ^ref, :process, ^subscription, _reason}
   end
 
+  test "the wait between held reads doubles from one second up to the retry interval", %{
+    postgrex_config: postgrex_config,
+    subscription_name: subscription_name
+  } do
+    lock = lock_stream_events(postgrex_config)
+
+    {subscription, ref} = subscribe(subscription_name, retry_interval: 4_000)
+
+    held_reads = for _attempt <- 1..4, do: assert_held_read(subscription, ref)
+
+    assert Enum.map(held_reads, & &1.retry_interval) == [1_000, 2_000, 4_000, 4_000]
+    assert Enum.map(held_reads, & &1.attempt) == [1, 2, 3, 4]
+
+    assert Process.alive?(subscription)
+
+    release(lock)
+  end
+
+  test "a successful read resets the backoff", %{
+    postgrex_config: postgrex_config,
+    subscription_name: subscription_name
+  } do
+    lock = lock_stream_events(postgrex_config)
+
+    {subscription, ref} = subscribe(subscription_name, retry_interval: 2_000)
+
+    assert %{attempt: 1, retry_interval: 1_000} = assert_held_read(subscription, ref)
+
+    release(lock)
+
+    # The retried read succeeds: the stream is empty, so the subscription is subscribed.
+    Wait.until(3_000, fn ->
+      assert %Subscription{
+               subscription: %SubscriptionFsm{
+                 state: :subscribed,
+                 data: %SubscriptionState{catch_up_failures: 0}
+               }
+             } = :sys.get_state(subscription)
+    end)
+
+    lock = lock_stream_events(postgrex_config)
+
+    # Ask the subscribed subscription to catch up, with the store's own cast.
+    GenServer.cast(subscription, :catch_up)
+
+    assert %{attempt: 1, retry_interval: 1_000} = assert_held_read(subscription, ref)
+
+    release(lock)
+  end
+
   def handle_telemetry_event(@catch_up_error, _measurements, metadata, config) do
     %{test: test, subscription_name: subscription_name} = config
 
@@ -108,11 +161,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     end
   end
 
-  defp subscribe(subscription_name) do
+  defp subscribe(subscription_name, opts \\ []) do
     {:ok, subscription} =
       EventStore.subscribe_to_all_streams(subscription_name, self(),
         timeout: @query_timeout,
-        retry_interval: @retry_interval
+        retry_interval: Keyword.get(opts, :retry_interval, @retry_interval)
       )
 
     assert_receive {:subscribed, ^subscription}

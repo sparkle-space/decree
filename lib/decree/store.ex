@@ -1247,12 +1247,18 @@ defmodule Decree.Store do
 
   When a subscription's read of events from storage returns an error, such as a
   query timeout, the subscription holds: it keeps its position and its subscribers,
-  and retries the read after the event store's `subscription_retry_interval`
-  (default one minute). Each failed read logs a warning and emits the telemetry event
+  and retries the read with a capped exponential backoff. The first wait is one
+  second, doubling after each further consecutive failed read, up to the event
+  store's `subscription_retry_interval` (default one minute); an interval shorter
+  than one second gives a flat wait of that interval. The next successful read resets
+  the backoff.
+
+  Each failed read logs a warning and emits the telemetry event
   `[:decree, :store, :subscription, :catch_up, :error]`, with the measurement
   `system_time` and the metadata `event_store`, `subscription_name`, `stream_uuid`,
-  `reason` and `retry_interval`. A read that raises, such as an event that fails to
-  deserialize, still stops the subscription.
+  `reason`, `retry_interval` (the wait scheduled before the next read) and
+  `attempt` (the number of consecutive failed reads). A read that raises, such as an
+  event that fails to deserialize, still stops the subscription.
 
   """
   @callback subscribe_to_stream(
