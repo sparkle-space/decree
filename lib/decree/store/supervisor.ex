@@ -58,7 +58,16 @@ defmodule Decree.Store.Supervisor do
 
         advisory_locks_name = Module.concat([name, AdvisoryLocks])
         advisory_locks_postgrex_conn = Module.concat([advisory_locks_name, Postgrex])
-        advisory_locks_config = Config.advisory_locks_postgrex_opts(config)
+
+        # The lock pool's connection tells `AdvisoryLocks` when it connects or
+        # disconnects, so that locks lost with a session the pool replaced are
+        # released (see `AdvisoryLocks`). The pool may connect before
+        # `AdvisoryLocks` has registered its name; a message sent to a `{name, node}`
+        # destination that is not registered is dropped, and no lock is held then.
+        advisory_locks_config =
+          config
+          |> Config.advisory_locks_postgrex_opts()
+          |> add_connection_listener({advisory_locks_name, node()})
 
         # The delay before the lock pool is started again after it stopped.
         # Configurable (`:advisory_locks_restart_delay`) so tests can drive a pool
@@ -139,6 +148,16 @@ defmodule Decree.Store.Supervisor do
       subscription_retry_interval: subscription_retry_interval,
       subscription_hibernate_after: subscription_hibernate_after
     )
+  end
+
+  # Add a listener to the configured `:connection_listeners`, in either of the forms
+  # DBConnection accepts (a list, or `{list, tag}`).
+  defp add_connection_listener(postgrex_opts, listener) do
+    Keyword.update(postgrex_opts, :connection_listeners, [listener], fn
+      {listeners, tag} when is_list(listeners) -> {[listener | listeners], tag}
+      listeners when is_list(listeners) -> [listener | listeners]
+      nil -> [listener]
+    end)
   end
 
   # Get the name of the main Postgres database connection pool.

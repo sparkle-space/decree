@@ -27,6 +27,43 @@ defmodule Decree.Store.Storage.Lock do
     end
   end
 
+  @doc """
+  Like `try_acquire_exclusive_lock/3`, and also returns the backend process id of
+  the database session that ran the query (`pg_backend_pid()`), whether or not the
+  lock was acquired.
+
+  Returns `{:ok, :acquired, backend_pid}`, `{:ok, :lock_already_taken, backend_pid}`
+  or `{:error, reason}`.
+  """
+  def try_acquire_exclusive_session_lock(conn, key, opts) do
+    {schema, opts} = Keyword.pop(opts, :schema)
+
+    query = Statements.try_session_advisory_lock(schema)
+
+    case Postgrex.query(conn, query, [key], opts) do
+      {:ok, %Postgrex.Result{rows: [[true, backend_pid]]}} ->
+        {:ok, :acquired, backend_pid}
+
+      {:ok, %Postgrex.Result{rows: [[false, backend_pid]]}} ->
+        {:ok, :lock_already_taken, backend_pid}
+
+      {:error, _error} = reply ->
+        reply
+    end
+  end
+
+  @doc """
+  The backend process id of the database session the connection is on.
+  """
+  def session_backend_pid(conn, opts) do
+    {_schema, opts} = Keyword.pop(opts, :schema)
+
+    case Postgrex.query(conn, Statements.query_session_backend(), [], opts) do
+      {:ok, %Postgrex.Result{rows: [[backend_pid]]}} -> {:ok, backend_pid}
+      {:error, _error} = reply -> reply
+    end
+  end
+
   def unlock(conn, key, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
 
