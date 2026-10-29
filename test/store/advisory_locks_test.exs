@@ -76,7 +76,10 @@ defmodule Decree.Store.AdvisoryLocksTest do
 
       shutdown_database_connection()
 
-      assert_receive({AdvisoryLocks, :lock_released, ^lock, :shutdown})
+      # The pool's `:DOWN` (`:shutdown`) and its connection's disconnect
+      # (`:session_lost`) race; either releases the lock.
+      assert_receive {AdvisoryLocks, :lock_released, ^lock, reason}
+      assert reason in [:shutdown, :session_lost]
     end
   end
 
