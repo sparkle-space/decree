@@ -16,7 +16,7 @@ defmodule Decree.Application.ConfigTest do
       assert {Decree.EventStore.Adapters.EventStore,
               %{
                 event_store: Decree.FrameworkEventStore,
-                name: Decree.ExampleApplication.EventStore
+                name: Decree.ExampleApplication.FrameworkEventStore
               }} ==
                Config.get(ExampleApplication, :event_store)
     end

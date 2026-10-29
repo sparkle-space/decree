@@ -11,7 +11,8 @@
 #   event_store.<task>                -> decree.store.<task>         (Mix task names)
 #   :commanded, :eventstore,
 #   :commanded_eventstore_adapter,
-#   :commanded_ecto_projections       -> :decree                     (OTP app, telemetry prefix)
+#   :commanded_ecto_projections       -> :decree                     (OTP app, telemetry prefix;
+#                                                                   not the `:eventstore` option key)
 #   "Elixir.EventStore.X"             -> "Elixir.Decree.Store.X"     (test fixture type strings)
 #   priv/event_store                  -> priv/decree/store
 #
@@ -49,9 +50,22 @@ defmodule Decree.Rename do
   @content_dirs ["lib", "test"]
   @content_exts [".ex", ".exs"]
 
-  # Literals that name the store in Postgres: the trigger functions' error message
-  # prefix (in the SQL) and the messages the store suite matches. Masked during the rewrite.
-  @protected ["'EventStore: '", "\"EventStore: Cannot "]
+  # Literals the rules would otherwise rewrite, masked during the rewrite:
+  #
+  # - the store's name in Postgres: the trigger functions' error-message prefix (in
+  #   the SQL) and the messages the store suite matches;
+  # - `:eventstore` where it is not the OTP application: the OptionParser key of the
+  #   `--eventstore` / `-e` switch of the Mix tasks (and of
+  #   `Decree.Store.Tasks.Migrations.exec/2`), and the store suite's instance name
+  #   `name: :eventstore`.
+  @protected [
+    "'EventStore: '",
+    "\"EventStore: Cannot ",
+    "e: :eventstore",
+    "Keyword.put(:eventstore, ",
+    "Keyword.get(opts, :eventstore, ",
+    "name: :eventstore"
+  ]
 
   # Rewrites applied to every file, in order.
   @rules [

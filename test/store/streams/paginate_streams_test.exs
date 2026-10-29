@@ -350,12 +350,12 @@ defmodule Decree.Store.Streams.PaginateStreamsTest do
       {:ok, stream2_uuid} = append_events_to_stream(2)
       {:ok, stream3_uuid} = append_events_to_stream(3)
 
-      start_supervised!({TestEventStore, name: :decree, enable_hard_deletes: true})
+      start_supervised!({TestEventStore, name: :eventstore, enable_hard_deletes: true})
 
-      :ok = TestEventStore.delete_stream(stream1_uuid, 1, :soft, name: :decree)
-      :ok = TestEventStore.delete_stream(stream2_uuid, 2, :hard, name: :decree)
+      :ok = TestEventStore.delete_stream(stream1_uuid, 1, :soft, name: :eventstore)
+      :ok = TestEventStore.delete_stream(stream2_uuid, 2, :hard, name: :eventstore)
 
-      assert {:ok, page} = EventStore.paginate_streams(name: :decree)
+      assert {:ok, page} = EventStore.paginate_streams(name: :eventstore)
 
       assert match?(
                %Page{

@@ -26,7 +26,7 @@ defmodule Decree.ApplicationTest do
                {Decree.EventStore.Adapters.EventStore,
                 %{
                   event_store: Decree.FrameworkEventStore,
-                  name: Decree.ExampleApplication.EventStore
+                  name: Decree.ExampleApplication.FrameworkEventStore
                 }}
     end
 
@@ -52,7 +52,7 @@ defmodule Decree.ApplicationTest do
                {Decree.EventStore.Adapters.EventStore,
                 %{
                   event_store: Decree.FrameworkEventStore,
-                  name: Decree.RuntimeConfiguredApplication.EventStore
+                  name: Decree.RuntimeConfiguredApplication.FrameworkEventStore
                 }}
 
       assert Application.pubsub_adapter(RuntimeConfiguredApplication) ==

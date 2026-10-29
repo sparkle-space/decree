@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Decree.Store.Migrations do
     quiet: :boolean
   ]
 
-  @aliases [e: :decree]
+  @aliases [e: :eventstore]
 
   @doc false
   def run(args) do
@@ -48,7 +48,7 @@ defmodule Mix.Tasks.Decree.Store.Migrations do
         opts =
           opts
           |> Keyword.put(:is_mix, true)
-          |> Keyword.put(:decree, event_store)
+          |> Keyword.put(:eventstore, event_store)
 
         Migrations.exec(config, opts)
       end)

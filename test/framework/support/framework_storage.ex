@@ -20,7 +20,7 @@ defmodule Decree.FrameworkStorage do
 
     Keyword.update(config, :event_store, [], fn event_store ->
       if Keyword.get(event_store, :adapter) == Adapter do
-        Keyword.put_new(event_store, :name, Module.concat([instance, EventStore]))
+        Keyword.put_new(event_store, :name, Module.concat([instance, "FrameworkEventStore"]))
       else
         event_store
       end

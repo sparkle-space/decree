@@ -42,7 +42,7 @@ defmodule Decree.Store.Tasks.Migrations do
     config = Config.default_postgrex_opts(config)
 
     migrations = migrations(config, schema)
-    event_store = Keyword.get(opts, :decree, "default")
+    event_store = Keyword.get(opts, :eventstore, "default")
     event_store_name = event_store |> to_string() |> String.replace_prefix("Elixir.", "")
 
     write_info("\nDecree.Store: #{event_store_name}\n", opts)

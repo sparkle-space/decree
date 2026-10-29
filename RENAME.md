@@ -187,7 +187,7 @@ All modules decree compiles from `lib/`. `Decree.Store.Subscriptions.GeneratedFs
 
 | Before | After |
 |---|---|
-| `:commanded`, `:eventstore`, `:commanded_eventstore_adapter`, `:commanded_ecto_projections` (as applications: `Application.ensure_all_started/1`, `Application.get_env/2`, `Application.app_dir/2`) | `:decree` |
+| `:commanded`, `:eventstore`, `:commanded_eventstore_adapter`, `:commanded_ecto_projections` where they name the application (`Application.ensure_all_started/1`, `Application.get_env/2`, `Application.app_dir/2`, `otp_app:` defaults); not the `:eventstore` option key below | `:decree` |
 | `config :commanded, key: ...` | `config :decree, key: ...` |
 | `config :commanded_ecto_projections, repo: ..., schema_prefix: ...` | `config :decree, repo: ..., schema_prefix: ...` |
 | `config :eventstore, event_stores: [...]` (EventStore's own repository only) | `config :decree, event_stores: [...]` |
@@ -242,4 +242,8 @@ Nothing written to Postgres or sent over the wire changes, so P3 needs no data m
 - event metadata keys;
 - event-type and snapshot source-type strings: the application's own module names (`Elixir.Sparklespace...`) through `ModuleNameTypeProvider`. No library module name is persisted.
 
-Not persisted and also kept: the Mix CLI option `--eventstore`, the registry name `MonitoredServer.Registry`, and upstream links in the documentation.
+Not persisted and also kept:
+
+- the Mix CLI option `--eventstore` / `-e` and its OptionParser key `:eventstore` (the `eventstore:` option of `Decree.Store.Tasks.Migrations.exec/2` too): `:eventstore` there names a command-line option, not the OTP application, so the application rename does not touch it;
+- the registry name `MonitoredServer.Registry`;
+- upstream links in the documentation.

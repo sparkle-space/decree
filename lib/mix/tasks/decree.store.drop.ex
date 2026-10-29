@@ -30,7 +30,7 @@ defmodule Mix.Tasks.Decree.Store.Drop do
   ]
 
   @aliases [
-    e: :decree,
+    e: :eventstore,
     q: :quiet
   ]
 

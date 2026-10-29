@@ -8,12 +8,9 @@ defmodule Decree do
   - [Command registration and dispatch](commands.html).
   - [Hosting and delegation to aggregates](aggregates.html).
   - [Event handling](events.html).
-  - [Long running process managers](process-managers.html).
 
-  Use Decree with one of the following event stores for persistence:
-
-  - Elixir [Decree.Store](https://hex.pm/packages/eventstore) using Postgres for persistence
-  - [EventStoreDB](https://www.eventstore.com/)
+  Events persist in `Decree.Store`, the Postgres event store, through the
+  `Decree.EventStore.Adapters.EventStore` adapter.
 
   Please check the [Getting Started](getting-started.html) and [Usage](usage.html) guides to learn more.
   """
