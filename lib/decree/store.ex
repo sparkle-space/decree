@@ -34,7 +34,7 @@ defmodule Decree.Store do
         serializer: Decree.Store.JsonSerializer,
         url: "postgres://postgres:postgres@localhost/eventstore"
 
-  **Note:** To use an Decree.Store with Decree you should configure the event
+  **Note:** To use a Decree.Store with Decree you should configure the event
   store to use Decree's JSON serializer which provides additional support for
   JSON decoding:
 
@@ -196,21 +196,6 @@ defmodule Decree.Store do
 
         :ok = Decree.Store.append_to_stream(stream_uuid, expected_version, events, conn: conn)
       end)
-
-  ---
-
-  ## Guides
-
-  Please refer to the following guides to learn more:
-
-  - [Getting started](getting-started.html)
-  - [Usage](usage.html)
-  - [Subscriptions](subscriptions.html)
-  - [Running on a cluster of nodes](cluster.html)
-  - [Event serialization](event-serialization.html)
-  - [Upgrading an existing Decree.Store database](upgrades.html)
-
-  ---
 
   """
 

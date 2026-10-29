@@ -164,10 +164,8 @@ defmodule Decree.Aggregates.ExecuteCommandTest do
   end
 
   defp assert_aggregate_exit(application, aggregate_module, aggregate_uuid, fun) do
-    pid = spawn(fun)
-
-    # Wait for spawned function to terminate
-    ref = Process.monitor(pid)
+    # Wait for spawned function to terminate (monitored atomically with the spawn)
+    {_pid, ref} = spawn_monitor(fun)
     assert_receive {:DOWN, ^ref, _, _, _}
 
     name = {application, aggregate_module, aggregate_uuid}

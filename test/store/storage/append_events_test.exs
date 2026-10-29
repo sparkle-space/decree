@@ -223,10 +223,19 @@ defmodule Decree.Store.Storage.AppendEventsTest do
   test "append single event with a db connection error", %{conn: conn, schema: schema} do
     recorded_events = EventFactory.create_recorded_events(100, UUID.uuid4())
 
-    # Using Postgrex query timeout value of zero will cause a `DBConnection.ConnectionError` error
-    # to be returned.
-    assert {:error, %DBConnection.ConnectionError{}} =
-             Appender.append(conn, 1, recorded_events, schema: schema, timeout: 0)
+    # A Postgrex query timeout of zero makes the append race the client timeout. It
+    # returns an error tuple rather than raising, in one of three shapes:
+    # - a `DBConnection.ConnectionError` when the client gives up first;
+    # - `:query_canceled` when a fast server has already received the query and
+    #   Postgres cancels it;
+    # - `:not_found` when a fast server finishes the query before the timer fires:
+    #   stream 1 does not exist in this schema, so the insert fails its foreign key.
+    result = Appender.append(conn, 1, recorded_events, schema: schema, timeout: 0)
+
+    assert match?({:error, %DBConnection.ConnectionError{}}, result) or
+             result in [{:error, :query_canceled}, {:error, :not_found}],
+           "expected a connection error, :query_canceled or :not_found, got: " <>
+             inspect(result)
   end
 
   defp create_stream(context) do

@@ -12,10 +12,11 @@ defmodule Decree.Helpers.ProcessHelper do
   def shutdown(pid, reason \\ :shutdown)
 
   def shutdown(pid, reason) when is_pid(pid) do
+    ref = Process.monitor(pid)
+
     Process.unlink(pid)
     Process.exit(pid, reason)
 
-    ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, _, _, _}, 5_000
   end
 

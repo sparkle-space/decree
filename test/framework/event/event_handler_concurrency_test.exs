@@ -159,8 +159,8 @@ defmodule Decree.Event.EventHandlerConcurrencyTest do
       refute_receive {:event, _stream_uuid, _pid}
 
       # The Postgres store keeps a partition's events serial but does not pin a
-      # partition to one handler process (the in-memory adapter did), so at most one
-      # process per event and at least one per partition.
+      # partition to one handler process (the in-memory adapter did): at least one
+      # process per partition (3), and at most the handler's `concurrency: 5`.
       unique_pids = Enum.uniq([pid1, pid2, pid3, pid4, pid5, pid6])
       assert length(unique_pids) in 3..5
     end

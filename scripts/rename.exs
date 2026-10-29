@@ -78,7 +78,9 @@ defmodule Decree.Rename do
      ":decree"},
     {~r/(?<!\w)Commanded\b/, "Decree"},
     {~r/\bElixir\.EventStore\b/, "Elixir.Decree.Store"},
-    {~r{\bpriv/event_store\b}, "priv/decree/store"}
+    {~r{\bpriv/event_store\b}, "priv/decree/store"},
+    # The article before upstream's "an EventStore" ("is not an EventStore").
+    {~r/\ban (?=Decree\.Store\b)/, "a "}
   ]
 
   # The head rule for bare `EventStore`, applied only before the file's first alias of it.

@@ -21,11 +21,6 @@ defmodule Decree.Projections.Ecto do
         end
       end
 
-  ## Guides
-
-  - [Getting started](getting-started.html)
-  - [Usage](usage.html)
-
   """
 
   defmacro __using__(opts) do

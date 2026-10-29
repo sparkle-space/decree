@@ -4,7 +4,7 @@ defmodule Decree.Store.MixTasksTest do
   import ExUnit.CaptureIO
 
   # The `-e` / `--eventstore` option names the event store a task acts on. Its
-  # OptionParser key is `:decree`, a CLI option name, not the OTP application.
+  # OptionParser key is `:eventstore`, a CLI option name, not the OTP application.
 
   describe "`-e` option" do
     test "`decree.store.create` accepts `-e`" do

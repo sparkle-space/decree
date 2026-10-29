@@ -59,7 +59,7 @@ defmodule Mix.Decree.Store do
   end
 
   @doc """
-  Ensures the given module is an Decree.Store.
+  Ensures the given module is a Decree.Store.
   """
   @spec ensure_event_store!(module, list) :: Decree.Store.t()
   def ensure_event_store!(event_store, args) do
@@ -77,7 +77,7 @@ defmodule Mix.Decree.Store do
           event_store
         else
           Mix.raise(
-            "Module #{inspect(event_store)} is not an Decree.Store. " <>
+            "Module #{inspect(event_store)} is not a Decree.Store. " <>
               "Please configure your app accordingly or pass a event store with the -e option."
           )
         end

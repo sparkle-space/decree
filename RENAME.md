@@ -15,6 +15,8 @@ The complete mapping P3 applies to sparklespace to switch from the four upstream
 
 decree is one OTP application. `Application.ensure_all_started(:decree)` starts what `:eventstore` and `:commanded` started (the store's config registry and monitored-server registry, then the framework's config registry).
 
+Same children, names and order, but one root. `Decree.Store.Application` starts the supervisor registered as `Decree.Store.Supervisor` (the name upstream's `:eventstore` application gave its root) as a child of `Decree.Supervisor`, before the framework's config registry, so the store's supervisor shares `Decree.Supervisor`'s restart budget. Upstream, `:eventstore` was a separate application: when its supervisor exhausted its restart budget, that application stopped on its own. Now the store's supervisor is restarted by `Decree.Supervisor`, and exhausting that budget stops `:decree`. (The per-event-store supervisor module `Decree.Store.Supervisor` in `lib/decree/store/supervisor.ex`, started by each event store's `start_link`, shares the name, as upstream's `EventStore.Supervisor` did; it is not part of this tree.)
+
 ## Module names
 
 The rules, in order:
@@ -126,6 +128,7 @@ All modules decree compiles from `lib/`. `Decree.Store.Subscriptions.GeneratedFs
 | `EventStore.Notifications.Publisher.State` | `Decree.Store.Notifications.Publisher.State` |
 | `EventStore.Notifications.Supervisor` | `Decree.Store.Notifications.Supervisor` |
 | `EventStore.Page` | `Decree.Store.Page` |
+| `EventStore.PostgresTypes` (defined by `Postgrex.Types.define/3` in `lib/register_postgres_types.ex`) | `Decree.Store.PostgresTypes` (in `lib/decree/store/postgres_types.ex`) |
 | `EventStore.PubSub` | `Decree.Store.PubSub` |
 | `EventStore.RecordedEvent` | `Decree.Store.RecordedEvent` |
 | `EventStore.Serializer` | `Decree.Store.Serializer` |

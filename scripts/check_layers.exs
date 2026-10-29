@@ -10,6 +10,19 @@
 # literals all count, and fails on any atom naming a framework module. It also fails
 # when a file under the store's directories defines a module outside the store's
 # namespace.
+#
+# A module name built at runtime (`Module.concat(["Decree", "UUID"])`,
+# `String.to_atom("Elixir.Decree.X")`) leaves no framework atom in the BEAM, so the check
+# also scans the store layer's source files (`lib/decree/store.ex`, `lib/decree/store/**`,
+# `lib/mix/**`). It is deliberately conservative and fails on:
+#
+# - a string or charlist literal starting with `Decree` or `Elixir.Decree` that does not
+#   name a `Decree.Store` module;
+# - a `Module.concat/1,2`, `Module.safe_concat/1,2`, `String.to_atom/1`,
+#   `String.to_existing_atom/1`, `List.to_atom/1`, `List.to_existing_atom/1` or
+#   `:erlang.binary_to_atom`/`binary_to_existing_atom`/`list_to_atom`/
+#   `list_to_existing_atom` call whose argument visibly names `Decree` outside
+#   `Decree.Store`, in any form (string, charlist, atom such as `:Decree`, or alias).
 
 defmodule Decree.CheckLayers do
   @store_prefixes [
@@ -22,6 +35,22 @@ defmodule Decree.CheckLayers do
     "lib/decree/store.ex",
     "lib/mix/decree/",
     "lib/mix/tasks/decree.store."
+  ]
+
+  @source_globs ["lib/decree/store.ex", "lib/decree/store/**/*.{ex,exs}", "lib/mix/**/*.{ex,exs}"]
+
+  # A literal opening with a framework name: `"Decree"`, `"Decree.UUID"`, `'Elixir.Decree.X'`,
+  # but not `"Decree.Store"`, `"Decree.Store.X"` or `"Decree.Store: ..."`.
+  @framework_literal ~r/["'](?:Elixir\.)?Decree(?!\.Store\b)(?!\w)/
+
+  # A framework name anywhere in a name-building call's argument, in any form.
+  @framework_name ~r/(?<![\w.])(?:Elixir\.)?Decree(?!\.Store\b)(?!\w)/
+
+  @name_builders [
+    {[:Module], [:concat, :safe_concat]},
+    {[:String], [:to_atom, :to_existing_atom]},
+    {[:List], [:to_atom, :to_existing_atom]},
+    {:erlang, [:binary_to_atom, :binary_to_existing_atom, :list_to_atom, :list_to_existing_atom]}
   ]
 
   def run do
@@ -50,10 +79,19 @@ defmodule Decree.CheckLayers do
           framework_module?(atom),
           do: "#{source}: #{inspect_module(name)} references #{inspect_module(atom)}"
 
-    case misplaced ++ Enum.uniq(violations) do
+    sources =
+      @source_globs
+      |> Enum.flat_map(&Path.wildcard/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    source_violations = Enum.flat_map(sources, &scan_source/1)
+
+    case misplaced ++ Enum.uniq(violations) ++ source_violations do
       [] ->
         IO.puts(
-          "Layer check passed: #{length(store)} store modules reference no framework module."
+          "Layer check passed: #{length(store)} store modules reference no framework module; " <>
+            "#{length(sources)} store source files build no framework module name."
         )
 
       errors ->
@@ -62,6 +100,63 @@ defmodule Decree.CheckLayers do
         System.halt(1)
     end
   end
+
+  # Source-level scan for module names built at runtime.
+  defp scan_source(path) do
+    source = File.read!(path)
+
+    literals =
+      source
+      |> String.split("\n")
+      |> Enum.with_index(1)
+      |> Enum.filter(fn {line, _number} -> Regex.match?(@framework_literal, line) end)
+      |> Enum.map(fn {line, number} ->
+        "#{path}:#{number}: literal names a framework module: #{String.trim(line)}"
+      end)
+
+    {_ast, calls} =
+      source
+      |> Code.string_to_quoted!(file: path, columns: true)
+      |> Macro.prewalk([], fn node, acc -> {node, name_builder_violations(node, path) ++ acc} end)
+
+    literals ++ Enum.reverse(calls)
+  end
+
+  # `x |> String.to_atom()`: the piped value is the argument.
+  defp name_builder_violations({:|>, _meta, [lhs, {call, meta, args}]}, path)
+       when is_list(args) do
+    if name_builder?(call), do: check_args(path, meta, call, [lhs | args]), else: []
+  end
+
+  defp name_builder_violations({call, meta, args}, path) when is_list(args) do
+    if name_builder?(call), do: check_args(path, meta, call, args), else: []
+  end
+
+  defp name_builder_violations(_node, _path), do: []
+
+  defp name_builder?({:., _, [{:__aliases__, _, mod}, fun]}),
+    do: Enum.any?(@name_builders, fn {m, funs} -> m == mod and fun in funs end)
+
+  defp name_builder?({:., _, [mod, fun]}) when is_atom(mod),
+    do: Enum.any?(@name_builders, fn {m, funs} -> m == mod and fun in funs end)
+
+  defp name_builder?(_call), do: false
+
+  defp check_args(path, meta, call, args) do
+    text = Macro.to_string(args)
+
+    if Regex.match?(@framework_name, text) do
+      [
+        "#{path}:#{meta[:line]}: #{call_name(call)} builds a framework module name: " <>
+          text
+      ]
+    else
+      []
+    end
+  end
+
+  defp call_name({:., _, [{:__aliases__, _, mod}, fun]}), do: "#{Enum.join(mod, ".")}.#{fun}"
+  defp call_name({:., _, [mod, fun]}), do: "#{inspect(mod)}.#{fun}"
 
   defp read_beam(path, root) do
     {:ok, {module, [atoms: atoms, compile_info: info, debug_info: debug_info]}} =

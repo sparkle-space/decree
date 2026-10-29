@@ -4,15 +4,13 @@ defmodule Decree do
 
   Provides support for:
 
-  - [Defining applications](application.html).
-  - [Command registration and dispatch](commands.html).
-  - [Hosting and delegation to aggregates](aggregates.html).
-  - [Event handling](events.html).
+  - Defining applications (`Decree.Application`).
+  - Command registration and dispatch (`Decree.Commands.Router`).
+  - Hosting and delegation to aggregates (`Decree.Aggregates.Aggregate`).
+  - Event handling (`Decree.Event.Handler`).
 
   Events persist in `Decree.Store`, the Postgres event store, through the
   `Decree.EventStore.Adapters.EventStore` adapter.
-
-  Please check the [Getting Started](getting-started.html) and [Usage](usage.html) guides to learn more.
   """
 
   use Application

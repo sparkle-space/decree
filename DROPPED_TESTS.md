@@ -106,6 +106,26 @@ Not dropped; listed so the port can be audited:
 - `test/store`: fixture paths moved to `test/store/fixture/`; `Decree.Store.EventFactory` reads only the serializer at compile time.
 - `test/projections`: the `projection_versions` migrations (upstream's `priv/repo/migrations`) live in `test/projections/migrations` and run from the test helper; the helper no longer defines `Decree.EventStore.Adapters.Mock` (the framework support does); `projections/runtime_config_projector_test.exs` waits for the projector's transaction to commit (it raced it).
 
+Flaky upstream tests made deterministic (test changes, not drops):
+
+- `test/framework/subscriptions/subscriptions_test.exs`, "should not remove PID when process terminates": it spawned the registering process with `spawn_link` and monitored it afterwards, so a process that had already exited produced a `:noproc` `:DOWN` instead of `:normal` (seen on CI). It now uses `spawn_monitor`; the assertions are unchanged.
+- The same spawn-then-monitor order, asserting any exit reason (so it could not fail, but raced the same way): `test/framework/aggregates/execute_command_test.exs` (`assert_aggregate_exit/4` now uses `spawn_monitor`) and `test/framework/helpers/process_helper.ex` (`shutdown/2` now monitors before it sends the exit, as `test/store/support/process_helper.ex` already did).
+- `test/store/storage/append_events_test.exs`, "append single event with a db connection error": an append with `timeout: 0` returns `{:error, %DBConnection.ConnectionError{}}` when the client gives up first and `{:error, :query_canceled}` when a fast server has already received the query (seen on CI), and `{:error, :not_found}` when a fast server finishes the query before the timer fires (stream 1 does not exist, so the insert fails its foreign key; seen locally, 1 run in 10). The test accepts exactly those three error tuples; its point, an error tuple instead of a raise, is unchanged. It is the store suite's only `timeout: 0` test.
+
+## Test timeouts against upstream
+
+decree runs the four suites in one VM with one `config/test.exs`, so each suite's receive timeouts are the shared values below. Compared with each upstream `config/test.exs` and `test/test_helper.exs`:
+
+| Setting | framework (commanded) | store (eventstore) | conformance (commanded-eventstore-adapter) | projections (commanded-ecto-projections) | decree |
+|---|---|---|---|---|---|
+| ExUnit `assert_receive_timeout` | 1_000 | 2_000 | 1_000 | 100 (ExUnit default) | 2_000 |
+| ExUnit `refute_receive_timeout` | 100 (default) | 100 | 100 (default) | 100 (default) | 100 |
+| `assert_receive_event_timeout` (`Decree.Assertions.EventAssertions`) | 100 | not used | 1_000 | not used | 1_000 |
+| `refute_receive_event_timeout` | 100 | not used | 1_000 | not used | 100 |
+| `dispatch_consistency_timeout` | 100 | not used | not set | not set | 100 |
+
+So: `assert_receive_timeout` rose from 1_000 to 2_000 for framework and conformance and from 100 to 2_000 for projections; framework's `assert_receive_event_timeout` rose from 100 to 1_000; conformance's `refute_receive_event_timeout` fell from 1_000 to 100 (no conformance test case calls `refute_receive_event`); the store's values and every `refute_receive_timeout` are unchanged.
+
 ## Audit
 
 `git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.

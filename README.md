@@ -13,6 +13,8 @@ One OTP application, `:decree`, in two layers:
 - **Store** (`Decree.Store`, `Decree.Store.*`, `Mix.Decree.Store`, `Mix.Tasks.Decree.Store.*`; `lib/decree/store/`, `lib/mix/`): the Postgres event store. Streams, append with expected version, links, snapshots, persistent and transient subscriptions with acknowledgement and partitioning, schemas (prefixes), and the Mix tasks `decree.store.create`, `decree.store.init`, `decree.store.drop`, `decree.store.migrate` and `decree.store.migrations`.
 - **Framework** (`Decree`, `Decree.*` outside `Decree.Store`): applications, command routing and dispatch, aggregates, event handlers, middleware, the event store adapter `Decree.EventStore.Adapters.EventStore` over the store, and Ecto read-model projections (`Decree.Projections.Ecto`).
 
+Being one OTP application, the store's supervision tree (the supervisor registered as `Decree.Store.Supervisor`, started by `Decree.Store.Application`) is a child of `Decree.Supervisor` and shares its restart budget. Upstream, `:eventstore` was a separate application that stopped on its own when its supervisor exhausted its restart budget; in decree the failure escalates to `Decree.Supervisor`, and exhausting that budget stops `:decree`. The children, their names and their order are upstream's.
+
 The store never references the framework. `scripts/check_layers.exs` enforces this from the compiled BEAM files and CI runs it:
 
 ```bash

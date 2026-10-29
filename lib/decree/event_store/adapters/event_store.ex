@@ -1,8 +1,6 @@
 defmodule Decree.EventStore.Adapters.EventStore do
   @moduledoc """
   Decree.Store adapter for Decree.
-
-  Please check the [Getting Started](getting-started.html) guide to learn more.
   """
 
   alias Decree.EventStore.Adapters.EventStore.Mapper
@@ -178,7 +176,7 @@ defmodule Decree.EventStore.Adapters.EventStore do
       raise ArgumentError,
             "module " <>
               inspect(event_store) <>
-              " is not an Decree.Store, " <>
+              " is not a Decree.Store, " <>
               "ensure you pass an event store module to the :event_store config in application " <>
               inspect(application)
     end
