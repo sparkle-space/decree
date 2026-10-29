@@ -72,5 +72,14 @@ jobs:
       - name: Layer check (the store never references the framework)
         run: mix run --no-start scripts/check_layers.exs
 
+      # The `:migration` store tests restore old dumps with pg_restore and compare
+      # schemas with pg_dump; the runner image's client is older than the server.
+      - name: Install the Postgres 18 client
+        run: |
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-18
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+
       - name: Test (framework, store, conformance, projections)
-        run: mix test
+        run: mix test --include migration
