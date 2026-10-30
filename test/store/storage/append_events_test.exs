@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.AppendEventsTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{EventFactory, RecordedEvent, UUID}
+  alias Decree.Store.{AppendError, EventFactory, RecordedEvent, UUID}
   alias Decree.Store.Storage.{Appender, CreateStream}
 
   test "append single event to new stream", context do
@@ -216,7 +216,7 @@ defmodule Decree.Store.Storage.AppendEventsTest do
   test "append event to schema which does not exist", %{conn: conn} do
     recorded_events = EventFactory.create_recorded_events(1, UUID.uuid4())
 
-    assert {:error, :undefined_table} =
+    assert {:error, %AppendError{class: :rejected, code: :undefined_table}} =
              Appender.append(conn, 1, recorded_events, schema: "doesnotexist")
   end
 
@@ -256,8 +256,8 @@ defmodule Decree.Store.Storage.AppendEventsTest do
 
     assert_receive :events_locked, 5_000
 
-    # The append blocks on the lock until the client times out. It returns an error
-    # tuple rather than raising, in one of two shapes:
+    # The append blocks on the lock until the client times out. It returns an
+    # `:unavailable` `AppendError` rather than raising, over one of two errors:
     # - a `DBConnection.ConnectionError` when the client gives up first;
     # - `:query_canceled` when Postgres cancels the query already received.
     result = Appender.append(conn, 1, recorded_events, schema: schema, timeout: 100)
@@ -265,8 +265,10 @@ defmodule Decree.Store.Storage.AppendEventsTest do
     send(holder.pid, :release_lock)
     assert {:ok, :ok} = Task.await(holder, 5_000)
 
-    assert match?({:error, %DBConnection.ConnectionError{}}, result) or
-             result == {:error, :query_canceled},
+    assert {:error, %AppendError{class: :unavailable} = error} = result
+
+    assert match?(%AppendError{code: nil, reason: %DBConnection.ConnectionError{}}, error) or
+             match?(%AppendError{code: :query_canceled}, error),
            "expected a connection error or :query_canceled, got: " <> inspect(result)
   end
 

@@ -27,8 +27,11 @@ defmodule Decree.Store.Subscriptions do
 
   @doc """
   The subscriptions running in the event store instance `event_store`, each read
-  with a bounded wait of `timeout` milliseconds. The reads run concurrently, and a
-  subscription that does not answer in time, or stops meanwhile, is omitted.
+  with a bounded wait of `timeout` milliseconds, as `{infos, omitted}`.
+
+  The reads run concurrently. A subscription that does not answer in time is
+  left out of `infos` and counted in `omitted`; a subscription that stops
+  meanwhile is gone, so it is left out and not counted.
   """
   def local_subscriptions(event_store, timeout) do
     supervisor = Module.concat(event_store, SubscriptionsSupervisor)
@@ -44,10 +47,13 @@ defmodule Decree.Store.Subscriptions do
       on_timeout: :kill_task,
       max_concurrency: max(length(pids), 1)
     )
-    |> Enum.flat_map(fn
-      {:ok, {:ok, info}} -> [info]
-      _omitted -> []
+    |> Enum.reduce({[], 0}, fn
+      {:ok, {:ok, info}}, {infos, omitted} -> {[info | infos], omitted}
+      # The subscription stopped during its read.
+      {:ok, :error}, acc -> acc
+      {:exit, :timeout}, {infos, omitted} -> {infos, omitted + 1}
     end)
+    |> then(fn {infos, omitted} -> {Enum.reverse(infos), omitted} end)
   end
 
   defp subscription_info(pid) do

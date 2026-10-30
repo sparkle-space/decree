@@ -25,6 +25,17 @@ defmodule Decree.EventStore.Adapter do
 
   @doc """
   Append one or more events to a stream atomically.
+
+  `{:error, :wrong_expected_version}` makes an aggregate rebuild its state and
+  retry the command while it has attempts left.
+
+  The `Decree.EventStore.Adapters.EventStore` adapter returns the store's errors
+  unchanged (see `c:Decree.Store.append_to_stream/4`). A failure of the append
+  statement other than its domain answers is
+  `{:error, %Decree.Store.AppendError{}}`, classified `:unavailable`,
+  `:retryable` or `:rejected`, and the aggregate returns it as the command's
+  error. After an `:unavailable` one the aggregate stops, so the next command
+  rebuilds its state from the stream (see `Decree.Store.AppendError`).
   """
   @callback append_to_stream(
               adapter_meta,
@@ -35,6 +46,7 @@ defmodule Decree.EventStore.Adapter do
             ) ::
               :ok
               | {:error, :wrong_expected_version}
+              | {:error, Decree.Store.AppendError.t()}
               | {:error, error}
 
   @doc """

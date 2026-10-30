@@ -18,7 +18,7 @@ defmodule Decree.Store.Tasks.Create do
   ## Opts
 
     - is_mix: set to `true` if running as part of a Mix task
-    - quiet: set to `true` to silence output
+    - quiet: set to `true` to silence output; a failure still raises
 
   """
   def exec(config, opts \\ []) do

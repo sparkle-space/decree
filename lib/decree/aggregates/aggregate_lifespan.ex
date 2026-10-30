@@ -16,7 +16,10 @@ defmodule Decree.Aggregates.AggregateLifespan do
   `c:after_command/1` function.
 
   Finally, if there is an error executing the command, the error reason is
-  passed to the `c:after_error/1` function.
+  passed to the `c:after_error/1` function. One error overrides the answer: after
+  an `:unavailable` `Decree.Store.AppendError` the aggregate stops whatever the
+  lifespan returns, because its append may have been written (see
+  `Decree.Store.AppendError`).
 
   For all the above, the returned inactivity timeout value is used to shutdown
   the aggregate process if no other messages are received.

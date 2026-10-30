@@ -110,6 +110,7 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.EventStore.RecordedEvent
   alias Decree.Registration
   alias Decree.Snapshotting
+  alias Decree.Store.AppendError
   alias Decree.Telemetry
 
   @type state :: struct()
@@ -212,6 +213,13 @@ defmodule Decree.Aggregates.Aggregate do
         {:exit, {:normal, :aggregate_stopped}}
 
       :exit, {:normal, {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
+        {:exit, {:normal, :aggregate_stopped}}
+
+      # A command queued behind one whose append outcome was unknown: the
+      # dispatcher retries it on a fresh aggregate.
+      :exit,
+      {{:shutdown, :append_outcome_unknown},
+       {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
         {:exit, {:normal, :aggregate_stopped}}
     end
   end
@@ -341,16 +349,26 @@ defmodule Decree.Aggregates.Aggregate do
     %Aggregate{aggregate_version: aggregate_version, snapshotting: snapshotting} = state
 
     response =
-      if Snapshotting.snapshot_required?(snapshotting, aggregate_version) do
-        send(self(), {:take_snapshot, lifespan_timeout})
+      cond do
+        append_outcome_unknown?(result) ->
+          # The append may have been written while the state kept here is the one
+          # before it. Stop, whatever the lifespan says, so the next command opens
+          # a fresh aggregate that rebuilds its state from the stream.
+          Logger.debug(describe(state) <> " stopping: the outcome of its append is unknown")
 
-        # Don't reply with a lifetime because we just asked for a snapshot to
-        # be taken. When it finishes, it will set the timeout.
-        {:reply, formatted_reply, state}
-      else
-        state = %{state | lifespan_timeout: lifespan_timeout}
+          {:stop, {:shutdown, :append_outcome_unknown}, formatted_reply, state}
 
-        reply_with_lifespan(formatted_reply, state)
+        Snapshotting.snapshot_required?(snapshotting, aggregate_version) ->
+          send(self(), {:take_snapshot, lifespan_timeout})
+
+          # Don't reply with a lifetime because we just asked for a snapshot to
+          # be taken. When it finishes, it will set the timeout.
+          {:reply, formatted_reply, state}
+
+        true ->
+          state = %{state | lifespan_timeout: lifespan_timeout}
+
+          reply_with_lifespan(formatted_reply, state)
       end
 
     telemetry_metadata = telemetry_metadata(context, from, state)
@@ -461,6 +479,12 @@ defmodule Decree.Aggregates.Aggregate do
       throw({:error, :unexpected_event_received})
     end
   end
+
+  # An `:unavailable` append error does not say whether the events were written.
+  # A `:retryable` or `:rejected` one is a statement Postgres rolled back, so the
+  # state kept here is still the stream's.
+  defp append_outcome_unknown?({:error, %AppendError{class: :unavailable}}), do: true
+  defp append_outcome_unknown?(_result), do: false
 
   defp aggregate_lifespan_timeout(lifespan, function_name, args) do
     # Take the last event or the command or error
