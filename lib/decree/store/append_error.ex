@@ -12,7 +12,8 @@ defmodule Decree.Store.AppendError do
 
     - `class` — what a caller can do:
       - `:unavailable` — the database could not be reached, stopped serving, or
-        cannot say whether the statement took effect. Retry after a wait.
+        cannot say whether the statement took effect. Retry after a wait, if the
+        append is safe to retry (see below).
       - `:retryable` — the same request may succeed if sent again.
       - `:rejected` — the request itself was refused. Retrying the same request
         will not help.
@@ -43,9 +44,16 @@ defmodule Decree.Store.AppendError do
       failure, which fails again on a retry;
     - `58P01` `undefined_file` and `58P02` `duplicate_file` stay `:rejected`.
 
-  A connection lost during the statement or an `:unavailable` code does not
-  say whether the events were written. Retrying an append with the same event
-  ids answers `{:error, :duplicate_event}` if they were.
+  ## Retrying
+
+  An `:unavailable` failure does not say whether the events were written. A
+  retry is safe only when the append is idempotent: the events have pinned
+  event ids (a retry of a written append then answers
+  `{:error, :duplicate_event}`), or the append names an expected version that a
+  committed earlier attempt has moved past (it then answers
+  `{:error, :wrong_expected_version}`). An event without an `event_id` gets a
+  fresh one on every call, so a retry with `:any_version` can write the events
+  twice.
 
   An aggregate stays running after any `AppendError`: it is a plain struct, not
   an exception, so `Decree.Aggregates.DefaultLifespan` answers `:infinity`. The
