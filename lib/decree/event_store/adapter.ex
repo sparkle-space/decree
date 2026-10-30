@@ -33,8 +33,9 @@ defmodule Decree.EventStore.Adapter do
   unchanged (see `c:Decree.Store.append_to_stream/4`). A failure of the append
   statement other than its domain answers is
   `{:error, %Decree.Store.AppendError{}}`, classified `:unavailable`,
-  `:retryable` or `:rejected`; the aggregate returns it as the command's error
-  and, under `Decree.Aggregates.DefaultLifespan`, keeps running.
+  `:retryable` or `:rejected`, and the aggregate returns it as the command's
+  error. After an `:unavailable` one the aggregate stops, so the next command
+  rebuilds its state from the stream (see `Decree.Store.AppendError`).
   """
   @callback append_to_stream(
               adapter_meta,

@@ -55,14 +55,17 @@ defmodule Decree.Store.AppendError do
   fresh one on every call, so a retry with `:any_version` can write the events
   twice.
 
-  An aggregate stays running after any `AppendError`: it is a plain struct, not
-  an exception, so `Decree.Aggregates.DefaultLifespan` answers `:infinity`. The
-  aggregate's in-memory version is still the one before the append; if a lost
-  append did commit, the next command's append answers
-  `{:error, :wrong_expected_version}`, and the aggregate rebuilds its state from
-  the stream before it executes the command again. (Before this struct existed,
-  a `DBConnection.ConnectionError` reached the lifespan as an exception and
-  stopped the aggregate.)
+  ## Aggregates
+
+  An aggregate whose append answers an `:unavailable` error stops (exit reason
+  `{:shutdown, :append_outcome_unknown}`), whatever its lifespan says: the
+  events may have been written while its state is still the one before the
+  append, so the next command opens a fresh aggregate that rebuilds its state
+  from the stream. A command already queued for the stopped aggregate is
+  retried on the fresh one. A `:retryable` or `:rejected` error is a statement
+  Postgres rolled back, so the aggregate's state is still the stream's and it
+  keeps running; `AppendError` is a plain struct, not an exception, so
+  `Decree.Aggregates.DefaultLifespan` answers `:infinity` for it.
 
   `{:error, :duplicate_stream_uuid}` means two appends raced to create the
   same stream; `append_to_stream/4` retries it once and then answers
