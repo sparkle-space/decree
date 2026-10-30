@@ -1,6 +1,6 @@
 defmodule Decree.Store.Storage.Appender do
   @moduledoc false
-  alias Decree.Store.{RecordedEvent, UUID}
+  alias Decree.Store.{AppendError, RecordedEvent, UUID}
   alias Decree.Store.Sql.Statements
 
   require Logger
@@ -11,7 +11,9 @@ defmodule Decree.Store.Storage.Appender do
   Events are inserted in batches of 1,000 within a single transaction. This is
   due to PostgreSQL's limit of 65,535 parameters for a single statement.
 
-  Returns `:ok` on success, `{:error, reason}` on failure.
+  Returns `:ok` on success, or one of `{:error, :not_found}`,
+  `{:error, :duplicate_event}`, `{:error, :duplicate_stream_uuid}`,
+  `{:error, :wrong_expected_version}` and `{:error, %Decree.Store.AppendError{}}`.
   """
   def append(conn, stream_id, events, opts) do
     [%RecordedEvent{stream_uuid: stream_uuid} | _] = events
@@ -48,7 +50,9 @@ defmodule Decree.Store.Storage.Appender do
   @doc """
   Link the given list of existing event ids to another stream in storage.
 
-  Returns `:ok` on success, `{:error, reason}` on failure.
+  Returns `:ok` on success, or one of `{:error, :not_found}`,
+  `{:error, :duplicate_event}`, `{:error, :duplicate_stream_uuid}`,
+  `{:error, :wrong_expected_version}` and `{:error, %Decree.Store.AppendError{}}`.
   """
   def link(conn, stream_id, event_ids, opts \\ [])
 
@@ -179,33 +183,29 @@ defmodule Decree.Store.Storage.Appender do
     end
   end
 
-  defp handle_error(%Postgrex.Error{} = error) do
-    %Postgrex.Error{postgres: postgres} = error
+  # The four domain answers stay plain atoms; every other failure is classified
+  # as a `Decree.Store.AppendError` (see its moduledoc for the classes).
+  defp handle_error(%Postgrex.Error{postgres: %{code: :foreign_key_violation}}),
+    do: {:error, :not_found}
 
+  defp handle_error(%Postgrex.Error{postgres: %{code: :unique_violation} = postgres}) do
     case postgres do
-      %{code: :foreign_key_violation} ->
-        {:error, :not_found}
-
-      %{code: :unique_violation, constraint: "events_pkey"} ->
+      %{constraint: "events_pkey"} ->
         {:error, :duplicate_event}
 
-      %{code: :unique_violation, constraint: "stream_events_pkey"} ->
+      %{constraint: "stream_events_pkey"} ->
         {:error, :duplicate_event}
 
-      %{code: :unique_violation, constraint: "ix_streams_stream_uuid"} ->
+      %{constraint: "ix_streams_stream_uuid"} ->
         # Decree.Store.Streams.Stream will retry when it gets this error code. That will always work
         # because on the second time around, the stream will have been made, so the race to create
         # the stream will have been resolved.
         {:error, :duplicate_stream_uuid}
 
-      %{code: :unique_violation} ->
+      _postgres ->
         {:error, :wrong_expected_version}
-
-      %{code: error_code} ->
-        {:error, error_code}
     end
   end
 
-  # Return all other errors to the caller
-  defp handle_error(error), do: {:error, error}
+  defp handle_error(error), do: {:error, AppendError.from_error(error)}
 end

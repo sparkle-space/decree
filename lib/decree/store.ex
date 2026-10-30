@@ -662,16 +662,33 @@ defmodule Decree.Store do
       - `timeout` an optional timeout for the database transaction, in
         milliseconds. Defaults to 15,000ms.
 
-  Returns `:ok` on success, or an `{:error, reason}` tagged tuple. The returned
-  error may be due to one of the following reasons:
+  Returns `:ok` on success, or an `{:error, reason}` tagged tuple:
 
     * `{:error, :wrong_expected_version}` when the actual stream version differs
-      from the provided expected version.
+      from the provided expected version, or another writer appended at the same
+      stream version first.
     * `{:error, :stream_exists}` when the stream exists, but expected version
       was `:no_stream`.
     * `{:error, :stream_not_found}` when the stream does not exist, but
       expected version was `:stream_exists`.
+    * `{:error, :stream_deleted}` when the stream was soft deleted.
+    * `{:error, :cannot_append_to_all_stream}` for the `$all` stream.
+    * `{:error, :duplicate_event}` when an event id was already appended.
+    * `{:error, :not_found}` when the stream was removed (hard deleted) between
+      reading its version and appending.
+    * `{:error, {:already_retried_once, :duplicate_stream_uuid}}` when the
+      append lost the race to create a new stream twice.
+    * `{:error, %Decree.Store.AppendError{}}` for any other failure of the
+      append statement, classified `:unavailable`, `:retryable` or `:rejected`
+      (see `Decree.Store.AppendError`).
 
+  A failure of the query that reads the stream's version first is returned as
+  the raw error `{:error, reason}` (for example a `Postgrex.Error` or a
+  `DBConnection.ConnectionError`), not as an `AppendError`. An
+  append of 1,000 or more events runs in a transaction; when that transaction
+  cannot begin or commit, the call raises (for example a
+  `DBConnection.ConnectionError`), or returns `{:error, :rollback}` when the
+  commit finds the transaction already failed.
   """
   @callback append_to_stream(
               stream_uuid :: String.t(),
@@ -685,6 +702,11 @@ defmodule Decree.Store do
               | {:error, :stream_not_found}
               | {:error, :wrong_expected_version}
               | {:error, :stream_deleted}
+              | {:error, :duplicate_event}
+              | {:error, :not_found}
+              | {:error, {:already_retried_once, :duplicate_stream_uuid}}
+              | {:error, Decree.Store.AppendError.t()}
+              | {:error, :rollback}
               | {:error, reason :: term}
 
   @doc """
@@ -717,15 +739,30 @@ defmodule Decree.Store do
       - `timeout` an optional timeout for the database transaction, in
         milliseconds. Defaults to 15,000ms.
 
-  Returns `:ok` on success, or an `{:error, reason}` tagged tuple. The returned
-  error may be due to one of the following reasons:
+  Returns `:ok` on success, or an `{:error, reason}` tagged tuple:
 
     * `{:error, :wrong_expected_version}` when the actual stream version differs
-      from the provided expected version.
+      from the provided expected version, or another writer linked or appended
+      at the same stream version first.
     * `{:error, :stream_exists}` when the stream exists, but expected version
-      was `:no_stream`.
+      was `:no_stream`, or another writer created the stream first.
     * `{:error, :stream_not_found}` when the stream does not exist, but
       expected version was `:stream_exists`.
+    * `{:error, :stream_deleted}` when the stream was soft deleted.
+    * `{:error, :cannot_append_to_all_stream}` for the `$all` stream.
+    * `{:error, :duplicate_event}` when an event is already linked to the stream.
+    * `{:error, :not_found}` when an event id does not exist.
+    * `{:error, %Decree.Store.AppendError{}}` for any other failure of the link
+      statement, classified `:unavailable`, `:retryable` or `:rejected` (see
+      `Decree.Store.AppendError`).
+
+  A failure of the queries that read the stream's version or create the stream
+  is returned as the raw error `{:error, reason}` (for example a
+  `Postgrex.Error` or a `DBConnection.ConnectionError`), not as an
+  `AppendError`. The link runs in a transaction; when that
+  transaction cannot begin or commit, the call raises (for example a
+  `DBConnection.ConnectionError`), or returns `{:error, :rollback}` when the
+  commit finds the transaction already failed.
   """
   @callback link_to_stream(
               stream_uuid :: String.t(),
@@ -739,6 +776,10 @@ defmodule Decree.Store do
               | {:error, :stream_not_found}
               | {:error, :wrong_expected_version}
               | {:error, :stream_deleted}
+              | {:error, :duplicate_event}
+              | {:error, :not_found}
+              | {:error, Decree.Store.AppendError.t()}
+              | {:error, :rollback}
               | {:error, reason :: term}
 
   @doc """
