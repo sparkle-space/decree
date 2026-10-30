@@ -688,7 +688,7 @@ defmodule Decree.Store do
   append of 1,000 or more events runs in a transaction; when that transaction
   cannot begin or commit, the call raises (for example a
   `DBConnection.ConnectionError`), or returns `{:error, :rollback}` when the
-  commit finds the transaction already failed.
+  connection reports a transaction state error at begin or commit.
   """
   @callback append_to_stream(
               stream_uuid :: String.t(),
@@ -762,7 +762,7 @@ defmodule Decree.Store do
   `AppendError`. The link runs in a transaction; when that
   transaction cannot begin or commit, the call raises (for example a
   `DBConnection.ConnectionError`), or returns `{:error, :rollback}` when the
-  commit finds the transaction already failed.
+  connection reports a transaction state error at begin or commit.
   """
   @callback link_to_stream(
               stream_uuid :: String.t(),

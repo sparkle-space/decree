@@ -51,8 +51,8 @@ defmodule Decree.Store.Storage.Appender do
   Link the given list of existing event ids to another stream in storage.
 
   Returns `:ok` on success, or one of `{:error, :not_found}`,
-  `{:error, :duplicate_event}`, `{:error, :duplicate_stream_uuid}`,
-  `{:error, :wrong_expected_version}` and `{:error, %Decree.Store.AppendError{}}`.
+  `{:error, :duplicate_event}`, `{:error, :wrong_expected_version}` and
+  `{:error, %Decree.Store.AppendError{}}`.
   """
   def link(conn, stream_id, event_ids, opts \\ [])
 
