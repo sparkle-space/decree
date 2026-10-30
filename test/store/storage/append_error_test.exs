@@ -88,14 +88,21 @@ defmodule Decree.Store.Storage.AppendErrorTest do
       for {code, pg_code} <- [
             connection_failure: "08006",
             transaction_resolution_unknown: "08007",
+            protocol_violation: "08P01",
             too_many_connections: "53300",
             disk_full: "53100",
             admin_shutdown: "57P01",
             cannot_connect_now: "57P03",
             query_canceled: "57014",
             idle_session_timeout: "57P05",
+            system_error: "58000",
+            io_error: "58030",
+            # Class 40, but the outcome is unknown, as after a lost connection.
+            statement_completion_unknown: "40003",
             # Class 25, but the server ended the session.
-            idle_in_transaction_session_timeout: "25P03"
+            idle_in_transaction_session_timeout: "25P03",
+            # Class 25: a write reached a primary demoted by a failover.
+            read_only_sql_transaction: "25006"
           ] do
         assert %AppendError{class: :unavailable, code: ^code} =
                  AppendError.from_error(postgrex_error(code, pg_code))
@@ -105,6 +112,12 @@ defmodule Decree.Store.Storage.AppendErrorTest do
 
       assert %AppendError{class: :unavailable, code: nil, reason: ^connection_error} =
                AppendError.from_error(connection_error)
+
+      # Postgrex's `sync_error/2` disconnect: the connection broke mid-query.
+      disconnect = %Postgrex.Error{message: "unexpected postgres status: transaction"}
+
+      assert %AppendError{class: :unavailable, code: nil, reason: ^disconnect} =
+               AppendError.from_error(disconnect)
     end
 
     test "a transaction rollback or an object not in its prerequisite state is `:retryable`" do
@@ -126,14 +139,17 @@ defmodule Decree.Store.Storage.AppendErrorTest do
             invalid_text_representation: "22P02",
             undefined_table: "42P01",
             in_failed_sql_transaction: "25P02",
-            raise_exception: "P0001"
+            raise_exception: "P0001",
+            # Class 40, but a deferred constraint fails again on a retry.
+            transaction_integrity_constraint_violation: "40002",
+            undefined_file: "58P01",
+            duplicate_file: "58P02"
           ] do
         assert %AppendError{class: :rejected, code: ^code} =
                  AppendError.from_error(postgrex_error(code, pg_code))
       end
 
       for reason <- [
-            %Postgrex.Error{message: "parameters not available"},
             Postgrex.QueryError.exception("too many parameters"),
             DBConnection.OwnershipError.exception("cannot find owner"),
             :some_other_reason

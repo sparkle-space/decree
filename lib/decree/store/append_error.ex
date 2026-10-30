@@ -11,32 +11,41 @@ defmodule Decree.Store.AppendError do
   returned as `{:error, %Decree.Store.AppendError{}}`, with these fields:
 
     - `class` — what a caller can do:
-      - `:unavailable` — the database could not be reached or stopped serving:
-        a `DBConnection.ConnectionError` (a refused or dropped connection, a
-        checkout that timed out in the pool queue, a client-side query timeout)
-        or SQLSTATE class 08 (connection exception), 53 (insufficient
-        resources, such as `too_many_connections` or `disk_full`) or 57
-        (operator intervention: `admin_shutdown`, `crash_shutdown`,
-        `cannot_connect_now`, `query_canceled` (which includes a
-        `statement_timeout`), `idle_session_timeout`, `database_dropped`), and
-        `idle_in_transaction_session_timeout` (25P03), where the server ended
-        the session. Retry after a wait.
-      - `:retryable` — the same request may succeed if sent again: SQLSTATE
-        class 40 (transaction rollback: `serialization_failure`,
-        `deadlock_detected`) or 55 (object not in prerequisite state:
-        `lock_not_available`, `object_in_use`).
-      - `:rejected` — any other error: the request itself was refused
-        (a constraint or data error, an undefined table, a query error).
-        Retrying the same request will not help.
+      - `:unavailable` — the database could not be reached, stopped serving, or
+        cannot say whether the statement took effect. Retry after a wait.
+      - `:retryable` — the same request may succeed if sent again.
+      - `:rejected` — the request itself was refused. Retrying the same request
+        will not help.
     - `code` — the Postgres error code name (`Postgrex.Error`'s
       `postgres.code`, such as `:serialization_failure`), or `nil` when the
       error carries no SQLSTATE.
     - `reason` — the original error term, for logging.
 
-  A connection lost during the statement (`:unavailable`) or a
-  `transaction_resolution_unknown` / `statement_completion_unknown` code does
-  not say whether the events were written. Retrying an append with the same
-  event ids answers `{:error, :duplicate_event}` if they were.
+  ## Classes
+
+  | class | SQLSTATE classes | SQLSTATE codes | other errors |
+  |---|---|---|---|
+  | `:unavailable` | 08 (connection exception), 53 (insufficient resources), 57 (operator intervention) | 25P03 `idle_in_transaction_session_timeout`, 25006 `read_only_sql_transaction`, 40003 `statement_completion_unknown`, 58000 `system_error`, 58030 `io_error` | `DBConnection.ConnectionError`; a `Postgrex.Error` without SQLSTATE fields (Postgrex's disconnect when the connection breaks mid-query) |
+  | `:retryable` | 40 (transaction rollback), 55 (object not in prerequisite state) | | |
+  | `:rejected` | any other | 40002 `transaction_integrity_constraint_violation` | `Postgrex.QueryError`, `DBConnection.OwnershipError`, any other term |
+
+  A code listed in the codes column overrides its class. Notes on some entries:
+
+    - class 57 includes `query_canceled` (57014), which a `statement_timeout`
+      also raises, and `admin_shutdown`, `crash_shutdown`, `cannot_connect_now`,
+      `idle_session_timeout`, `database_dropped`;
+    - `read_only_sql_transaction` is a write that reached a primary a failover
+      has demoted;
+    - `idle_in_transaction_session_timeout` means the server ended the session;
+    - `statement_completion_unknown` leaves the outcome unknown, as a lost
+      connection does;
+    - `transaction_integrity_constraint_violation` is a deferred constraint
+      failure, which fails again on a retry;
+    - `58P01` `undefined_file` and `58P02` `duplicate_file` stay `:rejected`.
+
+  A connection lost during the statement or an `:unavailable` code does not
+  say whether the events were written. Retrying an append with the same event
+  ids answers `{:error, :duplicate_event}` if they were.
 
   An aggregate stays running after any `AppendError`: it is a plain struct, not
   an exception, so `Decree.Aggregates.DefaultLifespan` answers `:infinity`. The
@@ -66,9 +75,9 @@ defmodule Decree.Store.AppendError do
   @unavailable_classes ["08", "53", "57"]
   @retryable_classes ["40", "55"]
 
-  # Codes outside those classes whose class says less than the code: the
-  # server ended the session.
-  @unavailable_codes ["25P03"]
+  # Codes whose class says less than the code. Each overrides its class.
+  @unavailable_codes ["25P03", "25006", "40003", "58000", "58030"]
+  @rejected_codes ["40002"]
 
   @doc """
   Classify an error the appender's statement returned.
@@ -79,12 +88,18 @@ defmodule Decree.Store.AppendError do
     %__MODULE__{class: classify(pg_code), code: Map.get(postgres, :code), reason: error}
   end
 
+  # Postgrex's disconnect when the connection breaks mid-query (`sync_error/2`,
+  # "unexpected postgres status") carries a message and no SQLSTATE fields.
+  def from_error(%Postgrex.Error{postgres: nil} = error) do
+    %__MODULE__{class: :unavailable, code: nil, reason: error}
+  end
+
   def from_error(%DBConnection.ConnectionError{} = error) do
     %__MODULE__{class: :unavailable, code: nil, reason: error}
   end
 
-  # Any other term: a `Postgrex.Error` with no SQLSTATE, a `Postgrex.QueryError`,
-  # a `DBConnection.OwnershipError` (an ownership pool) or anything else.
+  # Any other term: a `Postgrex.QueryError`, a `DBConnection.OwnershipError` (an
+  # ownership pool) or anything else.
   def from_error(error) do
     %__MODULE__{class: :rejected, code: nil, reason: error}
   end
@@ -101,6 +116,7 @@ defmodule Decree.Store.AppendError do
   end
 
   defp classify(pg_code) when pg_code in @unavailable_codes, do: :unavailable
+  defp classify(pg_code) when pg_code in @rejected_codes, do: :rejected
 
   defp classify(<<class::binary-size(2), _rest::binary>>) when class in @unavailable_classes,
     do: :unavailable
