@@ -38,6 +38,15 @@ defmodule Decree.Store.AppendError do
   not say whether the events were written. Retrying an append with the same
   event ids answers `{:error, :duplicate_event}` if they were.
 
+  An aggregate stays running after any `AppendError`: it is a plain struct, not
+  an exception, so `Decree.Aggregates.DefaultLifespan` answers `:infinity`. The
+  aggregate's in-memory version is still the one before the append; if a lost
+  append did commit, the next command's append answers
+  `{:error, :wrong_expected_version}`, and the aggregate rebuilds its state from
+  the stream before it executes the command again. (Before this struct existed,
+  a `DBConnection.ConnectionError` reached the lifespan as an exception and
+  stopped the aggregate.)
+
   `{:error, :duplicate_stream_uuid}` means two appends raced to create the
   same stream; `append_to_stream/4` retries it once and then answers
   `{:error, {:already_retried_once, :duplicate_stream_uuid}}`.
@@ -51,7 +60,7 @@ defmodule Decree.Store.AppendError do
           reason: term
         }
 
-  defexception [:class, :code, :reason]
+  defstruct [:class, :code, :reason]
 
   # The SQLSTATE classes, by their two-character prefix.
   @unavailable_classes ["08", "53", "57"]
@@ -80,7 +89,11 @@ defmodule Decree.Store.AppendError do
     %__MODULE__{class: :rejected, code: nil, reason: error}
   end
 
-  @impl true
+  @doc """
+  A one-line description for a log line: the class, the code, and the original
+  error's message.
+  """
+  @spec message(t) :: String.t()
   def message(%__MODULE__{class: class, code: code, reason: reason}) do
     code = if code, do: " (#{code})", else: ""
 

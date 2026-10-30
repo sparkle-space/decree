@@ -13,7 +13,7 @@ defmodule Decree.Store.Storage.AppendErrorTest do
                EventStore.append_to_stream(stream_uuid, :any_version, [untyped_event()])
 
       assert %Postgrex.Error{postgres: %{pg_code: "23502"}} = error.reason
-      assert Exception.message(error) =~ "rejected"
+      assert AppendError.message(error) =~ "rejected"
 
       assert {:error, :stream_not_found} = EventStore.read_stream_forward(stream_uuid)
     end
@@ -146,8 +146,8 @@ defmodule Decree.Store.Storage.AppendErrorTest do
     test "the message names the class and the original error" do
       error = AppendError.from_error(postgrex_error(:serialization_failure, "40001"))
 
-      assert Exception.message(error) =~ "retryable"
-      assert Exception.message(error) =~ "serialization_failure"
+      assert AppendError.message(error) =~ "retryable"
+      assert AppendError.message(error) =~ "serialization_failure"
     end
   end
 
