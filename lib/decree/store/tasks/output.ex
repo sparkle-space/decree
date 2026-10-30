@@ -15,10 +15,11 @@ defmodule Decree.Store.Tasks.Output do
     IO.puts(msg)
   end
 
+  # `quiet` silences output only: a failure always raises, so a quiet task that
+  # fails still fails (a Mix task exits non-zero).
+  @spec raise_msg(msg :: String.t(), opts :: Keyword.t()) :: no_return()
   def raise_msg(msg, opts) do
-    unless opts[:quiet] do
-      do_raise(msg, opts[:is_mix])
-    end
+    do_raise(msg, opts[:is_mix])
   end
 
   @spec do_raise(msg :: String.t(), boolean()) :: no_return()
