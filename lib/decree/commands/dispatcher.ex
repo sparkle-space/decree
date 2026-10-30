@@ -259,8 +259,11 @@ defmodule Decree.Commands.Dispatcher do
       {:ok, context} ->
         execute(pipeline, payload, context)
 
-      reply ->
-        reply
+      # No retry left: answer as an exhausted `:wrong_expected_version` retry does.
+      {:error, :too_many_attempts} = error ->
+        pipeline
+        |> Pipeline.respond(error)
+        |> after_failure(payload)
     end
   end
 end

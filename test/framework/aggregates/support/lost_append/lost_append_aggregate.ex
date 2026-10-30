@@ -49,6 +49,8 @@ defmodule Decree.Aggregates.LostAppendRouter do
   alias Decree.Aggregates.LostAppendAggregate
   alias Decree.Aggregates.LostAppendAggregate.{Close, Open}
 
+  middleware Decree.Helpers.CommandAuditMiddleware
+
   dispatch [Open, Close], to: LostAppendAggregate, identity: :uuid
 end
 
