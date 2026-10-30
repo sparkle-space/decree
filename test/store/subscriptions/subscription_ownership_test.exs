@@ -1,7 +1,7 @@
 defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.UUID
+  alias Decree.Store.{UUID, Wait}
 
   describe "local subscriptions" do
     setup do
@@ -26,6 +26,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
 
       assert_receive {:subscribed, ^transient}
 
+      assert {infos, 0} = TestEventStore.local_subscriptions()
+
       assert [
                %{
                  subscription_name: ^name,
@@ -36,23 +38,23 @@ defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
                  status: :subscribed
                },
                %{pid: ^transient, transient: true, status: :subscribed, subscription_id: nil}
-             ] = Enum.sort_by(TestEventStore.local_subscriptions(), & &1.transient)
+             ] = Enum.sort_by(infos, & &1.transient)
 
       assert is_integer(subscription_id)
 
       # It has not taken the lock yet, so it does not report the row's id.
-      assert [
-               %{
-                 subscription_name: ^name,
-                 subscription_id: nil,
-                 pid: ^parked,
-                 transient: false,
-                 status: :parked
-               }
-             ] = TestEventStore.local_subscriptions(name: :other_instance)
+      assert {[
+                %{
+                  subscription_name: ^name,
+                  subscription_id: nil,
+                  pid: ^parked,
+                  transient: false,
+                  status: :parked
+                }
+              ], 0} = TestEventStore.local_subscriptions(name: :other_instance)
     end
 
-    test "should leave out a subscription that does not answer in time" do
+    test "should leave out and count a subscription that does not answer in time" do
       {:ok, slow} = TestEventStore.subscribe_to_all_streams(UUID.uuid4(), self())
       {:ok, answering} = TestEventStore.subscribe_to_all_streams(UUID.uuid4(), self())
       assert_receive {:subscribed, ^slow}
@@ -61,7 +63,38 @@ defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
       :ok = :sys.suspend(slow)
 
       try do
-        assert [%{pid: ^answering}] = TestEventStore.local_subscriptions(timeout: 500)
+        assert {[%{pid: ^answering}], 1} = TestEventStore.local_subscriptions(timeout: 500)
+      after
+        :sys.resume(slow)
+      end
+    end
+
+    test "should count only the reads that timed out, not a subscription that stopped" do
+      {:ok, slow} = TestEventStore.subscribe_to_all_streams(UUID.uuid4(), self())
+      {:ok, stopping} = TestEventStore.subscribe_to_all_streams(UUID.uuid4(), self())
+      {:ok, answering} = TestEventStore.subscribe_to_all_streams(UUID.uuid4(), self())
+      assert_receive {:subscribed, ^slow}
+      assert_receive {:subscribed, ^stopping}
+      assert_receive {:subscribed, ^answering}
+
+      :ok = :sys.suspend(slow)
+      :ok = :sys.suspend(stopping)
+
+      try do
+        census = Task.async(fn -> TestEventStore.local_subscriptions(timeout: 1_000) end)
+
+        # The census's read is waiting in the stopping subscription's mailbox: stop
+        # the subscription under it, so the read exits instead of timing out.
+        Wait.until(fn ->
+          {:messages, messages} = Process.info(stopping, :messages)
+          assert Enum.any?(messages, &match?({:"$gen_call", _from, :info}, &1))
+        end)
+
+        ref = Process.monitor(stopping)
+        Process.exit(stopping, :kill)
+        assert_receive {:DOWN, ^ref, :process, ^stopping, :killed}
+
+        assert {[%{pid: ^answering}], 1} = Task.await(census, 5_000)
       after
         :sys.resume(slow)
       end
@@ -86,7 +119,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
       {:ok, _parked} =
         TestEventStore.subscribe_to_all_streams(name, self(), name: :other_instance)
 
-      [%{subscription_id: subscription_id}] = TestEventStore.local_subscriptions()
+      {[%{subscription_id: subscription_id}], 0} = TestEventStore.local_subscriptions()
       missing = subscription_id + 1_000
 
       assert {:ok,
@@ -109,13 +142,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionOwnershipTest do
       {:ok, subscription} = TestEventStore.subscribe_to_all_streams(name, self())
       assert_receive {:subscribed, ^subscription}
 
-      [%{subscription_id: subscription_id}] = TestEventStore.local_subscriptions()
+      {[%{subscription_id: subscription_id}], 0} = TestEventStore.local_subscriptions()
       ref = Process.monitor(subscription)
 
       assert :ok = TestEventStore.stop_subscription(subscription)
       assert_receive {:DOWN, ^ref, :process, ^subscription, :shutdown}
 
-      assert TestEventStore.local_subscriptions() == []
+      assert TestEventStore.local_subscriptions() == {[], 0}
       assert {:error, :not_found} = TestEventStore.stop_subscription(subscription)
 
       # The subscription's lock is released once AdvisoryLocks sees it stop.

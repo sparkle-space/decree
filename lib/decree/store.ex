@@ -1415,9 +1415,12 @@ defmodule Decree.Store do
       subscription, holding its advisory lock), `:parked` while waiting to
       subscribe or to take its lock again after losing it, or `:unsubscribed`.
 
-  Each subscription is read concurrently, waiting at most `timeout` milliseconds
-  (default 1,000); a subscription that does not answer in time, or stops
-  meanwhile, is left out of the list.
+  Returns `{infos, omitted}`. Each subscription is read concurrently, waiting at
+  most `timeout` milliseconds (default 1,000). A subscription that does not
+  answer in time is left out of `infos` and counted in `omitted`, so
+  `omitted > 0` means the list is partial: some running subscriptions were not
+  read. A subscription that stops during its read is no longer running, so it is
+  left out of `infos` and not counted.
 
   ## Options
 
@@ -1425,7 +1428,8 @@ defmodule Decree.Store do
     - `timeout` the wait for each subscription, in milliseconds.
 
   """
-  @callback local_subscriptions(opts :: options) :: [subscription_info]
+  @callback local_subscriptions(opts :: options) ::
+              {infos :: [subscription_info], omitted :: non_neg_integer()}
 
   @doc """
   For each persistent subscription id, whether its subscription row exists and
