@@ -16,6 +16,9 @@ defmodule Decree.Store.Sql.Init do
       create_events_table(column_data_type, correlation_id_type, causation_id_type),
       create_stream_events_table(),
       create_stream_events_index(),
+      create_event_tags_table(),
+      create_event_tags_index(),
+      create_event_types_table(),
       create_event_store_exception_function(),
       create_event_store_delete_function(),
       prevent_streams_delete(),
@@ -23,6 +26,10 @@ defmodule Decree.Store.Sql.Init do
       prevent_event_update(),
       prevent_stream_events_delete(),
       prevent_stream_events_update(),
+      prevent_event_tags_delete(),
+      prevent_event_tags_update(),
+      prevent_event_types_delete(),
+      prevent_event_types_update(),
       create_notify_events_function(),
       create_append_events_function(column_data_type, correlation_id_type, causation_id_type),
       seed_all_stream(),
@@ -175,6 +182,81 @@ defmodule Decree.Store.Sql.Init do
     """
   end
 
+  # Neither `event_tags` nor `event_types` has a foreign key: one from a tag row would
+  # make a hard delete fail or force a tag-row CTE into `hard_delete_stream`.
+  # Their text columns hold machine identifiers matched by equality, so bytewise
+  # comparison keeps index work under `$all` cheap and independent of the host's locale.
+  defp create_event_tags_table do
+    """
+    CREATE TABLE event_tags
+    (
+        position bigint NOT NULL,
+        tag text COLLATE "C" NOT NULL,
+        event_type text COLLATE "C" NOT NULL,
+        stamped_at timestamp with time zone NULL,
+        PRIMARY KEY(tag, position),
+        CONSTRAINT event_tags_tag_length CHECK (octet_length(tag) <= 512)
+    );
+    """
+  end
+
+  defp create_event_tags_index do
+    """
+    CREATE INDEX ix_event_tags_tag_event_type_position ON event_tags (tag, event_type, position);
+    """
+  end
+
+  defp create_event_types_table do
+    """
+    CREATE TABLE event_types
+    (
+        event_type text COLLATE "C" NOT NULL,
+        position bigint NOT NULL,
+        PRIMARY KEY(event_type, position)
+    );
+    """
+  end
+
+  # prevent updates to `event_tags` table
+  defp prevent_event_tags_update do
+    """
+    CREATE TRIGGER no_update_event_tags
+    BEFORE UPDATE ON event_tags
+    FOR EACH STATEMENT
+    EXECUTE PROCEDURE event_store_exception('Cannot update event tags');
+    """
+  end
+
+  # prevent deletion from `event_tags` table
+  defp prevent_event_tags_delete do
+    """
+    CREATE TRIGGER no_delete_event_tags
+    BEFORE DELETE ON event_tags
+    FOR EACH STATEMENT
+    EXECUTE PROCEDURE event_store_delete('Cannot delete event tags');
+    """
+  end
+
+  # prevent updates to `event_types` table
+  defp prevent_event_types_update do
+    """
+    CREATE TRIGGER no_update_event_types
+    BEFORE UPDATE ON event_types
+    FOR EACH STATEMENT
+    EXECUTE PROCEDURE event_store_exception('Cannot update event types');
+    """
+  end
+
+  # prevent deletion from `event_types` table
+  defp prevent_event_types_delete do
+    """
+    CREATE TRIGGER no_delete_event_types
+    BEFORE DELETE ON event_types
+    FOR EACH STATEMENT
+    EXECUTE PROCEDURE event_store_delete('Cannot delete event types');
+    """
+  end
+
   def prevent_streams_delete do
     """
     CREATE TRIGGER no_delete_streams
@@ -221,11 +303,11 @@ defmodule Decree.Store.Sql.Init do
   # The append function, in its latest version only: a fresh store carries no older
   # one. The signature follows the `events` columns, because Postgrex encodes from
   # the declared types. The body must stay byte-identical to the migration that
-  # adds this version (priv/decree/store/migrations/v1.4.0.sql); the comment at its
+  # adds this version (priv/decree/store/migrations/v1.5.0.sql); the comment at its
   # top states the name resolution and the versioning contract.
   defp create_append_events_function(column_data_type, correlation_id_type, causation_id_type) do
     """
-    CREATE FUNCTION append_events_v1(
+    CREATE FUNCTION append_events_v2(
       p_schema text,
       p_stream_id bigint,
       p_stream_uuid text,
@@ -237,7 +319,9 @@ defmodule Decree.Store.Sql.Init do
       p_correlation_ids #{correlation_id_type}[],
       p_data #{column_data_type}[],
       p_metadata #{column_data_type}[],
-      p_created_at timestamptz[]
+      p_created_at timestamptz[],
+      p_tag_event_indexes bigint[],
+      p_tags text[]
     ) RETURNS bigint
     LANGUAGE plpgsql VOLATILE
     SET search_path TO pg_catalog, pg_temp
@@ -256,17 +340,22 @@ defmodule Decree.Store.Sql.Init do
     -- needs nothing but the config change. SET search_path FROM CURRENT, or a schema
     -- baked into this text, would freeze the name the function was created under.
     --
-    -- The _v1 suffix is a contract: a later change adds a new version and never
+    -- The _v2 suffix is a contract: a later change adds a new version and never
     -- replaces or drops this one, because an old pod still calls this signature.
+    --
+    -- Tags travel as two parallel flat arrays, because Postgres arrays are rectangular:
+    -- p_tag_event_indexes[n] is the 1-based ordinal, within this batch, of the event
+    -- p_tags[n] belongs to.
     DECLARE
       v_count bigint := cardinality(p_event_ids);
       v_stream_id bigint := p_stream_id;
       v_stream_version bigint := 0;
       v_all_version bigint;
       v_stale boolean := false;
+      v_stamp timestamptz;
     BEGIN
       IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION 'append_events_v1 needs READ COMMITTED, not %',
+        RAISE EXCEPTION 'append_events_v2 needs READ COMMITTED, not %',
           current_setting('transaction_isolation')
           USING ERRCODE = 'invalid_transaction_state';
       END IF;
@@ -340,6 +429,25 @@ defmodule Decree.Store.Sql.Init do
         VALUES (v_stream_id, v_stream_version), (0, v_all_version)
       ) AS target (stream_id, base_version);
 
+      -- These rows carry the position, so they wait for $all. Every event gets its
+      -- event_types row, tagged or not: that is what an item with types and no tags reads.
+      INSERT INTO event_types (event_type, position)
+      SELECT new_events.event_type, v_all_version + new_events.index
+      FROM unnest(p_event_types) WITH ORDINALITY AS new_events (event_type, index);
+
+      -- Read here, after $all is granted, so stamps are monotone in position order. now()
+      -- is the transaction's start, and events.created_at is written before the lock and
+      -- cannot be updated. Only the command: row needs a stamp (Q-3).
+      v_stamp := clock_timestamp();
+
+      INSERT INTO event_tags (position, tag, event_type, stamped_at)
+      SELECT
+        v_all_version + new_tags.index,
+        new_tags.tag,
+        p_event_types[new_tags.index],
+        CASE WHEN starts_with(new_tags.tag, 'command:') THEN v_stamp END
+      FROM unnest(p_tag_event_indexes, p_tags) AS new_tags (index, tag);
+
       RETURN v_stream_id;
     END;
     $$;
@@ -405,7 +513,7 @@ defmodule Decree.Store.Sql.Init do
   defp record_event_store_schema_version do
     """
     INSERT INTO schema_migrations (major_version, minor_version, patch_version)
-    VALUES (1, 4, 0);
+    VALUES (1, 5, 0);
     """
   end
 end

@@ -4,11 +4,15 @@ defmodule Decree.Store.Streams.Stream do
   alias Decree.Store.{AppendError, EventData, RecordedEvent, Storage, UUID}
   alias Decree.Store.Streams.StreamInfo
 
+  # The `event_tags_tag_length` CHECK's limit, in bytes.
+  @max_tag_bytes 512
+
   def append_to_stream(conn, stream_uuid, expected_version, events, opts)
       when length(events) < 1000 do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
-    with {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts),
+    with :ok <- validate_tags(events),
+         {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts),
          :ok <- do_append_to_storage(conn, stream, events, expected_version, serializer, new_opts) do
       :ok
     end
@@ -18,27 +22,29 @@ defmodule Decree.Store.Streams.Stream do
   def append_to_stream(conn, stream_uuid, expected_version, events, opts) do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
-    transaction(
-      conn,
-      fn transaction ->
-        with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, new_opts),
-             :ok <-
-               do_append_to_storage(
-                 transaction,
-                 stream,
-                 events,
-                 expected_version,
-                 serializer,
-                 new_opts
-               ) do
-          :ok
-        else
-          {:error, error} -> Postgrex.rollback(transaction, error)
-        end
-      end,
-      new_opts
-    )
-    |> maybe_retry_once(conn, stream_uuid, expected_version, events, opts)
+    with :ok <- validate_tags(events) do
+      transaction(
+        conn,
+        fn transaction ->
+          with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, new_opts),
+               :ok <-
+                 do_append_to_storage(
+                   transaction,
+                   stream,
+                   events,
+                   expected_version,
+                   serializer,
+                   new_opts
+                 ) do
+            :ok
+          else
+            {:error, error} -> Postgrex.rollback(transaction, error)
+          end
+        end,
+        new_opts
+      )
+      |> maybe_retry_once(conn, stream_uuid, expected_version, events, opts)
+    end
   end
 
   def link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, opts) do
@@ -147,7 +153,24 @@ defmodule Decree.Store.Streams.Stream do
        ) do
     prepared_events = prepare_events(events, stream, serializer, opts)
 
-    write_to_stream(conn, prepared_events, stream, expected_version, opts)
+    # One list per event. The `uniq` is load-bearing: the appender reads any unique
+    # violation it does not name, `event_tags_pkey` included, as a stale version.
+    tags = Enum.map(events, &Enum.uniq(&1.tags))
+
+    write_to_stream(conn, prepared_events, stream, expected_version, tags, opts)
+  end
+
+  # Runs first in both `append_to_stream/5` clauses, so a refusal sends no statement at
+  # all, not even a BEGIN, and answers before `stream_info/4` can. A caller's transaction
+  # stays alive: the table's CHECK, or a rollback here, would abort it.
+  defp validate_tags(events) do
+    too_long? = fn tag -> byte_size(tag) > @max_tag_bytes end
+
+    if Enum.any?(events, fn event -> Enum.any?(event.tags, too_long?) end) do
+      {:error, :tag_too_long}
+    else
+      :ok
+    end
   end
 
   defp prepare_events(events, %StreamInfo{} = stream, serializer, opts) do
@@ -210,10 +233,17 @@ defmodule Decree.Store.Streams.Stream do
     raise ArgumentError, message: "Invalid event id, expected a UUID but got: #{inspect(invalid)}"
   end
 
-  defp write_to_stream(conn, prepared_events, %StreamInfo{} = stream, expected_version, opts) do
+  defp write_to_stream(
+         conn,
+         prepared_events,
+         %StreamInfo{} = stream,
+         expected_version,
+         tags,
+         opts
+       ) do
     %StreamInfo{stream_id: stream_id} = stream
 
-    opts = Keyword.put(opts, :expected_version, expected_version)
+    opts = Keyword.merge(opts, expected_version: expected_version, tags: tags)
 
     Storage.append_to_stream(conn, stream_id, prepared_events, opts)
   end

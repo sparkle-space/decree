@@ -684,6 +684,9 @@ defmodule Decree.Store do
     * `{:error, :duplicate_event}` when an event id was already appended.
     * `{:error, :not_found}` when the stream was removed (hard deleted) between
       reading its version and appending.
+    * `{:error, :tag_too_long}` when a tag of an event is over 512 bytes. It is
+      answered before any statement is sent, so it wins over every answer above
+      that reads the stream, and a caller's transaction stays usable.
     * `{:error, {:already_retried_once, :duplicate_stream_uuid}}` when the
       append lost the race to create a new stream twice.
     * `{:error, %Decree.Store.AppendError{}}` for any other failure of the
@@ -712,6 +715,7 @@ defmodule Decree.Store do
               | {:error, :stream_deleted}
               | {:error, :duplicate_event}
               | {:error, :not_found}
+              | {:error, :tag_too_long}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, :rollback}

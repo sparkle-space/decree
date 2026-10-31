@@ -16,7 +16,7 @@ defmodule Decree.Store.Sql.Reset do
 
   defp truncate_tables do
     """
-    TRUNCATE TABLE snapshots, subscriptions, stream_events, streams, events
+    TRUNCATE TABLE snapshots, subscriptions, stream_events, streams, events, event_tags, event_types
     RESTART IDENTITY;
     """
   end

@@ -2,7 +2,7 @@
   # Elixir template variables:
   #   schema - string
 
-  # Bind variables, the parameters of `append_events_v1` (see
+  # Bind variables, the parameters of `append_events_v2` (see
   # `Decree.Store.Sql.Init`):
   #   1 - schema - text
   #   2 - stream_id - bigint, NULL creates the stream
@@ -16,5 +16,7 @@
   #  10 - data - <serialized event data format (bytea, jsonb)>[]
   #  11 - metadata - <serialized event data format (bytea, jsonb)>[]
   #  12 - created_at - timestamptz[]
+  #  13 - tag_event_indexes - bigint[], the 1-based ordinal in this batch of each tag's event
+  #  14 - tags - text[], parallel to tag_event_indexes
 %>
-SELECT "<%= schema %>".append_events_v1($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+SELECT "<%= schema %>".append_events_v2($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);

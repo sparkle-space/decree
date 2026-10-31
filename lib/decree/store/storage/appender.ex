@@ -9,8 +9,14 @@ defmodule Decree.Store.Storage.Appender do
   Append the given list of events to storage.
 
   Events are inserted in batches of 1,000 within a single transaction, one call
-  of the `append_events_v1` function per batch. The batch keeps one call's arrays
+  of the `append_events_v2` function per batch. The batch keeps one call's arrays
   and its hold of the `$all` row bounded.
+
+  The `:tags` option is one list of tags per event, in event order; an event past
+  its end has none. `Decree.Store.Streams.Stream` refuses a tag over 512 bytes and
+  removes repeats, so a direct caller is answered by the table: an over-long tag is
+  a `:rejected` `Decree.Store.AppendError`, and a tag repeated on one event hits
+  `event_tags_pkey`, which reads as `:wrong_expected_version`.
 
   Returns `:ok` on success, or one of `{:error, :not_found}`,
   `{:error, :duplicate_event}`, `{:error, :duplicate_stream_uuid}`,
@@ -20,16 +26,19 @@ defmodule Decree.Store.Storage.Appender do
     [%RecordedEvent{stream_uuid: stream_uuid} | _] = events
     {correlation_id_type, opts} = Keyword.pop(opts, :correlation_id_type, "uuid")
     {causation_id_type, opts} = Keyword.pop(opts, :causation_id_type, "uuid")
+    {tags, opts} = Keyword.pop(opts, :tags, [])
 
     try do
       events
       |> Stream.map(&encode_uuids(&1, correlation_id_type, causation_id_type))
+      |> Stream.zip(Stream.concat(tags, Stream.cycle([[]])))
       |> Stream.chunk_every(1_000)
       |> Enum.reduce(stream_id, fn batch, stream_id ->
-        event_count = length(batch)
+        {events, tags} = Enum.unzip(batch)
+        event_count = length(events)
 
         with {:ok, new_stream_id} <-
-               insert_event_batch(conn, stream_id, stream_uuid, batch, opts) do
+               insert_event_batch(conn, stream_id, stream_uuid, events, tags, opts) do
           Logger.debug("Appended #{event_count} event(s) to stream #{inspect(stream_uuid)}")
           new_stream_id
         else
@@ -109,7 +118,7 @@ defmodule Decree.Store.Storage.Appender do
   defp encode_uuid(nil), do: nil
   defp encode_uuid(value), do: UUID.string_to_binary!(value)
 
-  defp insert_event_batch(conn, stream_id, stream_uuid, events, opts) do
+  defp insert_event_batch(conn, stream_id, stream_uuid, events, tags, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {expected_version, opts} = Keyword.pop(opts, :expected_version)
     {created_at, opts} = Keyword.pop(opts, :created_at_override)
@@ -121,7 +130,7 @@ defmodule Decree.Store.Storage.Appender do
         stream_uuid,
         batch_expected_version(expected_version, events),
         created_at
-      ] ++ build_insert_parameters(events)
+      ] ++ build_insert_parameters(events) ++ build_tag_parameters(tags)
 
     case Postgrex.query(conn, Statements.append_events(schema), params, opts) do
       {:ok, %Postgrex.Result{rows: [[nil]]}} ->
@@ -145,7 +154,7 @@ defmodule Decree.Store.Storage.Appender do
     stream_version - 1
   end
 
-  # One array per column of `append_events_v1`, in the function's order.
+  # One array per column of `append_events_v2`, in the function's order.
   defp build_insert_parameters(events) do
     [
       Enum.map(events, & &1.event_id),
@@ -156,6 +165,18 @@ defmodule Decree.Store.Storage.Appender do
       Enum.map(events, &array_element(&1.metadata)),
       Enum.map(events, & &1.created_at)
     ]
+  end
+
+  # Two parallel flat arrays: each tag, and the 1-based ordinal in this batch of its
+  # event. An event with no tags contributes nothing, so no tags are two empty arrays.
+  defp build_tag_parameters(tags) do
+    {indexes, tags} =
+      tags
+      |> Enum.with_index(1)
+      |> Enum.flat_map(fn {event_tags, index} -> Enum.map(event_tags, &{index, &1}) end)
+      |> Enum.unzip()
+
+    [indexes, tags]
   end
 
   # Postgrex reads a list that heads an array parameter as another dimension of the
