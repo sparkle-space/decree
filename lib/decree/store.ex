@@ -3,7 +3,7 @@ defmodule Decree.Store do
   Decree.Store allows you to define one or more event store modules to append,
   read, and subscribe to streams of events.
 
-  It uses PostgreSQL (v9.5 or later) as the underlying storage engine.
+  It uses PostgreSQL (v18) as the underlying storage engine.
 
   ## Defining an event store
 
