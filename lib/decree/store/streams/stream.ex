@@ -1,7 +1,17 @@
 defmodule Decree.Store.Streams.Stream do
   @moduledoc false
 
-  alias Decree.Store.{AppendError, EventData, Query, ReadResult, RecordedEvent, Storage, UUID}
+  alias Decree.Store.{
+    AppendCondition,
+    AppendError,
+    EventData,
+    Query,
+    ReadResult,
+    RecordedEvent,
+    Storage,
+    UUID
+  }
+
   alias Decree.Store.Streams.StreamInfo
 
   @max_bigint 9_223_372_036_854_775_807
@@ -13,6 +23,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         {:ok, new_opts} <- compile_condition(stream_uuid, new_opts),
          {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts),
          :ok <- do_append_to_storage(conn, stream, events, expected_version, serializer, new_opts) do
       :ok
@@ -23,7 +34,8 @@ defmodule Decree.Store.Streams.Stream do
   def append_to_stream(conn, stream_uuid, expected_version, events, opts) do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
-    with :ok <- validate_tags(events) do
+    with :ok <- validate_tags(events),
+         {:ok, new_opts} <- compile_condition(stream_uuid, new_opts) do
       transaction(
         conn,
         fn transaction ->
@@ -192,6 +204,40 @@ defmodule Decree.Store.Streams.Stream do
       {:error, :tag_too_long}
     else
       :ok
+    end
+  end
+
+  # Runs where `validate_tags/1` does, for the same reason: a refusal sends no statement.
+  # `opts` come back with the compiled condition, and without one a plain append's are
+  # untouched. `Keyword.get_values/2` because `condition: nil` is a refused condition, not
+  # a plain append, and because a repeated option must not leave one condition unchecked.
+  defp compile_condition(stream_uuid, opts) do
+    case Keyword.get_values(opts, :condition) do
+      [] ->
+        {:ok, opts}
+
+      [condition] ->
+        with {:ok, %AppendCondition{} = compiled} <- AppendCondition.compile(condition),
+             :ok <- validate_declared(stream_uuid, compiled, opts) do
+          {:ok, Keyword.put(opts, :condition, compiled)}
+        end
+
+      [_condition, _repeat | _repeats] ->
+        {:error, :invalid_condition}
+    end
+  end
+
+  # Declared by the store's config, which `opts` carry. `Decree.Store` passes no caller
+  # option of this name through, so a caller cannot declare its own append.
+  defp validate_declared(stream_uuid, %AppendCondition{target: target}, opts) do
+    declared = Keyword.get(opts, :conditional_appends, [])
+    prefixes = Keyword.get(declared, :stream_prefixes, [])
+    targets = Keyword.get(declared, :targets, [])
+
+    if String.starts_with?(stream_uuid, prefixes) or (not is_nil(target) and target in targets) do
+      :ok
+    else
+      {:error, :undeclared_conditional_target}
     end
   end
 

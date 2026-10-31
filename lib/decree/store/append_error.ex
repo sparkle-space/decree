@@ -3,12 +3,13 @@ defmodule Decree.Store.AppendError do
   An append or link that the database did not accept, classified by what a
   caller can do about it.
 
-  `append_to_stream/4` and `link_to_stream/4` return four failures of the
+  `append_to_stream/4` and `link_to_stream/4` return five failures of the
   appender's statement as plain atoms, because they are domain answers:
   `{:error, :wrong_expected_version}`, `{:error, :duplicate_event}`,
-  `{:error, :not_found}` and (retried once inside the store, see below)
-  `{:error, :duplicate_stream_uuid}`. Every other failure of that statement is
-  returned as `{:error, %Decree.Store.AppendError{}}`, with these fields:
+  `{:error, :not_found}`, `{:error, :append_condition_failed}` and (retried once
+  inside the store, see below) `{:error, :duplicate_stream_uuid}`. Every other
+  failure of that statement is returned as
+  `{:error, %Decree.Store.AppendError{}}`, with these fields:
 
     - `class` — what a caller can do:
       - `:unavailable` — the database could not be reached, stopped serving, or

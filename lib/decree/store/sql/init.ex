@@ -1,6 +1,8 @@
 defmodule Decree.Store.Sql.Init do
   @moduledoc false
 
+  alias Decree.Store.Sql.Statements
+
   # PostgreSQL statements to intialize an event store schema.
 
   def statements(config) do
@@ -303,11 +305,28 @@ defmodule Decree.Store.Sql.Init do
   # The append function, in its latest version only: a fresh store carries no older
   # one. The signature follows the `events` columns, because Postgrex encodes from
   # the declared types. The body must stay byte-identical to the migration that
-  # adds this version (priv/decree/store/migrations/v1.5.0.sql); the comment at its
-  # top states the name resolution and the versioning contract.
+  # adds this version (priv/decree/store/migrations/v1.6.0.sql); the comment at its
+  # top states the name resolution and the versioning contract. The condition is
+  # rendered from the one text that says what a query matches, and the migration
+  # embeds the same bytes, so a change to that template fails their comparison.
   defp create_append_events_function(column_data_type, correlation_id_type, causation_id_type) do
+    condition =
+      Statements.query_positions(
+        "",
+        "p_probe_items",
+        "p_probe_tags",
+        "p_probe_types",
+        "p_rest_items",
+        "p_rest_tags",
+        "p_after + 1",
+        "1",
+        ">=",
+        "ASC"
+      )
+      |> IO.iodata_to_binary()
+
     """
-    CREATE FUNCTION append_events_v2(
+    CREATE FUNCTION append_events_v3(
       p_schema text,
       p_stream_id bigint,
       p_stream_uuid text,
@@ -321,10 +340,17 @@ defmodule Decree.Store.Sql.Init do
       p_metadata #{column_data_type}[],
       p_created_at timestamptz[],
       p_tag_event_indexes bigint[],
-      p_tags text[]
+      p_tags text[],
+      p_probe_items bigint[],
+      p_probe_tags text[],
+      p_probe_types text[],
+      p_rest_items bigint[],
+      p_rest_tags text[],
+      p_after bigint
     ) RETURNS bigint
     LANGUAGE plpgsql VOLATILE
     SET search_path TO pg_catalog, pg_temp
+    SET enable_seqscan TO off
     AS $$
     -- Appends events to one stream, in one round trip and in one lock order: the
     -- stream's row first (FOR NO KEY UPDATE, or the insert of a new row), then $all.
@@ -340,12 +366,27 @@ defmodule Decree.Store.Sql.Init do
     -- needs nothing but the config change. SET search_path FROM CURRENT, or a schema
     -- baked into this text, would freeze the name the function was created under.
     --
-    -- The _v2 suffix is a contract: a later change adds a new version and never
+    -- The _v3 suffix is a contract: a later change adds a new version and never
     -- replaces or drops this one, because an old pod still calls this signature.
     --
     -- Tags travel as two parallel flat arrays, because Postgres arrays are rectangular:
     -- p_tag_event_indexes[n] is the 1-based ordinal, within this batch, of the event
     -- p_tags[n] belongs to.
+    --
+    -- A condition is a compiled query and a position, p_after, whose NULL means a plain
+    -- append. It fails the append if any event after p_after matches. It is a statement
+    -- of its own right after the $all UPDATE, because each statement here takes a new
+    -- snapshot: its snapshot starts after $all is granted, so it sees every event
+    -- committed by an earlier holder of $all. Inside that UPDATE it would read a snapshot
+    -- from before the wait. It runs before this append's own rows exist, because its
+    -- live-event check reads stream_events.
+    --
+    -- The attached SET enable_seqscan pins the condition's plan. PL/pgSQL caches a generic
+    -- plan per session, and on a small analysed store that plan seq-scans stream_events
+    -- and event_tags inside the OFFSET 0 subplans. It outlives the tables' growth until an
+    -- ANALYZE invalidates it, and a store starts empty, so every pod would cache it and
+    -- run it under $all. Attached, the setting scopes to this function and is restored
+    -- on success and on a raise, also inside a caller's transaction, as search_path is.
     DECLARE
       v_count bigint := cardinality(p_event_ids);
       v_stream_id bigint := p_stream_id;
@@ -353,9 +394,10 @@ defmodule Decree.Store.Sql.Init do
       v_all_version bigint;
       v_stale boolean := false;
       v_stamp timestamptz;
+      v_conflict boolean;
     BEGIN
       IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION 'append_events_v2 needs READ COMMITTED, not %',
+        RAISE EXCEPTION 'append_events_v3 needs READ COMMITTED, not %',
           current_setting('transaction_isolation')
           USING ERRCODE = 'invalid_transaction_state';
       END IF;
@@ -415,6 +457,16 @@ defmodule Decree.Store.Sql.Init do
       SET stream_version = stream_version + v_count
       WHERE stream_id = 0
       RETURNING stream_version - v_count INTO v_all_version;
+
+      IF p_after IS NOT NULL THEN
+        SELECT EXISTS (
+    #{condition}
+        ) INTO v_conflict;
+
+        IF v_conflict THEN
+          RAISE EXCEPTION 'append condition failed' USING ERRCODE = 'ZD001';
+        END IF;
+      END IF;
 
       INSERT INTO stream_events
         (event_id, stream_id, stream_version, original_stream_id, original_stream_version)
@@ -513,7 +565,7 @@ defmodule Decree.Store.Sql.Init do
   defp record_event_store_schema_version do
     """
     INSERT INTO schema_migrations (major_version, minor_version, patch_version)
-    VALUES (1, 5, 0);
+    VALUES (1, 6, 0);
     """
   end
 end

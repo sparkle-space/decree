@@ -243,6 +243,54 @@ defmodule Decree.Store do
   before a query's answer can be trusted to be complete. W-1 starts from an empty store,
   and the plan's §5.6 fallback backfills.
 
+  ## Conditional appends
+
+  A conditional append writes its events only if no event after a position matches a
+  query:
+
+      items = [[types: ["EmailClaimed"], tags: ["email:digest"]]]
+
+      {:ok, %Decree.Store.ReadResult{events: [], after: head}} =
+        MyApp.EventStore.read_query(items)
+
+      :ok =
+        MyApp.EventStore.append_to_stream("decision-1", :no_stream, events,
+          condition: [items: items, after: head]
+        )
+
+  `items` is a `Decree.Store.Query` list, and `after` comes from the `after` of a complete
+  `c:read_query/2`. The append does not write and answers
+  `{:error, :append_condition_failed}` if any event past `after` matches. It is decided
+  while holding `$all`, in a statement of its own, so an event a concurrent append commits
+  first is seen and fails it, and no event can land between the check and the write.
+
+  A condition that cannot run is refused before any statement is sent, so a caller's
+  transaction stays usable: `{:error, :invalid_condition}` for a malformed condition,
+  whose `after` must be an integer and never `nil`, `{:error, :invalid_query}` and
+  `{:error, :tag_too_long}` for its `items`, and
+  `{:error, :undeclared_conditional_target}` for an append the store does not declare
+  (see `c:append_to_stream/4`). An `expected_version` is checked first, so a stale append
+  answers `{:error, :wrong_expected_version}` whatever its condition says.
+
+  A failed condition inside a caller's transaction aborts that transaction like any failed
+  statement, and a retry there is the caller's. A condition sees that transaction's own
+  earlier events, so one of them past `after` fails it. Outside a transaction, a failed
+  condition is an answer and is not retried. A `deadlock_detected` retry evaluates the
+  condition again, with the same `after`.
+
+  **The coverage gap, on a write path.** A condition matches rows of the `event_tags` and
+  `event_types` tables. An event from before store migration 1.5.0, or one an old pod
+  appended through `append_events_v1`, has no such rows, so a condition silently misses
+  it, and the append cannot cheaply detect that. A store that starts empty after 1.5.0 has
+  no such event; any other store needs its events backfilled into both tables before a
+  condition can be trusted to be complete.
+
+  **The cost under the lock.** A condition runs while holding `$all`, so every append
+  waits for it. It costs in proportion to each item's first-tag hits after `after`, not to
+  history. With an `after` from a read, that is a few events. `after: 0` over a broad
+  first tag scans them all under `$all`: 2.3 s for 200,000 hits in a spike. See "The first
+  tag" in `Decree.Store.Query`.
+
   """
 
   @type t :: module
@@ -344,7 +392,7 @@ defmodule Decree.Store do
         Supervisor.stop(supervisor, :normal, timeout)
       end
 
-      @accepted_overrides_append_to_stream [:created_at_override]
+      @accepted_overrides_append_to_stream [:created_at_override, :condition]
 
       def append_to_stream(stream_uuid, expected_version, events, opts \\ [])
 
@@ -742,6 +790,31 @@ defmodule Decree.Store do
       - `name` the name of the event store if provided to `start_link/1`.
       - `timeout` an optional timeout for the database transaction, in
         milliseconds. Defaults to 15,000ms.
+      - `condition` a `Decree.Store.AppendCondition` keyword list, for a conditional
+        append. See "Conditional appends" in `Decree.Store`, and below.
+
+  #### Declaring a conditional append
+
+  Since a condition takes time while holding `$all`, a store refuses every conditional
+  append until its config declares it, by the stream's prefix or by the condition's
+  `target`:
+
+      defmodule MyApp.EventStore do
+        use Decree.Store,
+          otp_app: :my_app,
+          conditional_appends: [stream_prefixes: ["decision-"], targets: [MyApp.User]]
+      end
+
+  Or via config:
+
+      # config/config.exs
+      config :my_app, MyApp.EventStore,
+        conditional_appends: [stream_prefixes: ["decision-"], targets: [MyApp.User]]
+
+  A conditional append is declared when its `stream_uuid` starts with a declared prefix,
+  or when its condition's `target` is one of `targets`, which suits a stream whose name
+  has no prefix. Only the config declares: `conditional_appends` is no `append_to_stream/4`
+  option.
 
   Returns `:ok` on success, or an `{:error, reason}` tagged tuple:
 
@@ -757,9 +830,16 @@ defmodule Decree.Store do
     * `{:error, :duplicate_event}` when an event id was already appended.
     * `{:error, :not_found}` when the stream was removed (hard deleted) between
       reading its version and appending.
+    * `{:error, :append_condition_failed}` when an event past the condition's
+      `after` matches its `items`. A stale append answers
+      `{:error, :wrong_expected_version}` instead: it never evaluates a condition.
     * `{:error, :tag_too_long}` when a tag of an event is over 512 bytes. It is
       answered before any statement is sent, so it wins over every answer above
       that reads the stream, and a caller's transaction stays usable.
+    * `{:error, :invalid_condition}`, `{:error, :invalid_query}` and
+      `{:error, :undeclared_conditional_target}` when the `condition` is malformed,
+      when its `items` are, and when the store does not declare it. Each is answered
+      after a tag that is too long and before any statement is sent, as that one is.
     * `{:error, {:already_retried_once, :duplicate_stream_uuid}}` when the
       append lost the race to create a new stream twice.
     * `{:error, %Decree.Store.AppendError{}}` for any other failure of the
@@ -778,7 +858,7 @@ defmodule Decree.Store do
               stream_uuid :: String.t(),
               expected_version,
               events :: list(EventData.t()),
-              opts :: options
+              opts :: [option | {:condition, keyword()}]
             ) ::
               :ok
               | {:error, :cannot_append_to_all_stream}
@@ -788,7 +868,11 @@ defmodule Decree.Store do
               | {:error, :stream_deleted}
               | {:error, :duplicate_event}
               | {:error, :not_found}
+              | {:error, :append_condition_failed}
               | {:error, :tag_too_long}
+              | {:error, :invalid_condition}
+              | {:error, :invalid_query}
+              | {:error, :undeclared_conditional_target}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, :rollback}

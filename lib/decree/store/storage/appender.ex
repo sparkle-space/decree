@@ -1,15 +1,19 @@
 defmodule Decree.Store.Storage.Appender do
   @moduledoc false
-  alias Decree.Store.{AppendError, RecordedEvent, UUID}
+  alias Decree.Store.{AppendCondition, AppendError, Query, RecordedEvent, UUID}
   alias Decree.Store.Sql.Statements
 
   require Logger
+
+  # The SQLSTATE `append_events_v3` raises for a failed condition: the `ZD` class is no
+  # Postgres one, so nothing else raises it, and Postgrex has no name for it.
+  @append_condition_failed "ZD001"
 
   @doc """
   Append the given list of events to storage.
 
   Events are inserted in batches of 1,000 within a single transaction, one call
-  of the `append_events_v2` function per batch. The batch keeps one call's arrays
+  of the `append_events_v3` function per batch. The batch keeps one call's arrays
   and its hold of the `$all` row bounded.
 
   The `:tags` option is one list of tags per event, in event order; an event past
@@ -18,29 +22,37 @@ defmodule Decree.Store.Storage.Appender do
   a `:rejected` `Decree.Store.AppendError`, and a tag repeated on one event hits
   `event_tags_pkey`, which reads as `:wrong_expected_version`.
 
+  The `:condition` option is a compiled `Decree.Store.AppendCondition`.
+
   Returns `:ok` on success, or one of `{:error, :not_found}`,
   `{:error, :duplicate_event}`, `{:error, :duplicate_stream_uuid}`,
-  `{:error, :wrong_expected_version}` and `{:error, %Decree.Store.AppendError{}}`.
+  `{:error, :wrong_expected_version}`, `{:error, :append_condition_failed}` and
+  `{:error, %Decree.Store.AppendError{}}`.
   """
   def append(conn, stream_id, events, opts) do
     [%RecordedEvent{stream_uuid: stream_uuid} | _] = events
     {correlation_id_type, opts} = Keyword.pop(opts, :correlation_id_type, "uuid")
     {causation_id_type, opts} = Keyword.pop(opts, :causation_id_type, "uuid")
     {tags, opts} = Keyword.pop(opts, :tags, [])
+    {condition, opts} = Keyword.pop(opts, :condition)
 
     try do
       events
       |> Stream.map(&encode_uuids(&1, correlation_id_type, causation_id_type))
       |> Stream.zip(Stream.concat(tags, Stream.cycle([[]])))
       |> Stream.chunk_every(1_000)
-      |> Enum.reduce(stream_id, fn batch, stream_id ->
+      |> Enum.reduce({stream_id, condition}, fn batch, {stream_id, condition} ->
         {events, tags} = Enum.unzip(batch)
         event_count = length(events)
 
         with {:ok, new_stream_id} <-
-               insert_event_batch(conn, stream_id, stream_uuid, events, tags, opts) do
+               insert_event_batch(conn, stream_id, stream_uuid, events, tags, condition, opts) do
           Logger.debug("Appended #{event_count} event(s) to stream #{inspect(stream_uuid)}")
-          new_stream_id
+
+          # Only the first batch carries the condition. A later batch's would see the
+          # earlier batches' own rows and fail on them, and `$all` is held from the first
+          # batch to the commit, so nothing can interleave.
+          {new_stream_id, nil}
         else
           {:error, error} -> throw({:error, error})
         end
@@ -118,7 +130,7 @@ defmodule Decree.Store.Storage.Appender do
   defp encode_uuid(nil), do: nil
   defp encode_uuid(value), do: UUID.string_to_binary!(value)
 
-  defp insert_event_batch(conn, stream_id, stream_uuid, events, tags, opts) do
+  defp insert_event_batch(conn, stream_id, stream_uuid, events, tags, condition, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {expected_version, opts} = Keyword.pop(opts, :expected_version)
     {created_at, opts} = Keyword.pop(opts, :created_at_override)
@@ -130,7 +142,9 @@ defmodule Decree.Store.Storage.Appender do
         stream_uuid,
         batch_expected_version(expected_version, events),
         created_at
-      ] ++ build_insert_parameters(events) ++ build_tag_parameters(tags)
+      ] ++
+        build_insert_parameters(events) ++
+        build_tag_parameters(tags) ++ build_condition_parameters(condition)
 
     case Postgrex.query(conn, Statements.append_events(schema), params, opts) do
       {:ok, %Postgrex.Result{rows: [[nil]]}} ->
@@ -154,7 +168,7 @@ defmodule Decree.Store.Storage.Appender do
     stream_version - 1
   end
 
-  # One array per column of `append_events_v2`, in the function's order.
+  # One array per column of `append_events_v3`, in the function's order.
   defp build_insert_parameters(events) do
     [
       Enum.map(events, & &1.event_id),
@@ -179,6 +193,22 @@ defmodule Decree.Store.Storage.Appender do
     [indexes, tags]
   end
 
+  # A NULL `after` is how the function means a plain append.
+  defp build_condition_parameters(nil), do: [nil, nil, nil, nil, nil, nil]
+
+  defp build_condition_parameters(%AppendCondition{} = condition) do
+    %AppendCondition{query: %Query{} = query, after: position} = condition
+
+    [
+      query.probe_items,
+      query.probe_tags,
+      query.probe_types,
+      query.rest_items,
+      query.rest_tags,
+      position
+    ]
+  end
+
   # Postgrex reads a list that heads an array parameter as another dimension of the
   # array, so a `jsonb` store's serialized value that is a top-level JSON list would
   # lose its brackets, or shift the batch's rows. As a fragment it is one element.
@@ -198,7 +228,7 @@ defmodule Decree.Store.Storage.Appender do
     end
   end
 
-  # The four domain answers stay plain atoms; every other failure is classified
+  # The five domain answers stay plain atoms; every other failure is classified
   # as a `Decree.Store.AppendError` (see its moduledoc for the classes).
   defp handle_error(%Postgrex.Error{postgres: %{code: :foreign_key_violation}}),
     do: {:error, :not_found}
@@ -221,6 +251,9 @@ defmodule Decree.Store.Storage.Appender do
         {:error, :wrong_expected_version}
     end
   end
+
+  defp handle_error(%Postgrex.Error{postgres: %{pg_code: @append_condition_failed}}),
+    do: {:error, :append_condition_failed}
 
   defp handle_error(error), do: {:error, AppendError.from_error(error)}
 end

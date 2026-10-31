@@ -11,8 +11,8 @@ defmodule Decree.Store.MigrateEventStoreTest do
   @moduletag :migration
 
   # The latest `append_events_v<n>`. A later version adds a function and leaves this
-  # one in place, so a migrated store carries both and a fresh one only the latest.
-  @latest_append_function "append_events_v2"
+  # one in place, so a migrated store carries them all and a fresh one only the latest.
+  @latest_append_function "append_events_v3"
 
   # pg_dump picks the quote per body: `$_$` for one that holds a `$`, as `$all` does.
   @dollar_quote_end ~r/^\$\w*\$;$/
@@ -130,6 +130,8 @@ defmodule Decree.Store.MigrateEventStoreTest do
       assert migrated_function =~ "p_causation_ids text[]"
       assert migrated_function =~ "p_correlation_ids text[]"
       assert migrated_function =~ "p_tags text[]"
+      assert migrated_function =~ "p_after bigint"
+      assert migrated_function =~ "SET enable_seqscan TO 'off'"
 
       assert_append_round_trips(config)
 
@@ -144,27 +146,27 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   describe "version bookkeeping" do
-    test "the store knows migration 1.5.0" do
-      assert "1.5.0" in Migrations.available_migrations()
-      assert List.last(Migrations.available_migrations()) == "1.5.0"
+    test "the store knows migration 1.6.0" do
+      assert "1.6.0" in Migrations.available_migrations()
+      assert List.last(Migrations.available_migrations()) == "1.6.0"
     end
 
-    test "a new event store records 1.5.0 and has nothing pending", %{config: config} do
+    test "a new event store records 1.6.0 and has nothing pending", %{config: config} do
       create_new_database(config)
 
-      assert schema_versions(config) == [[1, 5, 0]]
+      assert schema_versions(config) == [[1, 6, 0]]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
 
-      assert schema_versions(config) == [[1, 5, 0]]
+      assert schema_versions(config) == [[1, 6, 0]]
     end
 
-    test "the migration records 1.5.0", %{config: config} do
+    test "the migration records 1.6.0", %{config: config} do
       restore_pre_migration_event_store(config)
       migrate_eventstore(config, quiet: true, is_mix: false)
 
-      assert List.last(schema_versions(config)) == [1, 5, 0]
+      assert List.last(schema_versions(config)) == [1, 6, 0]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
@@ -189,7 +191,8 @@ defmodule Decree.Store.MigrateEventStoreTest do
     end
 
     test "still works, and its events simply have no rows", %{config: config, conn: conn} do
-      assert append_function_names(config) == ["append_events_v1", @latest_append_function]
+      assert append_function_names(config) ==
+               ["append_events_v1", "append_events_v2", @latest_append_function]
 
       all_version = all_version(conn)
 
@@ -201,7 +204,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       assert type_rows(conn) == []
     end
 
-    test "leaves the next v2 append the next position", %{conn: conn} do
+    test "leaves the next append the next position", %{conn: conn} do
       all_version = all_version(conn)
 
       append_v1(conn, UUID.uuid4())
@@ -255,6 +258,67 @@ defmodule Decree.Store.MigrateEventStoreTest do
 
       assert position == all_version + 2
       assert head == position
+    end
+  end
+
+  # The other side of a rolling deploy: the store is at 1.6.0, new pods call v3, and old
+  # pods still call v1 or v2, on the same positions.
+  describe "append_events_v3 beside the older versions on a migrated store" do
+    setup %{config: config} do
+      restore_pre_migration_event_store(config)
+      migrate_eventstore(config, quiet: true, is_mix: false)
+
+      {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
+
+      [conn: conn]
+    end
+
+    test "every version is there", %{config: config} do
+      assert append_function_names(config) ==
+               ["append_events_v1", "append_events_v2", "append_events_v3"]
+    end
+
+    test "v2 and v3 calls mix on one run of positions", %{conn: conn} do
+      head = all_version(conn)
+
+      assert %Postgrex.Result{rows: [[_stream_id]]} = append_v2(conn, UUID.uuid4(), ["tenant:a"])
+      assert :ok = append_v3(conn, ["tenant:b"])
+      assert %Postgrex.Result{rows: [[_stream_id]]} = append_v2(conn, UUID.uuid4(), ["tenant:c"])
+      assert :ok = append_v3(conn, ["tenant:d"], [[tags: ["tenant:e"]]], head)
+
+      assert all_version(conn) == head + 4
+
+      assert tag_rows(conn) == [
+               [head + 1, "tenant:a", "typed"],
+               [head + 2, "tenant:b", "typed"],
+               [head + 3, "tenant:c", "typed"],
+               [head + 4, "tenant:d", "typed"]
+             ]
+
+      assert length(type_rows(conn)) == 4
+      assert all_positions(conn) == Enum.to_list(1..(head + 4))
+    end
+
+    test "a v2 writer's tagged event trips a v3 condition", %{conn: conn} do
+      head = all_version(conn)
+
+      append_v2(conn, UUID.uuid4(), ["tenant:a"])
+
+      assert append_v3(conn, [], [[tags: ["tenant:a"]]], head) ==
+               {:error, :append_condition_failed}
+
+      assert all_version(conn) == head + 1
+    end
+
+    # The coverage gap `Decree.Store` documents, on a write path: an event from v1 has
+    # no rows, so a condition passes that a read of the stream would call a conflict.
+    test "a v1 writer's event does not trip a v3 condition", %{conn: conn} do
+      head = all_version(conn)
+
+      append_v1(conn, UUID.uuid4())
+
+      assert append_v3(conn, [], [[types: ["typed"]]], head) == :ok
+      assert all_version(conn) == head + 2
     end
   end
 
@@ -392,6 +456,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       "1\t3\t0\tNOW" -> true
       "1\t3\t2\tNOW" -> true
       "1\t4\t0\tNOW" -> true
+      "1\t5\t0\tNOW" -> true
       _line -> false
     end)
     |> reject_superseded_append_functions()
@@ -546,6 +611,62 @@ defmodule Decree.Store.MigrateEventStoreTest do
         [DateTime.utc_now()]
       ]
     )
+  end
+
+  # The call an old pod's `append_events.sql.eex` makes.
+  defp append_v2(conn, stream_uuid, tags) do
+    Postgrex.query!(
+      conn,
+      "SELECT public.append_events_v2(" <>
+        "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+      [
+        "public",
+        nil,
+        stream_uuid,
+        nil,
+        nil,
+        [UUID.string_to_binary!(UUID.uuid4())],
+        ["typed"],
+        [nil],
+        [nil],
+        ["{}"],
+        ["{}"],
+        [DateTime.utc_now()],
+        Enum.map(tags, fn _tag -> 1 end),
+        tags
+      ]
+    )
+  end
+
+  defp append_v3(conn, tags, items \\ nil, position \\ nil) do
+    event = %EventData{event_type: "typed", data: "{}", metadata: "{}", tags: tags}
+
+    condition =
+      if items, do: [condition: [items: items, after: position, target: :rolling]], else: []
+
+    Stream.append_to_stream(
+      conn,
+      UUID.uuid4(),
+      0,
+      [event],
+      [
+        schema: "public",
+        serializer: PassThroughSerializer,
+        conditional_appends: [targets: [:rolling]]
+      ] ++ condition
+    )
+  end
+
+  defp all_positions(conn) do
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(
+        conn,
+        "SELECT stream_version FROM public.stream_events" <>
+          " WHERE stream_id = 0 ORDER BY stream_version",
+        []
+      )
+
+    Enum.map(rows, &hd/1)
   end
 
   defp all_version(conn) do

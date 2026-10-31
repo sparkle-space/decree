@@ -131,6 +131,45 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
     assert all_version(context) == 1
   end
 
+  # The retry keeps the condition and its `after`. X commits a match while the retry
+  # waits, so an append that lost its condition on the way back would be written.
+  test "a retry evaluates the condition again, with the same `after`", context do
+    %{session_x: session_x, appender: appender} = context
+
+    start_supervised!(
+      {TestEventStore, name: :declared_store, conditional_appends: [stream_prefixes: ["stream"]]}
+    )
+
+    events = EventFactory.create_events(1)
+
+    log =
+      capture_log(fn ->
+        append =
+          Task.async(fn ->
+            EventStore.append_to_stream("stream", :any_version, events,
+              name: :declared_store,
+              conn: appender,
+              condition: [items: [[tags: ["contested"]]], after: 1]
+            )
+          end)
+
+        force_deadlock(context, context.appender_backend)
+
+        match = %{EventFactory.create_event(nil) | tags: ["contested"]}
+
+        LockSession.run(session_x, fn tx ->
+          assert :ok = EventStore.append_to_stream("other", 0, [match], conn: tx)
+        end)
+
+        assert {:ok, :ok} = LockSession.commit(session_x)
+        assert {:error, :append_condition_failed} = Task.await(append, 15_000)
+      end)
+
+    assert log =~ "deadlock_detected"
+    assert stream_versions(context) == [1]
+    assert all_version(context) == 2
+  end
+
   test "an append through a `DBConnection.run/3` checkout is retried", context do
     assert_run_checkout_retries(context, 3)
 
