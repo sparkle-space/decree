@@ -6,8 +6,9 @@ DECLARE
   v_body text := $body$
 -- Appends events to one stream, in one round trip and in one lock order: the
 -- stream's row first (FOR NO KEY UPDATE, or the insert of a new row), then $all.
--- $all is always the last lock an append takes, so two appends cannot wait on
--- each other in a cycle.
+-- $all is always the last lock an append takes, so appends cannot cycle on these
+-- two locks. Batches sharing event ids in another order can still meet on
+-- events_pkey, as they could in the statements this replaces.
 --
 -- Name resolution: the body names tables unqualified, and the set_config below
 -- points search_path at p_schema for this call. The attached SET search_path
