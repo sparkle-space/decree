@@ -95,6 +95,7 @@ defmodule Decree.MixProject do
       test: [
         "decree.store.create --quiet",
         "decree.store.init --quiet",
+        "decree.store.migrate --quiet",
         "ecto.create --quiet",
         "test"
       ]
