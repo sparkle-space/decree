@@ -40,9 +40,9 @@ defmodule Decree.Event.HandlerInitTest do
 
       Process.exit(handler, :kill)
 
+      # At least two: a restart racing the old subscription's shutdown gets `:noproc` and inits again.
       assert_receive {:init, :tenant1}
       assert_receive {:init, :tenant1}
-      refute_receive {:init, :tenant1}
     end
   end
 

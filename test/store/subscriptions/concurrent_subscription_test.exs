@@ -3,7 +3,7 @@ defmodule Decree.Store.Subscriptions.ConcurrentSubscriptionTest do
 
   import Decree.Store.SubscriptionHelpers
 
-  alias Decree.Store.{ProcessHelper, RecordedEvent, UUID}
+  alias Decree.Store.{ProcessHelper, RecordedEvent, UUID, Wait}
   alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
 
@@ -448,20 +448,22 @@ defmodule Decree.Store.Subscriptions.ConcurrentSubscriptionTest do
           selector: selector
         )
 
+      # Filtered events are acked by the subscription itself, so the ack is awaited first: the
+      # absence of events then covers an event the subscription has actually processed.
       :ok = append_to_stream(stream_uuid, 1)
 
-      refute_receive {:events, _received_events, _subscriber}
       assert_last_ack(subscription, 1)
+      refute_receive {:events, _received_events, _subscriber}
 
       :ok = append_to_stream(stream_uuid, 2, 1)
 
-      refute_receive {:events, _received_events, _subscriber}
       assert_last_ack(subscription, 3)
+      refute_receive {:events, _received_events, _subscriber}
 
       :ok = append_to_stream(stream_uuid, 3, 3)
 
-      refute_receive {:events, _received_events, _subscriber}
       assert_last_ack(subscription, 6)
+      refute_receive {:events, _received_events, _subscriber}
     end
   end
 
@@ -863,10 +865,16 @@ defmodule Decree.Store.Subscriptions.ConcurrentSubscriptionTest do
     end
   end
 
+  # Waits because an event the selector filters out is acked inside the subscription, with no
+  # call to wait on. 5_000 ms is a cap on a loaded runner, not a duration. It returns on the first
+  # matching read, so a caller claiming the value stayed put is still one read, and a value past
+  # `expected_ack` never comes back, so it fails.
   defp assert_last_ack(subscription, expected_ack) do
-    last_seen = Subscription.last_seen(subscription)
+    Wait.until(5_000, fn ->
+      last_seen = Subscription.last_seen(subscription)
 
-    assert last_seen == expected_ack
+      assert last_seen == expected_ack
+    end)
   end
 
   def receive_and_ack(subscription, expected_stream_uuid) do
