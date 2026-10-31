@@ -30,8 +30,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         checkpoint_after: opts[:checkpoint_after] || 0,
         checkpoint_threshold: opts[:checkpoint_threshold] || 1,
         query_timeout: opts[:query_timeout] || 15_000,
-        # The cap of the catch-up read backoff. A started subscription always passes
-        # the event store's `subscription_retry_interval` (or the caller's
+        # The full wait before a resubscribe, and the cap of the backoff after a failed
+        # subscribe attempt or catch-up read. A started subscription always passes the
+        # event store's `subscription_retry_interval` (or the caller's
         # `retry_interval`); the default is that setting's default, for an FSM built
         # without one.
         retry_interval: Keyword.get(opts, :retry_interval, 60_000),
@@ -62,16 +63,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           data
           | last_received: last_seen,
             last_sent: last_seen,
-            last_ack: last_seen
+            last_ack: last_seen,
+            subscribe_failures: 0
         }
 
         notify_subscribed(data)
 
         next_state(:request_catch_up, data)
       else
-        _ ->
-          # Failed to subscribe to stream, retry after delay
-          next_state(:initial, data)
+        failure -> next_state(:initial, subscribe_failed(data, failure))
       end
     end
 
@@ -93,16 +93,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
             lock_ref: lock_ref,
             last_received: last_seen,
             last_sent: last_seen,
-            last_ack: last_seen
+            last_ack: last_seen,
+            subscribe_failures: 0
         }
 
         notify_subscribed(data)
 
         next_state(:request_catch_up, data)
       else
-        _ ->
-          # Failed to subscribe to stream, retry after delay
-          next_state(:initial, data)
+        failure -> next_state(:initial, subscribe_failed(data, failure))
       end
     end
   end
@@ -258,9 +257,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     end
   end
 
-  # Lost the advisory lock: parked until the lock is taken again, after the retry
-  # interval. Subscribers were sent `{:subscription_lock_lost, subscription}` on the
-  # way in, and are sent `{:subscribed, subscription}` again on the way out.
+  # Lost the advisory lock: parked until the lock is taken again. The first attempt
+  # comes after the full retry interval, as does each one that finds the lock taken
+  # (`{:error, :lock_already_taken}`); after any other failed attempt the wait is the
+  # backoff of `resubscribe_wait/1`. Subscribers were sent `{:subscription_lock_lost,
+  # subscription}` on the way in, and are sent `{:subscribed, subscription}` again on
+  # the way out.
   defstate disconnected do
     # Attempt to subscribe
     defevent subscribe, data: %SubscriptionState{} = data do
@@ -278,15 +280,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           | subscription_id: subscription_id,
             lock_ref: lock_ref,
             last_sent: last_ack,
-            last_ack: last_ack
+            last_ack: last_ack,
+            subscribe_failures: 0
         }
 
         notify_subscribed(data)
 
         next_state(:request_catch_up, data)
       else
-        _ ->
-          next_state(:disconnected, data)
+        failure -> next_state(:disconnected, subscribe_failed(data, failure))
       end
     end
   end
@@ -416,18 +418,61 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     server = Module.concat(event_store, AdvisoryLocks)
 
     # A lock attempt that does not answer in time (or an `AdvisoryLocks` that is
-    # not running) leaves the subscription where it is, to retry after the retry
-    # interval, rather than crashing it.
+    # not running) is a failed attempt, handled by `subscribe_failed/2`, rather than
+    # a crash.
     try do
       AdvisoryLocks.try_advisory_lock(server, subscription_id, timeout)
     catch
-      :exit, reason ->
-        Logger.warning(
-          describe(data) <> " failed to take its advisory lock due to: " <> inspect(reason)
-        )
-
-        {:error, reason}
+      :exit, reason -> {:error, reason}
     end
+  end
+
+  # A failed subscribe attempt, in `initial` or `disconnected`. The FSM stays parked,
+  # and `Subscription` arms the next attempt with `resubscribe_wait/1`.
+  #
+  # `:lock_already_taken` is the normal answer for a standby: it stays silent and keeps
+  # the full interval, so idle instances do not poll. The lock pool answered, so any
+  # outage is over.
+  defp subscribe_failed(%SubscriptionState{} = data, {:error, :lock_already_taken}) do
+    %SubscriptionState{data | subscribe_failures: 0}
+  end
+
+  # Any other failure takes the backoff and counts towards it, whichever step produced
+  # it. This is one rule, not one per step: a `create_subscription` failure is usually
+  # the main pool in the same outage as the lock pool, a permanent one (a missing
+  # schema) reaches the cap after a few attempts, and `subscribe_to_events/1` cannot
+  # fail, as `PubSub`'s registry has duplicate keys.
+  #
+  # The first failure of a run logs the reason, so an outage logs once, not per attempt.
+  defp subscribe_failed(%SubscriptionState{subscribe_failures: failures} = data, failure) do
+    data = %SubscriptionState{data | subscribe_failures: failures + 1}
+
+    if failures == 0 do
+      Logger.warning(
+        describe(data) <>
+          " failed to subscribe due to: " <>
+          inspect(failure) <> ", retrying in #{resubscribe_wait(data)}ms"
+      )
+    end
+
+    data
+  end
+
+  @doc """
+  The wait before the next subscribe attempt of a parked subscription: the full
+  `retry_interval` until an attempt fails with anything but `:lock_already_taken`, then
+  the capped backoff over the consecutive failed attempts.
+  """
+  def resubscribe_wait(%SubscriptionState{subscribe_failures: 0} = data) do
+    %SubscriptionState{retry_interval: retry_interval} = data
+
+    retry_interval
+  end
+
+  def resubscribe_wait(%SubscriptionState{} = data) do
+    %SubscriptionState{retry_interval: retry_interval, subscribe_failures: failures} = data
+
+    retry_backoff(failures, retry_interval)
   end
 
   defp subscribe_to_events(%SubscriptionState{} = data) do
@@ -588,7 +633,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     } = data
 
     attempt = catch_up_failures + 1
-    retry_interval = catch_up_backoff(attempt, max_retry_interval)
+    retry_interval = retry_backoff(attempt, max_retry_interval)
 
     Logger.warning(
       describe(data) <>
@@ -621,11 +666,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     })
   end
 
-  # The wait before retrying after the `attempt`th consecutive failed catch-up read. A
-  # `retry_interval` below one second gives a flat wait of `retry_interval`; only a
-  # subscription's own `retry_interval` option can be that short, since the event
-  # store's `subscription_retry_interval` is raised to at least one second.
-  defp catch_up_backoff(attempt, retry_interval) do
+  # The wait before retrying after the `attempt`th consecutive failure of a catch-up read
+  # or a subscribe attempt. A `retry_interval` below one second gives a flat wait of
+  # `retry_interval`; only a subscription's own `retry_interval` option can be that
+  # short, since the event store's `subscription_retry_interval` is raised to at least
+  # one second.
+  defp retry_backoff(attempt, retry_interval) do
     first = min(1_000, retry_interval)
 
     # The exponent is capped so a long run of failures stays a small integer.

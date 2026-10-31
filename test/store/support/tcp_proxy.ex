@@ -7,10 +7,15 @@ defmodule Decree.Store.TcpProxy do
   #   - `:forward` (the start mode): connects to the upstream and copies bytes both
   #     ways until either side closes;
   #   - `:refuse`: closes the connection at once, so a database client fails to
-  #     connect.
+  #     connect;
+  #   - `:hold`: leaves the connection unanswered until the mode changes, so a database
+  #     client stays in its connect, for as long as a test needs;
+  #   - `{:delay, delay}`: forwards this connection after `delay` milliseconds, and the
+  #     mode is `:forward` again from the next one, which is not held up by it.
   #
   # Changing the mode affects new connections only; connections already forwarded
-  # stay up.
+  # stay up. Connections are accepted one at a time, so a held one is handled by the
+  # mode that follows `:hold`, and those behind it wait in the listen backlog.
 
   use GenServer
 
@@ -27,6 +32,13 @@ defmodule Decree.Store.TcpProxy do
   @doc "Forward new connections to the upstream."
   def forward(proxy), do: GenServer.call(proxy, {:mode, :forward})
 
+  @doc "Leave new connections unanswered until the mode changes."
+  def hold(proxy), do: GenServer.call(proxy, {:mode, :hold})
+
+  @doc "Forward the next connection after `delay` milliseconds."
+  def delay_next(proxy, delay), do: GenServer.call(proxy, {:mode, {:delay, delay}})
+
+  @impl true
   def init(opts) do
     upstream = Keyword.fetch!(opts, :upstream)
 
@@ -38,35 +50,71 @@ defmodule Decree.Store.TcpProxy do
     proxy = self()
     acceptor = spawn_link(fn -> accept(proxy, listen, upstream) end)
 
-    {:ok, %{listen: listen, port: port, mode: :forward, acceptor: acceptor}}
+    {:ok, %{listen: listen, port: port, mode: :forward, acceptor: acceptor, held: nil}}
   end
 
+  @impl true
   def handle_call(:port, _from, state), do: {:reply, state.port, state}
+
+  # The acceptor asks for the mode of the connection it just accepted. While held, it
+  # is answered by the next mode change.
+  @impl true
+  def handle_call(:mode, from, %{mode: :hold} = state), do: {:noreply, %{state | held: from}}
+
+  @impl true
+  def handle_call(:mode, _from, %{mode: {:delay, _delay}} = state) do
+    {:reply, state.mode, %{state | mode: :forward}}
+  end
+
+  @impl true
   def handle_call(:mode, _from, state), do: {:reply, state.mode, state}
-  def handle_call({:mode, mode}, _from, state), do: {:reply, :ok, %{state | mode: mode}}
+
+  @impl true
+  def handle_call({:mode, mode}, _from, %{held: nil} = state) do
+    {:reply, :ok, %{state | mode: mode}}
+  end
+
+  @impl true
+  def handle_call({:mode, :hold}, _from, state), do: {:reply, :ok, state}
+
+  @impl true
+  def handle_call({:mode, mode}, _from, %{held: held} = state) do
+    GenServer.reply(held, mode)
+
+    {:reply, :ok, %{state | mode: mode, held: nil}}
+  end
 
   # Runs linked to the proxy; each forwarded connection's pump is linked to it, so
   # stopping the proxy closes every connection.
   defp accept(proxy, listen, upstream) do
     {:ok, client} = :gen_tcp.accept(listen)
 
-    case GenServer.call(proxy, :mode) do
+    case GenServer.call(proxy, :mode, :infinity) do
       :refuse ->
         :gen_tcp.close(client)
 
       :forward ->
-        pump = spawn_link(fn -> pump(client, upstream) end)
-        _ = :gen_tcp.controlling_process(client, pump)
-        send(pump, :go)
+        start_pump(client, upstream, 0)
+
+      {:delay, delay} ->
+        start_pump(client, upstream, delay)
     end
 
     accept(proxy, listen, upstream)
   end
 
-  defp pump(client, {host, port}) do
+  defp start_pump(client, upstream, delay) do
+    pump = spawn_link(fn -> pump(client, upstream, delay) end)
+    _ = :gen_tcp.controlling_process(client, pump)
+    send(pump, :go)
+  end
+
+  defp pump(client, {host, port}, delay) do
     receive do
       :go -> :ok
     end
+
+    Process.sleep(delay)
 
     case :gen_tcp.connect(to_charlist(host), port, [:binary, active: true]) do
       {:ok, server} ->

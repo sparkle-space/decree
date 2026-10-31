@@ -1295,12 +1295,19 @@ defmodule Decree.Store do
   From then on another instance may take the lock and deliver the same events, so
   a subscriber treats this as the end of its ownership: work it still holds for
   events it has not acknowledged belongs to whichever instance takes the lock, and
-  acknowledgements it sends are ignored. The subscription retries the lock every
+  acknowledgements it sends are ignored. The subscription tries the lock again after
   `subscription_retry_interval` and, on taking it, sends `{:subscribed,
   subscription}` again and resumes from the last acknowledged event, so events
   sent but not acknowledged before the loss are sent again. A subscriber that
   connects while the subscription is waiting for its lock receives `{:subscribed,
   subscription}` only once the lock is taken.
+
+  A subscription that finds the lock taken by another instance tries again after the
+  full `subscription_retry_interval`, without logging, so idle standby instances do
+  not poll. Any other failed attempt to subscribe, such as a lock connection that is
+  not up yet, is retried from about a second, doubling up to that interval; a
+  warning names the reason once per run of failures, and a successful attempt resets
+  the wait.
 
   ## Example
 

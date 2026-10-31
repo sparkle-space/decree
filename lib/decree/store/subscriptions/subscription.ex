@@ -18,7 +18,9 @@ defmodule Decree.Store.Subscriptions.Subscription do
     :stream_uuid,
     :subscription_name,
     :subscription,
-    :retry_interval
+    # The pending `:subscribe_to_stream` timer of a parked subscription, as `{ref,
+    # due_at}` with `due_at` in monotonic milliseconds, or `nil`. There is at most one.
+    :subscribe_timer
   ]
 
   def start_link(opts) do
@@ -27,13 +29,11 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
     stream_uuid = Keyword.fetch!(subscription_opts, :stream_uuid)
     subscription_name = Keyword.fetch!(subscription_opts, :subscription_name)
-    retry_interval = Keyword.fetch!(subscription_opts, :retry_interval)
 
     state = %Subscription{
       stream_uuid: stream_uuid,
       subscription_name: subscription_name,
-      subscription: SubscriptionFsm.new(stream_uuid, subscription_name, subscription_opts),
-      retry_interval: retry_interval
+      subscription: SubscriptionFsm.new(stream_uuid, subscription_name, subscription_opts)
     }
 
     GenServer.start_link(__MODULE__, state, start_opts)
@@ -104,9 +104,17 @@ defmodule Decree.Store.Subscriptions.Subscription do
     {:ok, state}
   end
 
-  @impl GenServer
+  # The pending timer is cleared before the attempt, so a failed attempt arms the next
+  # one. This message is usually that timer's, and cancelling it does nothing; one left
+  # in the mailbox by a timer replaced since is one extra attempt, and the timer that
+  # replaced it is cancelled so that one stays pending. In any state but `:initial` and
+  # `:disconnected`, where a cancelled timer's message can also arrive, the FSM ignores
+  # the attempt.
+  @impl true
   def handle_info(:subscribe_to_stream, %Subscription{} = state) do
     Logger.debug(describe(state) <> " subscribe to stream")
+
+    state = cancel_subscribe_timer(state)
 
     %Subscription{subscription: subscription} = state
 
@@ -297,21 +305,37 @@ defmodule Decree.Store.Subscriptions.Subscription do
     state
   end
 
+  # A subscription no longer parked cancels its pending timer: left to run, it would
+  # shorten the full wait after a lock lost before it fires.
   defp apply_subscription_to_state(%SubscriptionFsm{} = subscription, %Subscription{} = state) do
+    %SubscriptionFsm{state: fsm} = subscription
+
+    state = if fsm in [:initial, :disconnected], do: state, else: cancel_subscribe_timer(state)
+
     handle_subscription_state(%Subscription{state | subscription: subscription})
   end
 
-  # Attempt to subscribe to an initial or disconnected subscription after a
-  # retry interval.
+  # Attempt to subscribe to an initial or disconnected subscription after the wait the
+  # FSM gives. Every pass through a parked state comes here (a subscriber connecting,
+  # an ack, events), so a timer is armed only when none is pending or when it is due
+  # sooner.
   defp handle_subscription_state(
-         %Subscription{subscription: %SubscriptionFsm{state: fsm}} = state
+         %Subscription{subscription: %SubscriptionFsm{state: fsm, data: data}} = state
        )
        when fsm in [:initial, :disconnected] do
-    %Subscription{retry_interval: retry_interval} = state
+    wait = SubscriptionFsm.resubscribe_wait(data)
+    due_at = System.monotonic_time(:millisecond) + wait
 
-    _ref = Process.send_after(self(), :subscribe_to_stream, retry_interval)
+    case state do
+      %Subscription{subscribe_timer: {_ref, pending_due_at}} when pending_due_at <= due_at ->
+        state
 
-    state
+      %Subscription{} ->
+        state = cancel_subscribe_timer(state)
+        ref = Process.send_after(self(), :subscribe_to_stream, wait)
+
+        %Subscription{state | subscribe_timer: {ref, due_at}}
+    end
   end
 
   defp handle_subscription_state(
@@ -347,6 +371,14 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
   # No-op for all other subscription states.
   defp handle_subscription_state(%Subscription{} = state), do: state
+
+  defp cancel_subscribe_timer(%Subscription{subscribe_timer: nil} = state), do: state
+
+  defp cancel_subscribe_timer(%Subscription{subscribe_timer: {ref, _due_at}} = state) do
+    _result = Process.cancel_timer(ref)
+
+    %Subscription{state | subscribe_timer: nil}
+  end
 
   # Prevent duplicate subscriptions from same process.
   defp ensure_not_already_subscribed(subscribers, pid) do
