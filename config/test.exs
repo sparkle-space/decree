@@ -15,15 +15,19 @@ db = fn name -> name <> System.get_env("MIX_TEST_PARTITION", "") end
 config :logger, level: :debug
 config :logger, :default_handler, false
 
+# `assert_receive_timeout` here and `assert_receive_event_timeout` below each bound a
+# wait for a positive signal: the wait ends on the message, so the bound is spent
+# only when a test is failing, and 2s or 1s is shorter than a stall seen on a loaded
+# host. The refute timeouts bound a timed absence, spent on every green run.
 config :ex_unit,
-  assert_receive_timeout: 2_000,
+  assert_receive_timeout: 5_000,
   refute_receive_timeout: 100,
   capture_log: true,
   exclude: [:distributed, :ignore, :manual, :migration]
 
 # Framework test helpers (`Decree.Assertions.EventAssertions`).
 config :decree,
-  assert_receive_event_timeout: 1_000,
+  assert_receive_event_timeout: 5_000,
   refute_receive_event_timeout: 100,
   dispatch_consistency_timeout: 100
 
