@@ -1,0 +1,20 @@
+<%
+  # Elixir template variables:
+  #   schema - string
+
+  # Bind variables, the parameters of `append_events_v1` (see
+  # `Decree.Store.Sql.Init`):
+  #   1 - schema - text
+  #   2 - stream_id - bigint, NULL creates the stream
+  #   3 - stream_uuid - text
+  #   4 - expected_version - bigint, NULL means any version
+  #   5 - stream_created_at - timestamptz, NULL means now()
+  #   6 - event_ids - uuid[]
+  #   7 - event_types - text[]
+  #   8 - causation_ids - <causation id type>[]
+  #   9 - correlation_ids - <correlation id type>[]
+  #  10 - data - <serialized event data format (bytea, jsonb)>[]
+  #  11 - metadata - <serialized event data format (bytea, jsonb)>[]
+  #  12 - created_at - timestamptz[]
+%>
+SELECT "<%= schema %>".append_events_v1($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
