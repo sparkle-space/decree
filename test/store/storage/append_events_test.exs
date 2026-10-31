@@ -216,21 +216,22 @@ defmodule Decree.Store.Storage.AppendEventsTest do
   test "append event to schema which does not exist", %{conn: conn} do
     recorded_events = EventFactory.create_recorded_events(1, UUID.uuid4())
 
-    assert {:error, %AppendError{class: :rejected, code: :undefined_table}} =
+    assert {:error, %AppendError{class: :rejected, code: :invalid_schema_name}} =
              Appender.append(conn, 1, recorded_events, schema: "doesnotexist")
   end
 
   test "append single event with a db connection error", context do
     %{conn: conn, schema: schema, postgrex_config: postgrex_config} = context
 
-    recorded_events = EventFactory.create_recorded_events(100, UUID.uuid4())
+    {:ok, stream_uuid, stream_id} = create_stream(context)
+    recorded_events = EventFactory.create_recorded_events(100, stream_uuid)
 
     # Hold an ACCESS EXCLUSIVE lock on the events table from a second connection, in
-    # a transaction that stays open until released. The append's single statement
-    # inserts into `events`, so it blocks on the lock and the client timeout always
-    # fires before the query can finish. A statement that completed (for example
-    # with a foreign key `:not_found`) would mean no timeout happened, so only the
-    # two timeout outcomes are accepted.
+    # a transaction that stays open until released. The append's function inserts
+    # into `events` once it holds the stream's row, so it blocks on the lock and the
+    # client timeout always fires before the query can finish. A statement that
+    # completed (for example with a `:not_found`) would mean no timeout happened, so
+    # only the two timeout outcomes are accepted.
     test_pid = self()
 
     {:ok, lock_conn} = Postgrex.start_link(postgrex_config ++ [pool_size: 1])
@@ -260,7 +261,7 @@ defmodule Decree.Store.Storage.AppendEventsTest do
     # `:unavailable` `AppendError` rather than raising, over one of two errors:
     # - a `DBConnection.ConnectionError` when the client gives up first;
     # - `:query_canceled` when Postgres cancels the query already received.
-    result = Appender.append(conn, 1, recorded_events, schema: schema, timeout: 100)
+    result = Appender.append(conn, stream_id, recorded_events, schema: schema, timeout: 100)
 
     send(holder.pid, :release_lock)
     assert {:ok, :ok} = Task.await(holder, 5_000)

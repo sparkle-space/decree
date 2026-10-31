@@ -55,6 +55,13 @@ defmodule Decree.Store.AppendError do
   fresh one on every call, so a retry with `:any_version` can write the events
   twice.
 
+  A `:retryable` failure rolled back. `append_to_stream/4` retries
+  `deadlock_detected` (40P01) once itself, from its stream-info read, and answers
+  the `%AppendError{}` if it comes back. It does not retry inside a caller's
+  transaction (`:conn` given a transaction): that transaction is aborted, and what
+  happens next is the caller's decision. Every other `:retryable` failure is the
+  caller's to retry.
+
   ## Aggregates
 
   An aggregate whose append answers an `:unavailable` error stops (exit reason

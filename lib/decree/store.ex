@@ -197,6 +197,10 @@ defmodule Decree.Store do
         :ok = Decree.Store.append_to_stream(stream_uuid, expected_version, events, conn: conn)
       end)
 
+  Two appends to different streams in one such transaction take the second
+  stream's row after `$all`, which breaks the lock order every other append
+  follows, so that caller can see a `deadlock_detected` `Decree.Store.AppendError`.
+
   """
 
   @type t :: module

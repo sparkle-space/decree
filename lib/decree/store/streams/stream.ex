@@ -1,7 +1,7 @@
 defmodule Decree.Store.Streams.Stream do
   @moduledoc false
 
-  alias Decree.Store.{EventData, RecordedEvent, Storage, UUID}
+  alias Decree.Store.{AppendError, EventData, RecordedEvent, Storage, UUID}
   alias Decree.Store.Streams.StreamInfo
 
   def append_to_stream(conn, stream_uuid, expected_version, events, opts)
@@ -345,6 +345,37 @@ defmodule Decree.Store.Streams.Stream do
       append_to_stream(conn, stream_uuid, expected_version, events, opts)
     else
       {:error, {:already_retried_once, :duplicate_stream_uuid}}
+    end
+  end
+
+  # A deadlock victim's transaction rolled back, so nothing was written and the append
+  # can run again, from its stream-info read. Not inside a caller's transaction (a
+  # `%DBConnection{}` as `:conn`): that transaction is aborted and the caller decides.
+  # The path for 1,000 or more events retries around its own whole transaction.
+  defp maybe_retry_once(
+         {:error, %AppendError{code: :deadlock_detected}} = error,
+         %DBConnection{},
+         _stream_uuid,
+         _expected_version,
+         _events,
+         _opts
+       ),
+       do: error
+
+  defp maybe_retry_once(
+         {:error, %AppendError{code: :deadlock_detected}} = error,
+         conn,
+         stream_uuid,
+         expected_version,
+         events,
+         opts
+       ) do
+    if Keyword.has_key?(opts, :retried_deadlock_once) do
+      error
+    else
+      opts = Keyword.put(opts, :retried_deadlock_once, true)
+
+      append_to_stream(conn, stream_uuid, expected_version, events, opts)
     end
   end
 
