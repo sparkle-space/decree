@@ -19,8 +19,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     :partition_by,
     :query_timeout,
     :lock_ref,
-    # The cap of the backoff before a catch-up read that returned `{:error, reason}`
-    # is retried, and the token of the pending retry timer (see `SubscriptionFsm`).
+    # The full wait before a resubscribe, and the cap of the backoff after a failed
+    # subscribe attempt or a catch-up read that returned `{:error, reason}`; and the
+    # token of the pending catch-up retry timer (see `SubscriptionFsm`).
     :retry_interval,
     :catch_up_retry_token,
     correlation_id_type: "uuid",
@@ -36,6 +37,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     checkpoints_pending: 0,
     # Consecutive failed catch-up reads, reset by the next successful read.
     catch_up_failures: 0,
+    # Consecutive failed subscribe attempts other than `:lock_already_taken`, reset by
+    # the next successful attempt or `:lock_already_taken`.
+    subscribe_failures: 0,
     subscribers: %{},
     partitions: %{},
     acknowledged_event_numbers: MapSet.new(),

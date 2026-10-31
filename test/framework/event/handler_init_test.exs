@@ -7,6 +7,12 @@ defmodule Decree.Event.HandlerInitTest do
   alias Decree.Event.{EchoHandler, Handler, InitHandler, ReplyEvent, RuntimeConfigHandler}
   alias Decree.EventStore.Adapters.Mock, as: MockEventStore
   alias Decree.Helpers.{EventFactory, Wait}
+  alias Decree.Registration
+  alias Decree.Store.Subscriptions.Subscription, as: StoreSubscription
+
+  # The bound of a wait for a replacement to settle: a restart that finds the old
+  # subscription still running is refused and backs off for a second or more.
+  @settle_timeout 15_000
 
   describe "event handler `init/1` callback" do
     setup do
@@ -38,10 +44,32 @@ defmodule Decree.Event.HandlerInitTest do
     test "should be called on restart if the process crashes" do
       handler = start_supervised!({RuntimeConfigHandler, tenant: :tenant1, reply_to: self()})
 
+      assert_receive {:init, :tenant1}
+
+      subscription = Wait.until(@settle_timeout, fn -> assert_subscribed(handler) end)
+
+      handler_ref = Process.monitor(handler)
+      subscription_ref = Process.monitor(subscription)
+
       Process.exit(handler, :kill)
 
+      assert_receive {:DOWN, ^handler_ref, :process, ^handler, :killed}
+      assert_receive {:DOWN, ^subscription_ref, :process, ^subscription, _reason}
+
       assert_receive {:init, :tenant1}
-      assert_receive {:init, :tenant1}
+
+      # The handler running now, on a subscription other than the one that stopped. A
+      # restart racing that shutdown gets `:noproc` and inits once more, so the inits up
+      # to here are not counted; from here nothing is left to restart.
+      Wait.until(@settle_timeout, fn ->
+        replacement = current_handler(:tenant1)
+
+        assert is_pid(replacement) and replacement != handler
+        assert assert_subscribed(replacement) != subscription
+      end)
+
+      flush_inits(:tenant1)
+
       refute_receive {:init, :tenant1}
     end
   end
@@ -100,6 +128,40 @@ defmodule Decree.Event.HandlerInitTest do
 
       # Handler should hibernate again
       Wait.until(fn -> assert_hibernated(handler) end)
+    end
+  end
+
+  defp current_handler(tenant) do
+    application = Module.concat([DefaultApp, tenant])
+    handler_name = "Decree.Event.RuntimeConfigHandler.#{tenant}"
+
+    Registration.whereis_name(application, Handler.name(application, handler_name))
+  end
+
+  # The subscription `handler` is subscribed to, seen from both ends: the handler had
+  # `{:subscribed, subscription}` from it, and it has the handler as a subscriber. A
+  # process that stops during the look fails the assertion, for `Wait.until/2` to retry.
+  defp assert_subscribed(handler) do
+    %Handler{subscription: %{subscription_pid: subscription}, started_subscription: started} =
+      :sys.get_state(handler)
+
+    assert is_pid(subscription) and started == subscription
+
+    %StoreSubscription{subscription: %{data: %{subscribers: subscribers}}} =
+      :sys.get_state(subscription)
+
+    assert Map.has_key?(subscribers, handler)
+
+    subscription
+  catch
+    :exit, reason -> flunk("stopped while read: " <> inspect(reason))
+  end
+
+  defp flush_inits(tenant) do
+    receive do
+      {:init, ^tenant} -> flush_inits(tenant)
+    after
+      0 -> :ok
     end
   end
 

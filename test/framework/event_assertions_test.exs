@@ -6,6 +6,12 @@ defmodule Decree.EventAssertionsTest do
   alias Decree.{DefaultApp, EventStore}
   alias Decree.Event.Mapper
 
+  # The cases expecting `refute_receive_event/4` to fail wait for the event, and its
+  # default window is a short timed absence: a subscription still catching up can
+  # deliver after it, and then nothing is raised. The helper's task finishes the
+  # moment the event arrives, so this generous bound costs nothing on green.
+  @event_expected_timeout 5_000
+
   defmodule Event do
     @derive Jason.Encoder
     defstruct [:data]
@@ -124,9 +130,12 @@ defmodule Decree.EventAssertionsTest do
       assert_raise ExUnit.AssertionError,
                    "\n\nUnexpectedly received event: #{inspect(%Event{data: 1})}\n",
                    fn ->
-                     refute_receive_event(DefaultApp, Event, fn ->
-                       append_events("stream1", [%Event{data: 1}])
-                     end)
+                     refute_receive_event(
+                       DefaultApp,
+                       Event,
+                       fn -> append_events("stream1", [%Event{data: 1}]) end,
+                       timeout: @event_expected_timeout
+                     )
                    end
     end
 
@@ -141,7 +150,8 @@ defmodule Decree.EventAssertionsTest do
                          append_events("stream1", [%AnotherEvent{data: 1}])
                          append_events("stream2", [%Event{data: 1}])
                        end,
-                       stream: "stream2"
+                       stream: "stream2",
+                       timeout: @event_expected_timeout
                      )
                    end
     end
@@ -160,7 +170,8 @@ defmodule Decree.EventAssertionsTest do
                            %Event{data: 3}
                          ])
                        end,
-                       predicate: fn %Event{data: data} -> data == 3 end
+                       predicate: fn %Event{data: data} -> data == 3 end,
+                       timeout: @event_expected_timeout
                      )
                    end
     end

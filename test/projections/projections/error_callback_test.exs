@@ -7,6 +7,7 @@ defmodule Decree.Projections.ErrorCallbackTest do
 
   alias Decree.EventStore.Adapters.Mock, as: MockEventStore
   alias Decree.EventStore.RecordedEvent
+  alias Decree.Helpers.Wait
 
   alias Decree.Projections.Events.{
     AnEvent,
@@ -141,8 +142,14 @@ defmodule Decree.Projections.ErrorCallbackTest do
       assert_receive %AnEvent{}
 
       assert Process.alive?(projector)
-      assert_projections(Projection, ["AnEvent"])
-      assert_seen_event("ErrorProjector", 3)
+
+      # The projector sends `%AnEvent{}` while it builds its Ecto.Multi, before the
+      # transaction runs: wait for the commit rather than race it. The wait ends on
+      # the first read that sees it, so its bound is spent only when a test is failing.
+      Wait.until(5_000, fn ->
+        assert_projections(Projection, ["AnEvent"])
+        assert_seen_event("ErrorProjector", 3)
+      end)
     end
   end
 

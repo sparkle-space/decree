@@ -1,7 +1,15 @@
 defmodule Decree.Store.AdvisoryLocksTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{AdvisoryLocks, Config, MonitoredServer, ProcessHelper, Wait}
+  alias Decree.Store.{
+    AdvisoryLocks,
+    Config,
+    MonitoredServer,
+    ProcessHelper,
+    SubscriptionHelpers,
+    Wait
+  }
+
   alias Decree.Store.AdvisoryLocks.Lock
   alias Decree.Store.Storage
 
@@ -13,11 +21,7 @@ defmodule Decree.Store.AdvisoryLocksTest do
 
     conn = start_supervised!({Postgrex, postgrex_config})
 
-    # A lock attempt does not wait for the lock pool's connection, so wait until
-    # the instance's lock pool is serving before the test takes locks.
-    Wait.until(5_000, fn ->
-      assert {:ok, _locks} = AdvisoryLocks.subscription_locks(@locks, [0])
-    end)
+    SubscriptionHelpers.wait_for_lock_pool()
 
     [conn: conn]
   end

@@ -59,8 +59,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionAcknowledgementTest do
     end
 
     test "should checkpoint after inactivity", %{conn: conn} do
+      # Each ack re-arms this timer, so 1_000 ms must outlast any stall between an ack and the next
+      # read or ack (25 ms did not on a loaded runner). The test pays it once, after the last ack.
       {:ok, subscription} =
-        subscribe_to_all_streams(buffer_size: 3, checkpoint_after: 25, checkpoint_threshold: 100)
+        subscribe_to_all_streams(
+          buffer_size: 3,
+          checkpoint_after: 1_000,
+          checkpoint_threshold: 100
+        )
 
       :ok = append_to_stream("stream1", 3)
       :ok = receive_and_ack(subscription, "stream1", [1, 2, 3])
@@ -78,7 +84,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionAcknowledgementTest do
       # Checkpoint is not immediately updated
       assert_checkpoint(conn, "subscription", 0)
 
-      Wait.until(fn ->
+      # A cap above `checkpoint_after`: it returns as soon as the checkpoint is written
+      Wait.until(5_000, fn ->
         # Checkpoint is updated after a delay
         assert_checkpoint(conn, "subscription", 6)
       end)

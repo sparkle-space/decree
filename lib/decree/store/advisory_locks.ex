@@ -62,13 +62,15 @@ defmodule Decree.Store.AdvisoryLocks do
   # That queue wait is not bounded by a query's `:timeout`, so the queries a caller
   # drives (a lock attempt, an ownership probe) pass `queue: false`: when the
   # pool's one connection is not free at once they fail at once ("connection not
-  # available and queuing is disabled"), the lock attempt is retried by its owner,
-  # and nothing queued behind them here (a disconnect, a pool or owner `:DOWN`)
-  # waits on the pool. The cleanup driven by the connection listener and by owner
-  # `:DOWN`s does queue: it runs during reconnects, when the connection is briefly
-  # unavailable, and failing it would end the session on every disconnect. The
-  # listener's cleanup tells the owners of the locks it handles before it queries,
-  # and an owner's `:DOWN` has no owner left to tell.
+  # available and queuing is disabled"), the owner of a lock attempt retries it from
+  # about a second, doubling up to its retry interval, and nothing queued behind them
+  # here (a disconnect, a pool or owner `:DOWN`) waits on the pool. A lock already
+  # taken is not a failure: its owner tries again after the full interval. The cleanup
+  # driven by the connection listener and by owner `:DOWN`s does queue: it runs during
+  # reconnects, when the connection is briefly unavailable, and failing it would end
+  # the session on every disconnect. The listener's cleanup tells the owners of the
+  # locks it handles before it queries, and an owner's `:DOWN` has no owner left to
+  # tell.
 
   use GenServer
 

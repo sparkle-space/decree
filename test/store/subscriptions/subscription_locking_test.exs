@@ -1,6 +1,8 @@
 defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
   use Decree.Store.StorageCase
 
+  import Decree.Store.SubscriptionHelpers, only: [attempt_subscribe: 1]
+
   alias Decree.Store.{Config, EventFactory, Storage, UUID}
   alias Decree.Store.Subscriptions.Subscription
 
@@ -283,9 +285,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionLockingTest do
     :exit, _reason -> :ok
   end
 
-  defp reconnect(subscription) do
-    Process.send(subscription, :subscribe_to_stream, [])
-  end
+  defp reconnect(subscription), do: attempt_subscribe(subscription)
 
   defp disconnect(subscription) do
     %Subscription{subscription: %{data: %{lock_ref: lock_ref}}} = :sys.get_state(subscription)
