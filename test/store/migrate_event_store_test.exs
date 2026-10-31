@@ -6,7 +6,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
   alias Decree.Store.Storage.Database
   alias Decree.Store.Streams.Stream
   alias Decree.Store.Tasks.{Create, Init, Migrate, Migrations}
-  alias Decree.Store.{Config, EventData, UUID}
+  alias Decree.Store.{Config, EventData, ReadResult, RecordedEvent, UUID}
 
   @moduletag :migration
 
@@ -221,6 +221,40 @@ defmodule Decree.Store.MigrateEventStoreTest do
 
       assert tag_rows(conn) == [[all_version + 2, "tenant:a", "typed"]]
       assert type_rows(conn) == [[all_version + 2, "typed"]]
+    end
+
+    # The coverage gap `Decree.Store` documents: `after` counts what no query can see.
+    test "is not matched by a query, while `after` counts it", %{conn: conn} do
+      all_version = all_version(conn)
+
+      opts = [
+        schema: "public",
+        serializer: PassThroughSerializer,
+        correlation_id_type: "text",
+        causation_id_type: "text",
+        count: 10
+      ]
+
+      append_v1(conn, UUID.uuid4())
+
+      assert {:ok, %ReadResult{events: [], after: after_v1}} =
+               Stream.read_query(conn, [[types: ["typed"]]], opts)
+
+      assert after_v1 == all_version + 1
+
+      event = %EventData{event_type: "typed", data: "{}", metadata: "{}", tags: ["tenant:a"]}
+
+      assert :ok =
+               Stream.append_to_stream(conn, UUID.uuid4(), 0, [event],
+                 schema: "public",
+                 serializer: PassThroughSerializer
+               )
+
+      assert {:ok, %ReadResult{events: [%RecordedEvent{event_number: position}], after: head}} =
+               Stream.read_query(conn, [[types: ["typed"]]], opts)
+
+      assert position == all_version + 2
+      assert head == position
     end
   end
 

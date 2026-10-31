@@ -3,9 +3,11 @@ defmodule Decree.Store.Storage.Reader do
 
   require Logger
 
-  alias Decree.Store.{RecordedEvent, UUID}
+  alias Decree.Store.{ReadResult, RecordedEvent, UUID}
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Reader
+
+  @all_stream_id 0
 
   @doc """
   Read events from a single stream forwards from the given starting version.
@@ -35,8 +37,45 @@ defmodule Decree.Store.Storage.Reader do
     end
   end
 
+  @doc """
+  Read the events matching a compiled query, with the `$all` head of the same snapshot.
+  """
+  def read_query(conn, query, direction, bound, count, command_tag, opts) do
+    {correlation_id_type, opts} = Keyword.pop(opts, :correlation_id_type, "uuid")
+    {causation_id_type, opts} = Keyword.pop(opts, :causation_id_type, "uuid")
+
+    case Reader.Query.read_query(conn, query, direction, bound, count, command_tag, opts) do
+      # The head comes from `$all`'s row, which every store has, so a read answers a row.
+      {:ok, []} -> failed_to_read(@all_stream_id, :stream_not_found)
+      {:ok, rows} -> {:ok, map_rows_to_read_result(rows, correlation_id_type, causation_id_type)}
+      {:error, reason} -> failed_to_read(@all_stream_id, reason)
+    end
+  end
+
   defp map_rows_to_event_data(rows, correlation_id_type, causation_id_type) do
     {:ok, Reader.EventAdapter.to_event_data(rows, correlation_id_type, causation_id_type)}
+  end
+
+  # Rows are `[head, read_at, items, command_row_found, stamp | event columns]`. An empty
+  # match is one row with `nil` in every column after `read_at`.
+  defp map_rows_to_read_result([[head, read_at | _row] | _rows] = rows, correlation, causation) do
+    matches = Enum.filter(rows, fn [_head, _read_at, items | _row] -> items end)
+
+    event_rows = Enum.map(matches, &Enum.drop(&1, 5))
+
+    %ReadResult{
+      events: Reader.EventAdapter.to_event_data(event_rows, correlation, causation),
+      after: head,
+      read_at: read_at,
+      command_stamps:
+        for [_head, _read_at, _items, true, stamp, position | _row] <- matches, into: %{} do
+          {position, stamp}
+        end,
+      matched_items:
+        for [_head, _read_at, items, _found, _stamp, position | _row] <- matches, into: %{} do
+          {position, Enum.sort(items)}
+        end
+    }
   end
 
   defp failed_to_read(stream_id, reason) do
@@ -136,6 +175,54 @@ defmodule Decree.Store.Storage.Reader do
 
       do_query(conn, query, [stream_id, start_version, count], opts)
     end
+
+    def read_query(conn, query, direction, bound, count, command_tag, opts) do
+      {schema, opts} = Keyword.pop(opts, :schema)
+
+      %Decree.Store.Query{
+        probe_items: probe_items,
+        probe_tags: probe_tags,
+        probe_types: probe_types,
+        rest_items: rest_items,
+        rest_tags: rest_tags
+      } = query
+
+      params = [
+        probe_items,
+        probe_tags,
+        probe_types,
+        rest_items,
+        rest_tags,
+        bound,
+        count,
+        command_tag
+      ]
+
+      do_query(conn, read_query_statement(schema, direction), params, opts)
+    end
+
+    def read_query_statement(schema, direction) do
+      {op, order} = bound_and_order(direction)
+
+      positions =
+        Statements.query_positions(
+          ~s("#{schema}".),
+          "$1::bigint[]",
+          "$2::text[]",
+          "$3::text[]",
+          "$4::bigint[]",
+          "$5::text[]",
+          "$6::bigint",
+          "$7::bigint",
+          op,
+          order
+        )
+
+      Statements.read_query(schema, positions, order)
+    end
+
+    defp bound_and_order(:forward), do: {">=", "ASC"}
+    defp bound_and_order(:backward), do: {"<=", "DESC"}
 
     defp do_query(conn, query, params, opts) do
       case Postgrex.query(conn, query, params, opts) do

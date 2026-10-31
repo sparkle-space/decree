@@ -1,0 +1,94 @@
+<%!--
+  The one text that says which `$all` positions a query matches. `Statements.query_positions`
+  renders it for two hosts: a plain statement (schema-qualified tables, `$n::type` expressions)
+  and a PL/pgSQL body (no prefix, its `search_path` is set, `p_*` names). Keep it free of
+  anything only one host can run.
+
+  One probe per row of the arrays, and one arm per probe shape: tag and type, tag only, type
+  only. Each arm's first columns are an index's, so a probe costs what its own hits cost.
+
+  The `stream_events` check sits before the limit on purpose: an orphan row of a hard-deleted
+  event must neither be returned nor use up the limit.
+
+  `OFFSET 0` keeps each check a per-row index probe: it stops the planner flattening the check
+  into a join or hashing the whole table, which a probe under the `$all` lock must never do.
+
+  The per-probe limit is sound. A position in the top N of the union is in the top N of every
+  probe that matches it, because a probe's positions are a subset of the union's. So cutting
+  each probe at N loses no position of the top N, and no probe of such a position either, which
+  is what keeps `matched_items` complete.
+--%>
+SELECT probe.item, hit.position
+FROM unnest(<%= items %>, <%= tags %>, <%= types %>) AS probe (item, tag, event_type)
+CROSS JOIN LATERAL (
+  (
+    SELECT t1.position
+    FROM <%= prefix %>event_tags t1
+    WHERE probe.tag IS NOT NULL AND probe.event_type IS NOT NULL
+      AND t1.tag = probe.tag COLLATE "C"
+      AND t1.event_type = probe.event_type COLLATE "C"
+      AND t1.position <%= op %> <%= bound %>
+      AND EXISTS (
+        SELECT 1
+        FROM <%= prefix %>stream_events se
+        WHERE se.stream_id = 0 AND se.stream_version = t1.position
+        OFFSET 0
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(<%= rest_items %>, <%= rest_tags %>) AS rest (item, tag)
+        WHERE rest.item = probe.item
+          AND NOT EXISTS (
+            SELECT 1
+            FROM <%= prefix %>event_tags t2
+            WHERE t2.tag = rest.tag COLLATE "C" AND t2.position = t1.position
+            OFFSET 0
+          )
+      )
+    ORDER BY t1.position <%= order %>
+    LIMIT <%= limit %>
+  )
+  UNION ALL
+  (
+    SELECT t1.position
+    FROM <%= prefix %>event_tags t1
+    WHERE probe.tag IS NOT NULL AND probe.event_type IS NULL
+      AND t1.tag = probe.tag COLLATE "C"
+      AND t1.position <%= op %> <%= bound %>
+      AND EXISTS (
+        SELECT 1
+        FROM <%= prefix %>stream_events se
+        WHERE se.stream_id = 0 AND se.stream_version = t1.position
+        OFFSET 0
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(<%= rest_items %>, <%= rest_tags %>) AS rest (item, tag)
+        WHERE rest.item = probe.item
+          AND NOT EXISTS (
+            SELECT 1
+            FROM <%= prefix %>event_tags t2
+            WHERE t2.tag = rest.tag COLLATE "C" AND t2.position = t1.position
+            OFFSET 0
+          )
+      )
+    ORDER BY t1.position <%= order %>
+    LIMIT <%= limit %>
+  )
+  UNION ALL
+  (
+    SELECT e1.position
+    FROM <%= prefix %>event_types e1
+    WHERE probe.tag IS NULL
+      AND e1.event_type = probe.event_type COLLATE "C"
+      AND e1.position <%= op %> <%= bound %>
+      AND EXISTS (
+        SELECT 1
+        FROM <%= prefix %>stream_events se
+        WHERE se.stream_id = 0 AND se.stream_version = e1.position
+        OFFSET 0
+      )
+    ORDER BY e1.position <%= order %>
+    LIMIT <%= limit %>
+  )
+) AS hit
