@@ -18,6 +18,9 @@ defmodule Decree.Store.EventData do
 
   alias Decree.Store.EventData
 
+  # The `event_tags_tag_length` CHECK's limit, in bytes.
+  @max_tag_bytes 512
+
   @type uuid :: String.t()
 
   @type t :: %EventData{
@@ -29,6 +32,11 @@ defmodule Decree.Store.EventData do
           metadata: term | nil,
           tags: [String.t()]
         }
+
+  @doc """
+  The most bytes a tag can have.
+  """
+  def max_tag_bytes, do: @max_tag_bytes
 
   def fetch(map, key) when is_map(map) do
     Map.fetch(map, key)

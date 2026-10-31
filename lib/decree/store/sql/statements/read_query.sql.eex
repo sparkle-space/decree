@@ -1,0 +1,61 @@
+<%!--
+  One statement, so one snapshot under READ COMMITTED: the rows, `head` and `read_at` agree.
+  It takes no lock and blocks no writer. It must stay one plain statement, never a function
+  or two calls. `$1` to `$5` are the query's arrays, `$6` the bound, `$7` the count and `$8`
+  the command tag.
+--%>
+WITH head AS MATERIALIZED (
+  SELECT stream_version AS position, clock_timestamp() AS read_at
+  FROM "<%= schema %>".streams
+  WHERE stream_id = 0
+),
+hits AS (
+  SELECT hit_rows.position, array_agg(hit_rows.item) AS items
+  FROM (
+<%= positions %>
+  ) AS hit_rows
+  GROUP BY hit_rows.position
+  ORDER BY hit_rows.position <%= order %>
+  LIMIT $7::bigint
+),
+matches AS (
+  SELECT
+    hits.position,
+    hits.items,
+    c.position IS NOT NULL AS command_row_found,
+    c.stamped_at,
+    e.event_id,
+    s.stream_uuid,
+    se.original_stream_version,
+    e.event_type,
+    e.correlation_id,
+    e.causation_id,
+    e.data,
+    e.metadata,
+    e.created_at
+  FROM hits
+  INNER JOIN "<%= schema %>".stream_events se ON se.stream_id = 0 AND se.stream_version = hits.position
+  INNER JOIN "<%= schema %>".streams s ON s.stream_id = se.original_stream_id
+  INNER JOIN "<%= schema %>".events e ON e.event_id = se.event_id
+  LEFT JOIN "<%= schema %>".event_tags c
+    ON c.tag = $8::text COLLATE "C" AND c.position = hits.position
+)
+SELECT
+  head.position,
+  head.read_at,
+  matches.items,
+  matches.command_row_found,
+  matches.stamped_at,
+  matches.position,
+  matches.event_id,
+  matches.stream_uuid,
+  matches.original_stream_version,
+  matches.event_type,
+  matches.correlation_id,
+  matches.causation_id,
+  matches.data,
+  matches.metadata,
+  matches.created_at
+FROM head
+LEFT JOIN matches ON true
+ORDER BY matches.position <%= order %>;

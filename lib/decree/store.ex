@@ -205,6 +205,44 @@ defmodule Decree.Store do
   or `SERIALIZABLE` transaction it answers a `Decree.Store.AppendError` with class
   `:rejected` and code `:invalid_transaction_state`.
 
+  ## Reading by query
+
+  `c:read_query/2` reads the events matching a `Decree.Store.Query` across every
+  stream, in one SQL statement, and answers a `Decree.Store.ReadResult`:
+
+      items = [[tags: ["order:1"]], [types: ["OrderPlaced"], tags: ["tenant:a"]]]
+
+      {:ok, %Decree.Store.ReadResult{events: events, after: head}} =
+        MyApp.EventStore.read_query(items)
+
+  One statement has one snapshot, so the events, `after` and `read_at` agree with each
+  other. The read takes no lock and blocks no writer.
+
+  `after` is the `$all` head at the read's snapshot, not the last match. Over a complete
+  read it says that no event up to `after` matches other than those returned, which
+  makes it safe as the position of a later condition. A read is partial, and its
+  `after` is not safe for that, when `count` cut it (it returned `count` events) or when
+  it ran with any `from` but the direction's default.
+
+  A position with no event is a permanent hole, never one still pending. The `$all` bump
+  and every row carrying a position commit together while holding `$all`, so one
+  snapshot never sees a position past one that later fills.
+
+  What a read sees is `$all`:
+
+    - A hard-deleted event is gone. Its tag and type rows are left behind and ignored,
+      so they use up no `count`, and `after` does not fall.
+    - A soft-deleted stream's events are still returned.
+    - A link is not seen. The original event is, once, with its original stream.
+
+  **The coverage gap.** A query matches rows of the `event_tags` and `event_types`
+  tables. An event from before store migration 1.5.0, or one an old pod appended through
+  `append_events_v1`, has no such rows, so a query silently misses it, and the read
+  cannot cheaply detect that: `after` still counts it. A store that starts empty after
+  1.5.0 has no such event; any other store needs its events backfilled into both tables
+  before a query's answer can be trusted to be complete. W-1 starts from an empty store,
+  and the plan's §5.6 fallback backfills.
+
   """
 
   @type t :: module
@@ -222,6 +260,17 @@ defmodule Decree.Store do
              :stream_uuid | :stream_id | :stream_version | :created_at | :deleted_at | :status}
           | {:sort_dir, :asc | :desc}
   @type pagination_options :: [pagination_option]
+  @type read_query_option ::
+          option
+          | {:from, integer()}
+          | {:direction, :forward | :backward}
+          | {:count, non_neg_integer()}
+          | {:command_tag, String.t()}
+  @type stream_query_option ::
+          option
+          | {:from, integer()}
+          | {:direction, :forward | :backward}
+          | {:read_batch_size, pos_integer()}
   @type transient_subscribe_option ::
           {:name, atom}
           | {:selector, (Decree.Store.RecordedEvent.t() -> any())}
@@ -409,6 +458,30 @@ defmodule Decree.Store do
 
       def stream_all_backward(start_version, opts),
         do: stream_backward(@all_stream, start_version, opts)
+
+      @accepted_overrides_read_query [:command_tag, :count, :direction, :from]
+      @accepted_overrides_stream_query [:direction, :from]
+
+      def read_query(items, opts \\ []) do
+        overrides = Keyword.take(opts, @accepted_overrides_read_query)
+        {conn, opts} = parse_opts(opts)
+
+        opts = opts |> Keyword.merge(overrides) |> Keyword.put_new(:count, @default_count)
+
+        Stream.read_query(conn, items, opts)
+      end
+
+      def stream_query(items, opts \\ []) do
+        overrides = Keyword.take(opts, @accepted_overrides_stream_query)
+        {conn, opts} = parse_opts(opts)
+
+        opts =
+          opts
+          |> Keyword.merge(overrides)
+          |> Keyword.put_new(:read_batch_size, @default_batch_size)
+
+        Stream.stream_query(conn, items, opts)
+      end
 
       def delete_stream(stream_uuid, expected_version, type \\ :soft, opts \\ [])
 
@@ -971,6 +1044,70 @@ defmodule Decree.Store do
               start_version :: non_neg_integer,
               opts :: [options | {:read_batch_size, non_neg_integer}]
             ) :: Enumerable.t() | {:error, :stream_deleted} | {:error, reason :: term}
+
+  @doc """
+  Reads the events matching a query across all streams, in one SQL statement, and
+  answers them with the `$all` head of the same snapshot. See "Reading by query" in the
+  module documentation for what `after` promises and for what a query cannot see.
+
+    - `items` the query: a list of items as described in `Decree.Store.Query`.
+
+    - `opts` an optional keyword list containing:
+      - `from` the `$all` position to start at, inclusive. Forward it defaults to 0.
+        Backward it defaults to `-1`, meaning the head.
+      - `direction` `:forward` (the default) or `:backward`.
+      - `count` the maximum number of events to read, counted after an event matching
+        two items has become one. Defaults to returning 1,000 events.
+      - `command_tag` a tag named by one of the query's items. The result's
+        `command_stamps` then has an entry for each match carrying it.
+      - `name` the name of the event store if provided to `start_link/1`.
+      - `conn` an existing Postgrex connection or transaction to read through.
+      - `timeout` an optional timeout for the database query, in milliseconds.
+        Defaults to 15,000ms.
+
+  Returns `{:ok, %Decree.Store.ReadResult{}}`. A query `Decree.Store.Query.compile/1`
+  refuses answers its error, and a `command_tag` no item names answers
+  `{:error, :invalid_query}`: neither sends anything to the database. An invalid
+  `direction`, `from` or `count` raises an `ArgumentError`.
+  """
+  @callback read_query(items :: [Decree.Store.Query.item()], opts :: [read_query_option]) ::
+              {:ok, Decree.Store.ReadResult.t()}
+              | {:error, :invalid_query}
+              | {:error, :tag_too_long}
+              | {:error, reason :: term}
+
+  @doc """
+  Streams the events matching a query across all streams, in order of their `$all`
+  position, reading a page at a time.
+
+  Each page is its own read, and so its own snapshot. There is no result envelope,
+  because no one head, read time or complete answer belongs to the whole stream. Use it
+  to walk events, not to decide anything: that is what `c:read_query/2` is for.
+
+    - `items` the query: a list of items as described in `Decree.Store.Query`.
+
+    - `opts` an optional keyword list containing:
+      - `from` the `$all` position to start at, inclusive. Forward it defaults to 0.
+        Backward it defaults to `-1`, meaning the head.
+      - `direction` `:forward` (the default) or `:backward`.
+      - `name` the name of the event store if provided to `start_link/1`.
+      - `conn` an existing Postgrex connection or transaction to read through.
+      - `timeout` an optional timeout for the database query, in milliseconds.
+        Defaults to 15,000ms.
+      - `read_batch_size` optionally, the number of events to read at a time from
+        storage. Defaults to reading 1,000 events per batch.
+
+  `count` and `command_tag` do not apply to a stream and are ignored.
+
+  Returns an `Enumerable` of `Decree.Store.RecordedEvent`, or the error
+  `Decree.Store.Query.compile/1` answers. An invalid `direction`, `from` or
+  `read_batch_size` raises an `ArgumentError`. A page that fails to read raises while
+  the stream is being consumed.
+  """
+  @callback stream_query(items :: [Decree.Store.Query.item()], opts :: [stream_query_option]) ::
+              Enumerable.t(Decree.Store.RecordedEvent.t())
+              | {:error, :invalid_query}
+              | {:error, :tag_too_long}
 
   @doc """
   Delete an existing stream.

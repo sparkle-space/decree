@@ -43,6 +43,12 @@ defmodule Decree.Store.Storage do
     as: :read_backward
 
   @doc """
+  Read the events matching a compiled query, in one statement.
+  """
+  defdelegate read_query(conn, query, direction, bound, count, command_tag, opts),
+    to: Reader
+
+  @doc """
   Get a `StreamInfo` struct for the stream identified by the `stream_uuid`.
   """
   defdelegate stream_info(conn, stream_uuid, opts), to: Stream

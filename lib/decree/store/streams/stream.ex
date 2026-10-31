@@ -1,11 +1,12 @@
 defmodule Decree.Store.Streams.Stream do
   @moduledoc false
 
-  alias Decree.Store.{AppendError, EventData, RecordedEvent, Storage, UUID}
+  alias Decree.Store.{AppendError, EventData, Query, ReadResult, RecordedEvent, Storage, UUID}
   alias Decree.Store.Streams.StreamInfo
 
-  # The `event_tags_tag_length` CHECK's limit, in bytes.
-  @max_tag_bytes 512
+  @max_bigint 9_223_372_036_854_775_807
+
+  defguardp is_bigint(value) when is_integer(value) and abs(value) <= @max_bigint
 
   def append_to_stream(conn, stream_uuid, expected_version, events, opts)
       when length(events) < 1000 do
@@ -89,6 +90,27 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  def read_query(conn, items, opts) do
+    {command_tag, opts} = Keyword.pop(opts, :command_tag)
+    {direction, bound, opts} = pop_direction_and_bound(opts)
+    {count, opts} = Keyword.pop(opts, :count)
+
+    count = validate_count(count)
+
+    with {:ok, query} <- Query.compile(items),
+         :ok <- validate_command_tag(query, command_tag) do
+      read_query_storage(conn, query, direction, bound, count, command_tag, opts)
+    end
+  end
+
+  def stream_query(conn, items, opts) do
+    {direction, bound, opts} = pop_direction_and_bound(opts)
+
+    with {:ok, query} <- Query.compile(items) do
+      stream_query_storage(conn, query, direction, bound, opts)
+    end
+  end
+
   def start_from(_conn, _stream_uuid, :origin, _opts), do: {:ok, 0}
 
   def start_from(conn, stream_uuid, :current, opts),
@@ -164,7 +186,7 @@ defmodule Decree.Store.Streams.Stream do
   # all, not even a BEGIN, and answers before `stream_info/4` can. A caller's transaction
   # stays alive: the table's CHECK, or a rollback here, would abort it.
   defp validate_tags(events) do
-    too_long? = fn tag -> byte_size(tag) > @max_tag_bytes end
+    too_long? = fn tag -> byte_size(tag) > EventData.max_tag_bytes() end
 
     if Enum.any?(events, fn event -> Enum.any?(event.tags, too_long?) end) do
       {:error, :tag_too_long}
@@ -317,6 +339,91 @@ defmodule Decree.Store.Streams.Stream do
       end,
       fn _next_version -> :ok end
     )
+  end
+
+  defp read_query_storage(conn, query, direction, bound, count, command_tag, opts) do
+    {serializer, opts} = Keyword.pop(opts, :serializer)
+
+    with {:ok, %ReadResult{events: events} = result} <-
+           Storage.read_query(conn, query, direction, bound, count, command_tag, opts) do
+      {:ok, %ReadResult{result | events: deserialize_recorded_events(events, serializer)}}
+    end
+  end
+
+  defp stream_query_storage(conn, query, direction, bound, opts) do
+    read_batch_size = validate_read_batch_size(Keyword.fetch!(opts, :read_batch_size))
+
+    Elixir.Stream.resource(
+      fn -> bound end,
+      fn
+        next_bound when direction == :backward and next_bound <= 0 ->
+          {:halt, next_bound}
+
+        next_bound ->
+          case read_query_storage(conn, query, direction, next_bound, read_batch_size, nil, opts) do
+            {:ok, %ReadResult{events: []}} -> {:halt, next_bound}
+            {:ok, %ReadResult{events: events}} -> {events, next_query_bound(direction, events)}
+          end
+      end,
+      fn _next_bound -> :ok end
+    )
+  end
+
+  defp next_query_bound(:forward, events), do: List.last(events).event_number + 1
+  defp next_query_bound(:backward, events), do: List.last(events).event_number - 1
+
+  defp pop_direction_and_bound(opts) do
+    {direction, opts} = Keyword.pop(opts, :direction, :forward)
+    direction = validate_direction(direction)
+
+    {from, opts} = Keyword.pop(opts, :from, default_from(direction))
+
+    {direction, query_bound(direction, from), opts}
+  end
+
+  defp default_from(:forward), do: 0
+  defp default_from(:backward), do: -1
+
+  # The head has no text of its own, as `OR $n = -1` would defeat the index.
+  defp query_bound(:backward, -1), do: @max_bigint
+  defp query_bound(_direction, from) when is_bigint(from), do: from
+
+  defp query_bound(_direction, invalid) do
+    raise ArgumentError, message: "expected `:from` to be an integer, got: " <> inspect(invalid)
+  end
+
+  defp validate_direction(direction) when direction in [:forward, :backward], do: direction
+
+  defp validate_direction(invalid) do
+    raise ArgumentError,
+      message: "expected `:direction` to be `:forward` or `:backward`, got: " <> inspect(invalid)
+  end
+
+  defp validate_count(count) when is_bigint(count) and count >= 0, do: count
+
+  defp validate_count(invalid) do
+    raise ArgumentError,
+      message: "expected `:count` to be a non-negative integer, got: " <> inspect(invalid)
+  end
+
+  # An empty page ends a stream, so a batch of nothing would end it at once.
+  defp validate_read_batch_size(size) when is_bigint(size) and size > 0, do: size
+
+  defp validate_read_batch_size(invalid) do
+    raise ArgumentError,
+      message: "expected `:read_batch_size` to be a positive integer, got: " <> inspect(invalid)
+  end
+
+  # A tag no item names reads as "no prior command" for every event, so a typo must not
+  # reach the database.
+  defp validate_command_tag(_query, nil), do: :ok
+
+  defp validate_command_tag(query, command_tag) do
+    if is_binary(command_tag) and Query.names_tag?(query, command_tag) do
+      :ok
+    else
+      {:error, :invalid_query}
+    end
   end
 
   defp deserialize_recorded_events(recorded_events, serializer),
