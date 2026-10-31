@@ -21,7 +21,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
   # held reads is the reported wait plus the duration of the next read (about the
   # query timeout).
 
-  import Decree.Store.SubscriptionHelpers, only: [start_subscriber: 0]
+  import Decree.Store.SubscriptionHelpers, only: [attempt_subscribe: 1, start_subscriber: 0]
 
   alias Decree.Store.{EventFactory, RecordedEvent, UUID, Wait}
   alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
@@ -306,7 +306,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
            } = fsm(subscription)
 
     # Resubscribe now, rather than after the retry interval.
-    send(subscription, :subscribe_to_stream)
+    attempt_subscribe(subscription)
 
     assert %{attempt: 1, retry_interval: 1_000} = assert_held_read(subscription, ref)
 

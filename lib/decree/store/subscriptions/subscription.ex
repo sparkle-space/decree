@@ -18,8 +18,9 @@ defmodule Decree.Store.Subscriptions.Subscription do
     :stream_uuid,
     :subscription_name,
     :subscription,
-    # The pending `:subscribe_to_stream` timer of a parked subscription, as `{ref,
-    # due_at}` with `due_at` in monotonic milliseconds, or `nil`. There is at most one.
+    # The pending subscribe timer of a parked subscription, as `{ref, due_at, token}`
+    # with `due_at` in monotonic milliseconds and `token` the one in its
+    # `{:subscribe_to_stream, token}` message, or `nil`. There is at most one.
     :subscribe_timer
   ]
 
@@ -104,14 +105,13 @@ defmodule Decree.Store.Subscriptions.Subscription do
     {:ok, state}
   end
 
-  # The pending timer is cleared before the attempt, so a failed attempt arms the next
-  # one. This message is usually that timer's, and cancelling it does nothing; one left
-  # in the mailbox by a timer replaced since is one extra attempt, and the timer that
-  # replaced it is cancelled so that one stays pending. In any state but `:initial` and
-  # `:disconnected`, where a cancelled timer's message can also arrive, the FSM ignores
-  # the attempt.
+  # Only the pending timer's message attempts. Its timer is cleared first, so a failed
+  # attempt arms the next one.
   @impl true
-  def handle_info(:subscribe_to_stream, %Subscription{} = state) do
+  def handle_info(
+        {:subscribe_to_stream, token},
+        %Subscription{subscribe_timer: {_ref, _due_at, token}} = state
+      ) do
     Logger.debug(describe(state) <> " subscribe to stream")
 
     state = cancel_subscribe_timer(state)
@@ -123,6 +123,14 @@ defmodule Decree.Store.Subscriptions.Subscription do
       |> SubscriptionFsm.subscribe()
       |> apply_subscription_to_state(state)
 
+    {:noreply, state}
+  end
+
+  # A timer that fired before it was cancelled or replaced leaves its message in the
+  # mailbox. It is ignored, so it cannot cancel the timer pending now and shorten that
+  # wait.
+  @impl GenServer
+  def handle_info({:subscribe_to_stream, _token}, %Subscription{} = state) do
     {:noreply, state}
   end
 
@@ -327,14 +335,16 @@ defmodule Decree.Store.Subscriptions.Subscription do
     due_at = System.monotonic_time(:millisecond) + wait
 
     case state do
-      %Subscription{subscribe_timer: {_ref, pending_due_at}} when pending_due_at <= due_at ->
+      %Subscription{subscribe_timer: {_ref, pending_due_at, _token}}
+      when pending_due_at <= due_at ->
         state
 
       %Subscription{} ->
         state = cancel_subscribe_timer(state)
-        ref = Process.send_after(self(), :subscribe_to_stream, wait)
+        token = make_ref()
+        ref = Process.send_after(self(), {:subscribe_to_stream, token}, wait)
 
-        %Subscription{state | subscribe_timer: {ref, due_at}}
+        %Subscription{state | subscribe_timer: {ref, due_at, token}}
     end
   end
 
@@ -374,7 +384,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
   defp cancel_subscribe_timer(%Subscription{subscribe_timer: nil} = state), do: state
 
-  defp cancel_subscribe_timer(%Subscription{subscribe_timer: {ref, _due_at}} = state) do
+  defp cancel_subscribe_timer(%Subscription{subscribe_timer: {ref, _due_at, _token}} = state) do
     _result = Process.cancel_timer(ref)
 
     %Subscription{state | subscribe_timer: nil}

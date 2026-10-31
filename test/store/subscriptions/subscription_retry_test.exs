@@ -12,12 +12,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
   # rather than won in a race. `subscribe_to_all_streams` returns after the first
   # attempt, which makes that the point to move on from.
   #
-  # Attempts are seen by tracing the `:subscribe_to_stream` messages the subscription
-  # receives, with their timestamps. `:sys.get_state/1` after one is the barrier that the
-  # attempt has run. A test that needs an attempt sooner than the wait in front of it
-  # sends the same message itself.
+  # Attempts are seen by tracing the `{:subscribe_to_stream, token}` messages the
+  # subscription receives, with their timestamps. `:sys.get_state/1` after one is the
+  # barrier that the attempt has run. A test that needs an attempt sooner than the wait in
+  # front of it sends the pending timer's message itself. The test of a message that must
+  # not attempt traces the attempt's call instead, since that message is received too.
   use Decree.Store.StorageCase
 
+  import Decree.Store.SubscriptionHelpers, only: [attempt_subscribe: 1]
   import ExUnit.CaptureLog
 
   alias Decree.Store.{AdvisoryLocks, MonitoredServer, RecordedEvent, TcpProxy, UUID, Wait}
@@ -96,7 +98,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
 
       # The first attempt was refused; this is a second. Its own timer can have fired as
       # well on a host that stalled for a second.
-      send(subscription, :subscribe_to_stream)
+      attempt_subscribe(subscription)
 
       assert %SubscriptionState{subscribe_failures: failures} = failed = data(subscription)
       assert failures >= 2
@@ -112,7 +114,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
 
       assert_receive {:subscription_lock_lost, ^subscription}, @soon
 
-      send(subscription, :subscribe_to_stream)
+      attempt_subscribe(subscription)
 
       assert %SubscriptionState{subscribe_failures: 1} = failed = data(subscription)
       assert SubscriptionFsm.resubscribe_wait(failed) == 1_000
@@ -140,7 +142,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
       trace(subscription)
 
       # The attempt that wait leads to, a minute sooner.
-      send(subscription, :subscribe_to_stream)
+      attempt_subscribe(subscription)
 
       assert_attempt(subscription)
       assert %SubscriptionState{subscribe_failures: 1} = data(subscription)
@@ -262,7 +264,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
       assert_attempt(standby)
 
       # A timer per pass would fire here, all at about the same time.
-      refute_receive {:trace_ts, ^standby, :receive, :subscribe_to_stream, _at},
+      refute_receive {:trace_ts, ^standby, :receive, {:subscribe_to_stream, _token}, _at},
                      @standby_interval - 1_000
     end
   end
@@ -319,6 +321,36 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
       send(standby, {AdvisoryLocks, :lock_released, lock_ref, :shutdown})
 
       assert to_ms(assert_attempt(standby) - lost_at) >= @pending_interval
+    end
+  end
+
+  describe "a retry message from a timer no longer pending" do
+    test "leaves the pending timer as it is and makes no attempt" do
+      {:ok, subscription} = subscribe(TestEventStore, UUID.uuid4(), @full_interval)
+
+      assert_receive {:subscribed, ^subscription}, @soon
+
+      %SubscriptionState{lock_ref: lock_ref} = data(subscription)
+
+      send(subscription, {AdvisoryLocks, :lock_released, lock_ref, :shutdown})
+
+      assert_receive {:subscription_lock_lost, ^subscription}, @soon
+
+      {ref, _due_at, token} = timer = subscribe_timer(subscription)
+
+      trace_attempts(subscription)
+
+      send(subscription, {:subscribe_to_stream, make_ref()})
+
+      assert subscribe_timer(subscription) == timer
+      assert is_integer(Process.read_timer(ref))
+      refute_attempted(subscription)
+
+      # The pending timer's message does attempt, so the trace above would have seen one.
+      send(subscription, {:subscribe_to_stream, token})
+
+      assert_receive {:trace, ^subscription, :call, {SubscriptionFsm, :subscribe, _args}}, @soon
+      assert_receive {:subscribed, ^subscription}, @soon
     end
   end
 
@@ -459,9 +491,28 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
   end
 
   defp assert_attempt(subscription) do
-    assert_receive {:trace_ts, ^subscription, :receive, :subscribe_to_stream, at}, @soon
+    assert_receive {:trace_ts, ^subscription, :receive, {:subscribe_to_stream, _token}, at},
+                   @soon
 
     at
+  end
+
+  defp trace_attempts(subscription) do
+    attempt = {SubscriptionFsm, :subscribe, 1}
+
+    :erlang.trace_pattern(attempt, true, [:global])
+    on_exit(fn -> :erlang.trace_pattern(attempt, false, [:global]) end)
+
+    :erlang.trace(subscription, true, [:call])
+  end
+
+  # `:erlang.trace_delivered/1` is the barrier that any call traced so far has arrived.
+  defp refute_attempted(subscription) do
+    delivered = :erlang.trace_delivered(subscription)
+
+    assert_receive {:trace_delivered, ^subscription, ^delivered}
+
+    refute_received {:trace, ^subscription, :call, {SubscriptionFsm, :subscribe, _args}}
   end
 
   defp to_ms(native), do: System.convert_time_unit(native, :native, :millisecond)

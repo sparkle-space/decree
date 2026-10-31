@@ -86,8 +86,8 @@ defmodule Decree.MixProject do
     ]
   end
 
-  # `test` creates and initialises every test event store (config/test.exs
-  # `event_stores:`) and the projections repo's database, then runs the four suites.
+  # `test` creates, initialises and migrates every test event store (config/test.exs
+  # `event_stores:`), creates the projections repo's database, then runs the four suites.
   defp aliases do
     [
       "decree.store.setup": ["decree.store.create", "decree.store.init"],

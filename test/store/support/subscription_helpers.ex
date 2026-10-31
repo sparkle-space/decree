@@ -22,6 +22,25 @@ defmodule Decree.Store.SubscriptionHelpers do
     {:ok, subscription}
   end
 
+  @doc """
+  Have a parked subscription attempt now, sooner than the wait of its pending timer, by
+  sending the message that timer will send.
+
+  A subscription with no timer pending is no longer parked: on a host that stalled past
+  the wait, its attempt ran and took the lock before this looked.
+  """
+  def attempt_subscribe(subscription) do
+    case :sys.get_state(subscription) do
+      %Subscription{subscribe_timer: {_ref, _due_at, token}} ->
+        send(subscription, {:subscribe_to_stream, token})
+
+        :ok
+
+      %Subscription{subscribe_timer: nil} ->
+        :ok
+    end
+  end
+
   def start_subscriber do
     reply_to = self()
 
