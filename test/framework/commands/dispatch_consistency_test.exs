@@ -12,6 +12,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
 
   alias Decree.Commands.ConsistencyApp
   alias Decree.EventStore
+  alias Decree.Helpers.Wait
   alias Decree.UUID
   alias ConsistencyAggregateRoot.ConsistencyCommand
   alias ConsistencyAggregateRoot.NoOpCommand
@@ -120,11 +121,31 @@ defmodule Decree.Commands.DispatchConsistencyTest do
     start_supervised!(StronglyConsistentEventHandler, shutdown: :brutal_kill)
     start_supervised!(EventuallyConsistentEventHandler, shutdown: :brutal_kill)
 
-    :ok
+    await_subscribed(["StronglyConsistentEventHandler", "EventuallyConsistentEventHandler"])
   end
 
   def start_optional_handler(_context) do
     start_supervised!(OptionalStronglyConsistentEventHandler)
+
+    await_subscribed(["OptionalStronglyConsistentEventHandler"])
+  end
+
+  # A handler subscribes on its own, after it starts, and a subscription whose first
+  # attempt finds the store's lock connection not up yet retries a second later. The
+  # dispatches here wait 100ms, so a test dispatches only once its handlers' subscriptions
+  # hold their locks; an event appended from then on reaches them.
+  defp await_subscribed(subscription_names) do
+    event_store = Module.concat([ConsistencyApp, "FrameworkEventStore"])
+
+    Wait.until(15_000, fn ->
+      assert {subscriptions, 0} =
+               Decree.FrameworkEventStore.local_subscriptions(name: event_store)
+
+      subscribed =
+        for %{subscription_name: name, status: :subscribed} <- subscriptions, do: name
+
+      assert subscription_names -- subscribed == []
+    end)
 
     :ok
   end
