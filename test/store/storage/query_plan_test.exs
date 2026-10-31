@@ -68,7 +68,7 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     end
   end
 
-  # What the conditional append will do: the same text, in a PL/pgSQL body, with a limit of 1.
+  # What the conditional append does: the same text, in a PL/pgSQL body, with a limit of 1.
   describe "the fragment as a condition" do
     setup context do
       %{postgrex_config: postgrex_config} = context
@@ -380,7 +380,7 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     )
   end
 
-  # Built like `append_events_v2`: no schema in its text, and the `search_path` set on entry.
+  # Built like `append_events_v3`: no schema in its text, and the `search_path` set on entry.
   defp condition_function do
     """
     CREATE FUNCTION pg_temp.conflicts(

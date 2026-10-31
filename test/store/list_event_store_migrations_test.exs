@@ -30,6 +30,7 @@ defmodule Decree.Store.ListEventStoreMigrationsTest do
         1.3.2     \tpending
         1.4.0     \tpending
         1.5.0     \tpending
+        1.6.0     \tpending
 
       """
 
