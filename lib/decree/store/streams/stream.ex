@@ -209,16 +209,21 @@ defmodule Decree.Store.Streams.Stream do
 
   # Runs where `validate_tags/1` does, for the same reason: a refusal sends no statement.
   # `opts` come back with the compiled condition, and without one a plain append's are
-  # untouched. `Keyword.fetch/2` because `condition: nil` is a refused condition, not a
-  # plain append.
+  # untouched. `Keyword.get_values/2` because `condition: nil` is a refused condition, not
+  # a plain append, and because a repeated option must not leave one condition unchecked.
   defp compile_condition(stream_uuid, opts) do
-    with {:ok, condition} <- Keyword.fetch(opts, :condition),
-         {:ok, %AppendCondition{} = compiled} <- AppendCondition.compile(condition),
-         :ok <- validate_declared(stream_uuid, compiled, opts) do
-      {:ok, Keyword.put(opts, :condition, compiled)}
-    else
-      :error -> {:ok, opts}
-      {:error, _reason} = error -> error
+    case Keyword.get_values(opts, :condition) do
+      [] ->
+        {:ok, opts}
+
+      [condition] ->
+        with {:ok, %AppendCondition{} = compiled} <- AppendCondition.compile(condition),
+             :ok <- validate_declared(stream_uuid, compiled, opts) do
+          {:ok, Keyword.put(opts, :condition, compiled)}
+        end
+
+      [_condition, _repeat | _repeats] ->
+        {:error, :invalid_condition}
     end
   end
 

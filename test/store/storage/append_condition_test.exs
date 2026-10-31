@@ -569,6 +569,39 @@ defmodule Decree.Store.Storage.AppendConditionTest do
       end
     end
 
+    test "for a repeated `:condition`, in either order, in both clauses" do
+      for conditions <- repeated_conditions(), count <- [1, 1_001] do
+        opts = [conn: @no_conn] ++ Enum.map(conditions, &{:condition, &1})
+
+        assert EventStore.append_to_stream("decision-x", 0, events(count, []), opts) ==
+                 {:error, :invalid_condition},
+               inspect({conditions, count})
+      end
+    end
+
+    test "for a repeated `:condition`, and a caller's transaction stays alive", context do
+      %{postgrex_config: postgrex_config} = context
+
+      :ok = EventStore.append_to_stream("source", 0, [event("typed", ["tag"])])
+
+      session = LockSession.start(postgrex_config)
+
+      LockSession.run(session, fn tx ->
+        for conditions <- repeated_conditions() do
+          opts = [conn: tx] ++ Enum.map(conditions, &{:condition, &1})
+
+          assert EventStore.append_to_stream("decision-x", 0, [event("typed", [])], opts) ==
+                   {:error, :invalid_condition},
+                 inspect(conditions)
+        end
+
+        assert %Postgrex.Result{rows: [[1]]} = Postgrex.query!(tx, "SELECT 1", [])
+      end)
+
+      assert {:ok, :ok} = LockSession.commit(session)
+      assert_only_the_source(context)
+    end
+
     test "for an undeclared target, in both clauses" do
       for count <- [1, 1_001] do
         assert EventStore.append_to_stream("stream", 0, events(count, []),
@@ -837,6 +870,14 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     EventStore.append_to_stream(stream_uuid, 0, [event("written", tags)],
       condition: [items: items, after: position]
     )
+  end
+
+  # With the one event of "source" at position 1, the first passes and the second fails.
+  defp repeated_conditions do
+    passing = [items: @tag_matcher, after: 1]
+    failing = [items: @tag_matcher, after: 0]
+
+    [[passing, failing], [failing, passing], [passing, passing]]
   end
 
   defp refusals do
