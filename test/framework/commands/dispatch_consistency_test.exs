@@ -63,8 +63,10 @@ defmodule Decree.Commands.DispatchConsistencyTest do
   describe "optional `:strong` consistency" do
     setup [:start_event_handlers, :start_optional_handler]
 
+    # The opt-in handler sleeps 300ms, inside the 1s timeout; the other strongly consistent
+    # handler sleeps 3s, past it, so waiting for that one would answer a timeout.
     test "should only wait for opt-in strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 100}
+      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 3_000}
       opts = [application: ConsistencyApp, consistency: [OptionalStronglyConsistentEventHandler]]
 
       assert :ok = ConsistencyApp.dispatch(command, opts)
