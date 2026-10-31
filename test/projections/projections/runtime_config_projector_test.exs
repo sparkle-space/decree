@@ -49,8 +49,9 @@ defmodule Decree.Projections.RuntimeConfigProjectorTest do
       assert_receive {:project, "AnEvent"}
 
       # The projector sends `{:project, _}` from inside its Ecto.Multi, before the
-      # transaction commits: wait for the commit rather than race it.
-      Wait.until(fn ->
+      # transaction commits: wait for the commit rather than race it. The wait ends on
+      # the first read that sees it, so its bound is spent only when a test is failing.
+      Wait.until(5_000, fn ->
         assert_projections(Projection, ["AnEvent"])
         assert last_seen_event("RuntimeProjector1") == 1
       end)

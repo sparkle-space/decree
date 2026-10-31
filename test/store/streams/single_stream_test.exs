@@ -55,9 +55,9 @@ defmodule Decree.Store.Streams.SingleStreamTest do
       assert created_at.utc_offset == utc_now.utc_offset
       assert created_at.std_offset == utc_now.std_offset
 
-      diff = DateTime.diff(utc_now, created_at, :millisecond)
-      assert 0 <= diff
-      assert diff < 60_000
+      # `created_at` comes from the database's clock and `utc_now` from the host's, so
+      # the stored event can look newer than the host's clock by the skew between them.
+      assert abs(DateTime.diff(utc_now, created_at, :millisecond)) < 60_000
     end
 
     test "for wrong expected version should error", %{

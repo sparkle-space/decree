@@ -39,7 +39,10 @@ defmodule Decree.Store.Storage.StreamPersistenceTest do
              stream_info
            )
 
-    assert DateTime.diff(DateTime.utc_now(), created_at, :millisecond) <= 20
+    # The row was stamped now, not with a fixed or old value. `created_at` comes from
+    # the database's clock and `utc_now/0` from the host's, so they differ by skew in
+    # either direction as well as by a loaded host's latency: seconds, not milliseconds.
+    assert abs(DateTime.diff(DateTime.utc_now(), created_at, :millisecond)) <= 5_000
   end
 
   test "stream info for stream with one event", %{conn: conn, schema: schema} = context do
