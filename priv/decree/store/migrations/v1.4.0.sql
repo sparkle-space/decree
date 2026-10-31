@@ -24,6 +24,7 @@ DECLARE
   v_stream_id bigint := p_stream_id;
   v_stream_version bigint := 0;
   v_all_version bigint;
+  v_stale boolean := false;
 BEGIN
   IF current_setting('transaction_isolation') <> 'read committed' THEN
     RAISE EXCEPTION 'append_events_v1 needs READ COMMITTED, not %',
@@ -34,7 +35,7 @@ BEGIN
   PERFORM set_config('search_path', quote_ident(p_schema) || ', pg_temp', true);
 
   -- Both arms write the stream's row here, so its event_notification NOTIFY still
-  -- fires before the one for $all.
+  -- fires before the one for $all. A stale append writes no row and fires neither.
   IF p_stream_id IS NULL THEN
     INSERT INTO streams (stream_uuid, stream_version, created_at)
     VALUES (p_stream_uuid, v_count, COALESCE(p_stream_created_at, now()))
@@ -49,22 +50,15 @@ BEGIN
       RETURN NULL;
     END IF;
 
-    -- A concurrent writer used to surface as these two unique violations from the
-    -- indexes, stored events first. Raising them keeps the error's shape and the
-    -- abort of an enclosing transaction.
-    IF p_expected_version IS NOT NULL AND p_expected_version <> v_stream_version THEN
-      IF EXISTS (SELECT 1 FROM events WHERE event_id = ANY (p_event_ids)) THEN
-        RAISE EXCEPTION 'duplicate key value violates unique constraint "events_pkey"'
-          USING ERRCODE = 'unique_violation', CONSTRAINT = 'events_pkey';
-      END IF;
+    -- Decided here, on the locked row, and answered after the events insert, whose
+    -- unique index answers a duplicate event id first, stored or in flight.
+    v_stale := p_expected_version IS NOT NULL AND p_expected_version <> v_stream_version;
 
-      RAISE EXCEPTION 'duplicate key value violates unique constraint "ix_stream_events"'
-        USING ERRCODE = 'unique_violation', CONSTRAINT = 'ix_stream_events';
+    IF NOT v_stale THEN
+      UPDATE streams
+      SET stream_version = stream_version + v_count
+      WHERE stream_id = p_stream_id;
     END IF;
-
-    UPDATE streams
-    SET stream_version = stream_version + v_count
-    WHERE stream_id = p_stream_id;
   END IF;
 
   -- These rows carry no position, so they stay out of the $all lock.
@@ -80,6 +74,14 @@ BEGIN
     p_metadata,
     p_created_at
   );
+
+  -- A concurrent writer used to surface as this unique violation from the index.
+  -- Raising it keeps the error's shape and the abort of an enclosing transaction,
+  -- and rolls the rows above back. A stale append never takes $all.
+  IF v_stale THEN
+    RAISE EXCEPTION 'duplicate key value violates unique constraint "ix_stream_events"'
+      USING ERRCODE = 'unique_violation', CONSTRAINT = 'ix_stream_events';
+  END IF;
 
   UPDATE streams
   SET stream_version = stream_version + v_count

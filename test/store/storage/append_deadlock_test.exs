@@ -131,6 +131,49 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
     assert all_version(context) == 1
   end
 
+  test "an append through a `DBConnection.run/3` checkout is retried", context do
+    assert_run_checkout_retries(context, 3)
+
+    assert stream_versions(context) == [1, 2, 3, 4]
+    assert all_version(context) == 4
+  end
+
+  test "1,000 or more events through a `DBConnection.run/3` checkout are retried", context do
+    assert_run_checkout_retries(context, 1_000)
+
+    assert stream_versions(context) == Enum.to_list(1..1_001)
+    assert all_version(context) == 1_001
+  end
+
+  defp assert_run_checkout_retries(context, count) do
+    %{session_x: session_x, appender: appender} = context
+
+    events = EventFactory.create_events(count)
+
+    log =
+      capture_log(fn ->
+        append =
+          Task.async(fn ->
+            DBConnection.run(
+              appender,
+              fn checkout ->
+                assert %DBConnection{conn_mode: nil} = checkout
+
+                EventStore.append_to_stream("stream", :any_version, events, conn: checkout)
+              end,
+              timeout: 15_000
+            )
+          end)
+
+        force_deadlock(context, context.appender_backend)
+
+        assert {:ok, :ok} = LockSession.commit(session_x)
+        assert :ok = Task.await(append, 15_000)
+      end)
+
+    assert log =~ "deadlock_detected"
+  end
+
   # Returns once the victim has let go of the stream's row, which only its abort does.
   defp force_deadlock(context, victim_backend) do
     %{observer: observer, session_x: session_x, schema: schema, stream_id: stream_id} = context

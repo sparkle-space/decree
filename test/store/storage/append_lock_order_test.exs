@@ -1,7 +1,8 @@
 defmodule Decree.Store.Storage.AppendLockOrderTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{EventFactory, LockSession}
+  alias Decree.Store.{EventData, EventFactory, LockSession, UUID}
+  alias Decree.Store.Storage.Appender
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -108,7 +109,7 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
     test "second: blocked on the stream, it fails the foreign key and the append stands",
          context do
       %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-      %{second_appender: deleter, second_appender_backend: deleter_backend} = context
+      %{second_appender_backend: deleter_backend} = context
 
       stream_id = create_stream(context, "kept-stream")
       all_version = all_version(context)
@@ -119,13 +120,7 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
       append = async_append(appender, "kept-stream", :any_version, 2)
       LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
 
-      delete =
-        Task.async(fn ->
-          Stream.delete(deleter, "kept-stream", :any_version, :hard,
-            schema: context.schema,
-            enable_hard_deletes: true
-          )
-        end)
+      delete = async_hard_delete(context, "kept-stream")
 
       LockSession.wait_until_blocked(observer, deleter_backend, appender_backend)
 
@@ -141,6 +136,76 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
       assert stream_id(context, "kept-stream") == stream_id
       assert stream_versions(context, stream_id) == [1, 2, 3]
       assert all_version(context) == all_version + 2
+    end
+  end
+
+  # The order of a statement's data-modifying CTEs is not documented, so this pins the
+  # one measured: `hard_delete_stream` takes the stream's row before any event row. An
+  # append holding the row and re-sending a stored event id therefore waits on nothing
+  # the delete holds. If the order flips, that append and the delete form a cycle.
+  describe "a hard delete's own lock order" do
+    test "blocked on the stream's row, it holds no event row", context do
+      %{observer: observer, schema: schema, second_appender_backend: deleter_backend} = context
+
+      stream_id = create_stream(context, "stream")
+      [%{event_id: event_id}] = read_events(context, "stream")
+      event_id = UUID.string_to_binary!(event_id)
+
+      holder = LockSession.start(context.postgrex_config)
+      LockSession.lock_row(holder, schema, stream_id)
+
+      delete = async_hard_delete(context, "stream")
+      LockSession.wait_until_blocked(observer, deleter_backend, holder.backend)
+
+      assert %Postgrex.Result{num_rows: 1} =
+               Postgrex.query!(
+                 observer,
+                 ~s(SELECT 1 FROM "#{schema}".events WHERE event_id = $1 FOR UPDATE NOWAIT),
+                 [event_id]
+               )
+
+      assert %Postgrex.Result{num_rows: 2} =
+               Postgrex.query!(
+                 observer,
+                 ~s(SELECT 1 FROM "#{schema}".stream_events) <>
+                   " WHERE event_id = $1 FOR UPDATE NOWAIT",
+                 [event_id]
+               )
+
+      assert {:ok, :ok} = LockSession.commit(holder)
+      assert :ok = Task.await(delete)
+    end
+
+    test "blocked on an event row, it holds the stream's row", context do
+      %{observer: observer, schema: schema, second_appender_backend: deleter_backend} = context
+
+      stream_id = create_stream(context, "stream")
+      [%{event_id: event_id}] = read_events(context, "stream")
+      event_id = UUID.string_to_binary!(event_id)
+
+      holder = LockSession.start(context.postgrex_config)
+
+      LockSession.run(holder, fn tx ->
+        Postgrex.query!(
+          tx,
+          ~s(SELECT 1 FROM "#{schema}".events WHERE event_id = $1 FOR UPDATE),
+          [event_id]
+        )
+      end)
+
+      delete = async_hard_delete(context, "stream")
+      LockSession.wait_until_blocked(observer, deleter_backend, holder.backend)
+
+      assert {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}} =
+               Postgrex.query(
+                 observer,
+                 ~s(SELECT 1 FROM "#{schema}".streams WHERE stream_id = $1) <>
+                   " FOR NO KEY UPDATE NOWAIT",
+                 [stream_id]
+               )
+
+      assert {:ok, :ok} = LockSession.commit(holder)
+      assert :ok = Task.await(delete)
     end
   end
 
@@ -284,6 +349,102 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
 
       assert stream_versions(context, stream_id(context, "new-stream")) == [1, 2]
     end
+  end
+
+  describe "a stale append" do
+    test "never takes `$all`", context do
+      stream_id = create_stream(context, "stream")
+      all_version = all_version(context)
+
+      holder = LockSession.start(context.postgrex_config)
+      LockSession.lock_row(holder, context.schema, @all_stream)
+
+      # Version 3 on a stream at version 1. While `$all` is held only an append that
+      # leaves it alone can answer.
+      stale = EventFactory.create_recorded_events(1, "stream", 1, 3)
+
+      assert {:error, :wrong_expected_version} =
+               Appender.append(context.appender, stream_id, stale, schema: context.schema)
+
+      assert {:ok, :ok} = LockSession.commit(holder)
+      assert stream_versions(context, stream_id) == [1]
+      assert all_version(context) == all_version
+    end
+
+    test "waits on an event id in flight, which answers `:duplicate_event`", context do
+      %{stale_append: stale_append, writer: writer} = stage_in_flight_duplicate(context)
+
+      assert {:ok, :ok} = LockSession.commit(writer)
+      assert {:error, :duplicate_event} = Task.await(stale_append)
+
+      assert stream_versions(context, stream_id(context, "stream")) == [1, 2]
+      assert stream_versions(context, stream_id(context, "pinned-stream")) == [1]
+    end
+
+    test "answers `:wrong_expected_version` when that event id rolls back", context do
+      %{stale_append: stale_append, writer: writer, event_id: event_id} =
+        stage_in_flight_duplicate(context)
+
+      all_version = all_version(context)
+
+      assert {:error, :rolled_back} = LockSession.rollback(writer)
+      assert {:error, :wrong_expected_version} = Task.await(stale_append)
+
+      assert stream_versions(context, stream_id(context, "stream")) == [1, 2]
+      assert all_version(context) == all_version
+
+      assert [[0]] =
+               query!(
+                 context,
+                 ~s[SELECT count(*) FROM "#{context.schema}".events WHERE event_id = $1],
+                 [UUID.string_to_binary!(event_id)]
+               )
+    end
+  end
+
+  # A link moves the stream while an append waits on its row, and a second session
+  # holds the append's pinned event id uncommitted on another stream. The link commits,
+  # so the append is stale, and it is left waiting on the event id's unique index.
+  defp stage_in_flight_duplicate(context) do
+    %{observer: observer, appender: appender, appender_backend: appender_backend} = context
+
+    create_stream(context, "stream")
+    create_stream(context, "source")
+    linked = read_events(context, "source")
+    event_id = UUID.uuid4()
+    [event] = EventFactory.create_events(1)
+    event = %EventData{event | event_id: event_id}
+
+    linker = LockSession.start(context.postgrex_config)
+
+    LockSession.run(linker, fn tx ->
+      assert :ok = EventStore.link_to_stream("stream", :any_version, linked, conn: tx)
+    end)
+
+    stale_append =
+      Task.async(fn -> EventStore.append_to_stream("stream", 1, [event], conn: appender) end)
+
+    LockSession.wait_until_blocked(observer, appender_backend, linker.backend)
+
+    writer = LockSession.start(context.postgrex_config)
+
+    LockSession.run(writer, fn tx ->
+      assert :ok = EventStore.append_to_stream("pinned-stream", 0, [event], conn: tx)
+    end)
+
+    assert {:ok, :ok} = LockSession.commit(linker)
+    LockSession.wait_until_blocked(observer, appender_backend, writer.backend)
+
+    %{stale_append: stale_append, writer: writer, event_id: event_id}
+  end
+
+  defp async_hard_delete(context, stream_uuid) do
+    Task.async(fn ->
+      Stream.delete(context.second_appender, stream_uuid, :any_version, :hard,
+        schema: context.schema,
+        enable_hard_deletes: true
+      )
+    end)
   end
 
   defp async_append(conn, stream_uuid, expected_version, count) do

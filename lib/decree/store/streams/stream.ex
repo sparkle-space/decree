@@ -349,12 +349,13 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   # A deadlock victim's transaction rolled back, so nothing was written and the append
-  # can run again, from its stream-info read. Not inside a caller's transaction (a
-  # `%DBConnection{}` as `:conn`): that transaction is aborted and the caller decides.
+  # can run again, from its stream-info read. Not inside a caller's transaction, a
+  # `%DBConnection{}` that `conn_mode: :transaction` marks: that transaction is aborted
+  # and the caller decides. A `DBConnection.run/3` checkout is not one, and retries.
   # The path for 1,000 or more events retries around its own whole transaction.
   defp maybe_retry_once(
          {:error, %AppendError{code: :deadlock_detected}} = error,
-         %DBConnection{},
+         %DBConnection{conn_mode: :transaction},
          _stream_uuid,
          _expected_version,
          _events,
