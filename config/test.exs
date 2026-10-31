@@ -40,6 +40,10 @@ store_config =
     [
       database: db.("eventstore_test"),
       pool_size: 1,
+      # One connection queues every read behind the last: the 50 ms default target
+      # drops a checkout on a loaded host, as reading 8,001 events did.
+      queue_target: 1_000,
+      queue_interval: 5_000,
       serializer: Decree.Store.JsonSerializer,
       subscription_retry_interval: 1_000
     ]
