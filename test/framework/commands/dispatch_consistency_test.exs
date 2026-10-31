@@ -32,7 +32,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
       assert :ok = ConsistencyApp.dispatch(command, consistency: :strong)
     end
 
-    # default consistency timeout set to 100ms test config
+    # default consistency timeout set to 1s test config
     test "should timeout waiting for strongly consistent event handler to handle event" do
       command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 5_000}
 
@@ -63,16 +63,19 @@ defmodule Decree.Commands.DispatchConsistencyTest do
   describe "optional `:strong` consistency" do
     setup [:start_event_handlers, :start_optional_handler]
 
+    # The opt-in handler sleeps 300ms, inside the 1s timeout; the other strongly consistent
+    # handler sleeps 3s, past it, so waiting for that one would answer a timeout.
     test "should only wait for opt-in strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 100}
+      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 3_000}
       opts = [application: ConsistencyApp, consistency: [OptionalStronglyConsistentEventHandler]]
 
       assert :ok = ConsistencyApp.dispatch(command, opts)
     end
 
-    # Default consistency timeout set to 100ms test config
+    # Default consistency timeout set to 1s test config, and this handler sleeps a tenth
+    # of the delay
     test "should timeout waiting for strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 5_000}
+      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 20_000}
 
       opts = [
         application: ConsistencyApp,
@@ -132,7 +135,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
 
   # A handler subscribes on its own, after it starts, and a subscription whose first
   # attempt finds the store's lock connection not up yet retries a second later. The
-  # dispatches here wait 100ms, so a test dispatches only once its handlers' subscriptions
+  # dispatches here wait 1s, so a test dispatches only once its handlers' subscriptions
   # hold their locks; an event appended from then on reaches them.
   defp await_subscribed(subscription_names) do
     event_store = Module.concat([ConsistencyApp, "FrameworkEventStore"])

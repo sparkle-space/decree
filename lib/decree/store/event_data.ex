@@ -1,6 +1,9 @@
 defmodule Decree.Store.EventData do
   @moduledoc """
   EventData contains the data for a single event before being persisted to storage
+
+  `tags` are stored with the event, in the same transaction. A repeated tag is stored
+  once, and a tag over 512 bytes refuses the append with `{:error, :tag_too_long}`.
   """
 
   defstruct [
@@ -9,7 +12,8 @@ defmodule Decree.Store.EventData do
     :causation_id,
     :event_type,
     :data,
-    :metadata
+    :metadata,
+    tags: []
   ]
 
   alias Decree.Store.EventData
@@ -22,7 +26,8 @@ defmodule Decree.Store.EventData do
           causation_id: String.t() | nil,
           event_type: String.t(),
           data: term,
-          metadata: term | nil
+          metadata: term | nil,
+          tags: [String.t()]
         }
 
   def fetch(map, key) when is_map(map) do

@@ -4,8 +4,8 @@ defmodule Decree.Store.Storage.ProtectAgainstUpdateAndDeleteTest do
   alias Decree.Store.Config
 
   describe "event store table protection" do
-    test "cannot delete from `events`, `streams`, and `stream_events` tables", %{conn: conn} do
-      for table <- ["events", "streams", "stream_events"] do
+    test "cannot delete from the event tables", %{conn: conn} do
+      for table <- ["events", "streams", "stream_events", "event_tags", "event_types"] do
         assert_cannot_delete(conn, table)
       end
     end
@@ -20,10 +20,22 @@ defmodule Decree.Store.Storage.ProtectAgainstUpdateAndDeleteTest do
               %Postgrex.Error{postgres: %{message: "EventStore: Cannot update stream events"}}} =
                Postgrex.query(conn, "UPDATE stream_events SET stream_id = 1;", [])
     end
+
+    test "cannot update `event_tags` table", %{conn: conn} do
+      assert {:error,
+              %Postgrex.Error{postgres: %{message: "EventStore: Cannot update event tags"}}} =
+               Postgrex.query(conn, "UPDATE event_tags SET tag = 'x';", [])
+    end
+
+    test "cannot update `event_types` table", %{conn: conn} do
+      assert {:error,
+              %Postgrex.Error{postgres: %{message: "EventStore: Cannot update event types"}}} =
+               Postgrex.query(conn, "UPDATE event_types SET event_type = 'x';", [])
+    end
   end
 
   describe "event store enable hard deletes" do
-    test "can delete from `events`, `streams`, and `stream_events` tables" do
+    test "can delete from the event tables" do
       config =
         TestEventStore.config(enable_hard_deletes: true)
         |> Config.default_postgrex_opts()
@@ -34,7 +46,7 @@ defmodule Decree.Store.Storage.ProtectAgainstUpdateAndDeleteTest do
         {:ok, %Postgrex.Result{}} =
           Postgrex.query(transaction, "SET SESSION eventstore.enable_hard_deletes TO 'on';", [])
 
-        for table <- ["events", "streams", "stream_events"] do
+        for table <- ["events", "streams", "stream_events", "event_tags", "event_types"] do
           assert {:ok, %Postgrex.Result{}} =
                    Postgrex.query(transaction, "DELETE FROM #{table};", [])
         end

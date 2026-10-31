@@ -12,7 +12,10 @@ defmodule Decree.Store.MigrateEventStoreTest do
 
   # The latest `append_events_v<n>`. A later version adds a function and leaves this
   # one in place, so a migrated store carries both and a fresh one only the latest.
-  @latest_append_function "append_events_v1"
+  @latest_append_function "append_events_v2"
+
+  # pg_dump picks the quote per body: `$_$` for one that holds a `$`, as `$all` does.
+  @dollar_quote_end ~r/^\$\w*\$;$/
 
   defmodule PassThroughSerializer do
     @behaviour Decree.Store.Serializer
@@ -126,6 +129,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       assert migrated_function =~ "p_data jsonb[]"
       assert migrated_function =~ "p_causation_ids text[]"
       assert migrated_function =~ "p_correlation_ids text[]"
+      assert migrated_function =~ "p_tags text[]"
 
       assert_append_round_trips(config)
 
@@ -140,27 +144,27 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   describe "version bookkeeping" do
-    test "the store knows migration 1.4.0" do
-      assert "1.4.0" in Migrations.available_migrations()
-      assert List.last(Migrations.available_migrations()) == "1.4.0"
+    test "the store knows migration 1.5.0" do
+      assert "1.5.0" in Migrations.available_migrations()
+      assert List.last(Migrations.available_migrations()) == "1.5.0"
     end
 
-    test "a new event store records 1.4.0 and has nothing pending", %{config: config} do
+    test "a new event store records 1.5.0 and has nothing pending", %{config: config} do
       create_new_database(config)
 
-      assert schema_versions(config) == [[1, 4, 0]]
+      assert schema_versions(config) == [[1, 5, 0]]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
 
-      assert schema_versions(config) == [[1, 4, 0]]
+      assert schema_versions(config) == [[1, 5, 0]]
     end
 
-    test "the migration records 1.4.0", %{config: config} do
+    test "the migration records 1.5.0", %{config: config} do
       restore_pre_migration_event_store(config)
       migrate_eventstore(config, quiet: true, is_mix: false)
 
-      assert List.last(schema_versions(config)) == [1, 4, 0]
+      assert List.last(schema_versions(config)) == [1, 5, 0]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
@@ -170,6 +174,53 @@ defmodule Decree.Store.MigrateEventStoreTest do
       create_new_database(config)
 
       assert append_function_names(config) == [@latest_append_function]
+    end
+  end
+
+  # The rolling-deploy case: the migration has run and an old pod still appends.
+  describe "append_events_v1 on a migrated store" do
+    setup %{config: config} do
+      restore_pre_migration_event_store(config)
+      migrate_eventstore(config, quiet: true, is_mix: false)
+
+      {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
+
+      [conn: conn]
+    end
+
+    test "still works, and its events simply have no rows", %{config: config, conn: conn} do
+      assert append_function_names(config) == ["append_events_v1", @latest_append_function]
+
+      all_version = all_version(conn)
+
+      assert %Postgrex.Result{rows: [[stream_id]]} = append_v1(conn, UUID.uuid4())
+      assert is_integer(stream_id)
+
+      assert all_version(conn) == all_version + 1
+      assert tag_rows(conn) == []
+      assert type_rows(conn) == []
+    end
+
+    test "leaves the next v2 append the next position", %{conn: conn} do
+      all_version = all_version(conn)
+
+      append_v1(conn, UUID.uuid4())
+
+      event = %EventData{
+        event_type: "typed",
+        data: "{}",
+        metadata: "{}",
+        tags: ["tenant:a"]
+      }
+
+      assert :ok =
+               Stream.append_to_stream(conn, UUID.uuid4(), 0, [event],
+                 schema: "public",
+                 serializer: PassThroughSerializer
+               )
+
+      assert tag_rows(conn) == [[all_version + 2, "tenant:a", "typed"]]
+      assert type_rows(conn) == [[all_version + 2, "typed"]]
     end
   end
 
@@ -206,6 +257,27 @@ defmodule Decree.Store.MigrateEventStoreTest do
              ]
     end
 
+    test "ends an older append function at pg_dump's `$_$` quote" do
+      dump = """
+      CREATE FUNCTION example.append_events_v1(p_schema text) RETURNS bigint
+      AS $_$
+      older body with $all
+      $_$;
+      CREATE FUNCTION example.append_events_v2(p_schema text) RETURNS bigint
+      AS $_$
+      latest body with $all
+      $_$;
+      """
+
+      assert split_and_normalize([dump]) == [
+               "CREATE FUNCTION example.append_events_v2(p_schema text) RETURNS bigint",
+               "AS $_$",
+               "latest body with $all",
+               "$_$;",
+               ""
+             ]
+    end
+
     test "keeps the only append function" do
       dump = """
       CREATE FUNCTION example.append_events_v1(p_schema text) RETURNS bigint
@@ -237,8 +309,17 @@ defmodule Decree.Store.MigrateEventStoreTest do
     assert length(migrated_normalized) == length(new_normalized)
   end
 
-  defp comparable(dump, :with_data), do: split_and_normalize(dump)
-  defp comparable(dump, :schema_only), do: dump |> split_and_normalize() |> reject_data()
+  # pg_dump's blank lines around a dropped function stay behind, so they do not count.
+  # `pg_get_functiondef` compares the function's own text, blank lines included.
+  defp comparable(dump, :with_data) do
+    dump |> split_and_normalize() |> reject_blank_lines()
+  end
+
+  defp comparable(dump, :schema_only) do
+    dump |> split_and_normalize() |> reject_data() |> reject_blank_lines()
+  end
+
+  defp reject_blank_lines(lines), do: Enum.reject(lines, &(&1 == ""))
 
   # A round trip's rows differ per side: `COPY` blocks are dropped from the comparison.
   defp reject_data(lines) do
@@ -276,6 +357,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       "1\t2\t0\tNOW" -> true
       "1\t3\t0\tNOW" -> true
       "1\t3\t2\tNOW" -> true
+      "1\t4\t0\tNOW" -> true
       _line -> false
     end)
     |> reject_superseded_append_functions()
@@ -294,7 +376,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
         {kept, _in_function} =
           Enum.flat_map_reduce(lines, false, fn line, in_function ->
             case {in_function, append_function_line(line)} do
-              {true, _match} -> {[], line != "$$;"}
+              {true, _match} -> {[], not Regex.match?(@dollar_quote_end, line)}
               {false, {"CREATE", version}} when version < latest -> {[], true}
               {false, {"ALTER", version}} when version < latest -> {[], false}
               {false, _match} -> {[line], false}
@@ -410,6 +492,49 @@ defmodule Decree.Store.MigrateEventStoreTest do
     rows
   end
 
+  # The call an old pod's `append_events.sql.eex` makes.
+  defp append_v1(conn, stream_uuid) do
+    Postgrex.query!(
+      conn,
+      "SELECT public.append_events_v1($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+      [
+        "public",
+        nil,
+        stream_uuid,
+        nil,
+        nil,
+        [UUID.string_to_binary!(UUID.uuid4())],
+        ["typed"],
+        [nil],
+        [nil],
+        ["{}"],
+        ["{}"],
+        [DateTime.utc_now()]
+      ]
+    )
+  end
+
+  defp all_version(conn) do
+    %Postgrex.Result{rows: [[version]]} =
+      Postgrex.query!(conn, "SELECT stream_version FROM public.streams WHERE stream_id = 0", [])
+
+    version
+  end
+
+  defp tag_rows(conn) do
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(conn, "SELECT position, tag, event_type FROM public.event_tags", [])
+
+    rows
+  end
+
+  defp type_rows(conn) do
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(conn, "SELECT position, event_type FROM public.event_types", [])
+
+    rows
+  end
+
   defp assert_append_round_trips(config) do
     {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
 
@@ -425,7 +550,8 @@ defmodule Decree.Store.MigrateEventStoreTest do
       correlation_id: "correlation",
       causation_id: "causation",
       data: %{"key" => "value"},
-      metadata: %{"user" => "someone"}
+      metadata: %{"user" => "someone"},
+      tags: ["tenant:a"]
     }
 
     stream_uuid = UUID.uuid4()
