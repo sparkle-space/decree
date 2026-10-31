@@ -1,9 +1,27 @@
 defmodule Decree.Store.SubscriptionHelpers do
   import ExUnit.Assertions
 
-  alias Decree.Store.{EventFactory, RecordedEvent}
+  alias Decree.Store.{AdvisoryLocks, EventFactory, RecordedEvent, Wait}
   alias Decree.Store.Subscriptions.Subscription
   alias TestEventStore, as: EventStore
+
+  @doc """
+  Wait until the event store's lock pool is serving.
+
+  A lock attempt does not wait for the lock pool's connection: until it is up the
+  attempt is refused (`queue: false`, see `Decree.Store.AdvisoryLocks`). A `Subscription`
+  process retries a refused attempt, but a test that drives `AdvisoryLocks` or
+  `SubscriptionFsm` directly has no retry, so it waits here before taking locks.
+  """
+  def wait_for_lock_pool(event_store \\ EventStore) do
+    locks = Module.concat(event_store, AdvisoryLocks)
+
+    Wait.until(5_000, fn ->
+      assert {:ok, _locks} = AdvisoryLocks.subscription_locks(locks, [0])
+    end)
+
+    :ok
+  end
 
   def append_to_stream(stream_uuid, event_count, expected_version \\ 0) do
     events = EventFactory.create_events(event_count, expected_version + 1)

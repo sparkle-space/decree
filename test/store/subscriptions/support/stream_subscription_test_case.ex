@@ -11,7 +11,7 @@ defmodule Decree.Store.Subscriptions.StreamSubscriptionTestCase do
     @conn TestEventStore.Postgrex
     @subscription_name "test_subscription"
 
-    setup [:start_subscriber]
+    setup [:wait_for_lock_pool, :start_subscriber]
 
     describe "subscribe to stream" do
       test "should create a subscription to the stream", context do
@@ -428,6 +428,12 @@ defmodule Decree.Store.Subscriptions.StreamSubscriptionTestCase do
           assert subscription.state == :request_catch_up
         end)
       end
+    end
+
+    # These tests drive `SubscriptionFsm` directly, so no `Subscription` process retries
+    # a `subscribe` refused because the lock pool's connection is not up yet.
+    defp wait_for_lock_pool(_context) do
+      SubscriptionHelpers.wait_for_lock_pool()
     end
 
     defp start_subscriber(_context) do
