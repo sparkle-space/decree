@@ -183,7 +183,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
       EventStore.subscribe_to_all_streams(subscription_name, subscriber1,
         concurrency_limit: 2,
         timeout: @query_timeout,
-        retry_interval: 4_000
+        retry_interval: 2_000
       )
 
     assert_receive {:subscribed, ^subscription, ^subscriber1}
@@ -191,19 +191,16 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     ref = Process.monitor(subscription)
 
     assert %{attempt: 1} = assert_held_read(subscription, ref)
-    assert %{attempt: 2} = assert_held_read(subscription, ref)
-    assert %{attempt: 3, retry_interval: 4_000} = assert_held_read(subscription, ref)
+    assert %{attempt: 2, retry_interval: 2_000} = assert_held_read(subscription, ref)
 
-    # Release the lock but stay held: the next read is four seconds away, so the
+    # Release the lock but stay held: the next read is two seconds away, so the
     # append and the second subscriber both reach the subscription while it waits.
     release(lock)
 
     :ok = EventStore.append_to_stream(UUID.uuid4(), 0, EventFactory.create_events(1))
 
-    # The store's notification of event 3 is tracked, not read, while held. It took
-    # over a second once at CI-like load, so the bound is 3s, inside the 4s held window;
-    # the wait must end inside that window, as the next read would fetch the event.
-    Wait.until(3_000, fn ->
+    # The store's notification of event 3 is tracked, not read, while held.
+    Wait.until(1_000, fn ->
       assert %SubscriptionFsm{
                state: :catch_up_retry,
                data: %SubscriptionState{last_received: 3, last_sent: 0}
@@ -389,7 +386,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     if Enum.all?(expected, &(&1 in received)) do
       Enum.reverse(deliveries)
     else
-      assert_receive {:events, events, subscriber}, 10_000
+      assert_receive {:events, events, subscriber}, 5_000
 
       %RecordedEvent{event_number: last} = List.last(events)
       :ok = Subscription.ack(subscription, last, subscriber)

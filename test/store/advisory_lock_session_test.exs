@@ -65,8 +65,6 @@ defmodule Decree.Store.AdvisoryLockSessionTest do
       # Every event is delivered once in total, by node B.
       # This asserts exactly-once delivery after a takeover, not latency, so the
       # wait for the events is long. A NOTIFY that never arrives still fails it.
-      # Under load this wait was missed 3 times in about 98 runs, by a NOTIFY seen
-      # by no listener within two seconds; the cause is not isolated.
       delivered = receive_events(3, 10_000)
 
       assert Enum.sort(delivered) == [{:b, 2}, {:b, 3}, {:b, 4}]

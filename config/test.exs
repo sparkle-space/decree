@@ -31,11 +31,13 @@ config :decree,
   refute_receive_event_timeout: 100,
   dispatch_consistency_timeout: 100
 
-# Store suite (test/store), as upstream EventStore configured it.
+# Store suite (test/store), as upstream EventStore configured it, without its
+# `idle_interval: 100`: Postgrex 0.22.4 drops a notification that arrives during a
+# connection's idle ping, so pinging every 100 ms lost about 1 in 150 notifications
+# after an idle spell (elixir-ecto/postgrex#795, merged, not yet released).
 store_config =
   pg ++
     [
-      idle_interval: 100,
       database: db.("eventstore_test"),
       pool_size: 1,
       serializer: Decree.Store.JsonSerializer,
