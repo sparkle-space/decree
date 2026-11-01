@@ -6,10 +6,10 @@ defmodule Decree.PersonalFields.Aggregate do
         use Decree.PersonalFields.Aggregate
 
         @personal_fold [OAuthAccountLinked, PasskeyRegistered]
-        @personal_state [oauth_links: :provider_uid]
+        @personal_state [oauth_links: :provider_uid, email: :self]
         @personal_state_subject :user_id
 
-        defstruct [:user_id, oauth_links: []]
+        defstruct [:user_id, :email, oauth_links: []]
       end
 
     - `@personal_fold` lists the events `apply/2` reads a declared field of. They are decrypted
@@ -17,9 +17,12 @@ defmodule Decree.PersonalFields.Aggregate do
       reaches `apply/2` as stored, so an aggregate that folds a value it never reads is not
       locked by one subject's lost key. An event left off the list leaves an envelope in state.
 
-    - `@personal_state` lists the state a snapshot must not hold in the clear, as
-      `state_field: entry_key`, where `state_field` holds a list of maps with atom or string
-      keys. Those entries are encrypted in the snapshot, and in-memory state stays plaintext.
+    - `@personal_state` lists the state a snapshot must not hold in the clear. `state_field:
+      entry_key` covers a field holding a list of maps with atom or string keys, and encrypts
+      that key of each entry. `state_field: :self` covers a scalar, and encrypts the field's own
+      value. `:self` is reserved, so it can't name an entry key. A value of any other shape under
+      an `entry_key` records no snapshot. Those values are encrypted in the snapshot, and
+      in-memory state stays plaintext.
 
     - `@personal_state_subject` is the state field that holds their subject.
 
@@ -83,6 +86,10 @@ defmodule Decree.PersonalFields.Aggregate do
 
       for {field, _key} <- state, field not in fields do
         refuse.("the state field #{inspect(field)} is not in the struct")
+      end
+
+      for {field, :self} <- state, length(Keyword.get_values(state, field)) > 1 do
+        refuse.("#{inspect(field)} is `:self`, so it can't list an entry key too")
       end
     end
 

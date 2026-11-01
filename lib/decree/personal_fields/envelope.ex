@@ -31,7 +31,8 @@ defmodule Decree.PersonalFields.Envelope do
       literal `"snapshot"`.
 
     - The field is the field's name. A metadata entry's is `"metadata.<key>"`, so a value can't
-      move between body and metadata, and a snapshot's is `"<state_field>.<entry_key>"`.
+      move between body and metadata. A snapshot's is `"<state_field>.<entry_key>"` for a list
+      entry and `"<state_field>"` for a scalar.
 
   It does not bind the event id. Someone with write access to the store can copy a value
   between two events of the same type, stream and field, and it will decrypt.

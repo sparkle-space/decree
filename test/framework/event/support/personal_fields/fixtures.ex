@@ -331,7 +331,7 @@ defmodule Decree.PersonalFields.Fixtures.Account do
   alias Decree.PersonalFields.Fixtures.{Keys, LeakyFailures}
 
   @personal_fold [Registered, Linked, Poison, TwoSubjects, PassedThrough, Renamed]
-  @personal_state [links: :provider_uid]
+  @personal_state [links: :provider_uid, email: :self]
   @personal_state_subject :user_id
 
   @derive Jason.Encoder

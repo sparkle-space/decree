@@ -4,7 +4,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
   alias Decree.Aggregates.Aggregate
   alias Decree.EventStore.SnapshotData
   alias Decree.PersonalFields.Fixtures.Account
-  alias Decree.PersonalFields.Fixtures.Events.{Linked, Plain}
+  alias Decree.PersonalFields.Fixtures.Events.{Linked, Plain, Registered}
   alias Decree.Snapshotting
 
   defmodule Unlisted do
@@ -284,6 +284,182 @@ defmodule Decree.PersonalFields.SnapshotTest do
 
       assert {{:shutdown, :key_unknown}, {GenServer, :call, _call}} =
                catch_exit(Aggregate.aggregate_state(App, Account, stream))
+    end
+  end
+
+  describe "a scalar" do
+    defp with_email(subject), do: %Account{account(subject, []) | email: email()}
+
+    defp stored_email(stream) do
+      assert {:ok, %SnapshotData{data: %Account{email: stored}}} = stored_snapshot(stream)
+
+      Map.new(stored, fn {key, value} -> {Atom.to_string(key), value} end)
+    end
+
+    defp record(stream, state) do
+      :ok =
+        EventStore.record_snapshot(App, %SnapshotData{
+          source_uuid: stream,
+          source_version: 1,
+          source_type: to_string(Account),
+          data: state,
+          metadata: %{"snapshot_module_version" => 1}
+        })
+    end
+
+    test "is stored as an envelope, and no SQL scan finds it", context do
+      %{conn: conn, stream: stream, subject: subject} = context
+      state = with_email(subject)
+
+      assert {:ok, _snapshotting} = take(stream, state)
+
+      assert state == with_email(subject)
+      assert [row] = rows(conn, "snapshots", "data")
+      assert row =~ "$pf"
+      refute row =~ "secret.example"
+    end
+
+    test "round trips", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, with_email(subject))
+
+      assert %Aggregate{aggregate_state: %Account{email: "alice@secret.example"}} =
+               populate(stream)
+    end
+
+    test "names its own path in the additional data", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, with_email(subject))
+
+      {_key_id, key} = Keys.key(subject)
+      {:ok, parsed} = PersonalFields.Envelope.parse(stored_email(stream))
+
+      assert PersonalFields.Envelope.decrypt(parsed, key, {stream, "snapshot", "email"}) ==
+               {:ok, "alice@secret.example"}
+    end
+
+    test "nil needs no lookup", %{stream: stream, subject: subject} do
+      Keys.set(subject, :unknown)
+
+      assert {:ok, _snapshotting} = take(stream, account(subject, []))
+      assert Keys.lookups(subject) == 0
+    end
+
+    test "a value that is not a string keeps its type", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, %Account{with_email(subject) | email: 12})
+
+      assert %Aggregate{aggregate_state: %Account{email: 12}} = populate(stream)
+    end
+
+    for {name, mode, reason} <- [
+          {"an unknown key", :unknown, :key_unknown},
+          {"an erased subject", :erased, :subject_erased}
+        ] do
+      test "with #{name} records no snapshot", %{stream: stream, subject: subject} do
+        Keys.set(subject, unquote(mode))
+
+        assert take(stream, with_email(subject)) == {:error, unquote(reason)}
+        assert stored_snapshot(stream) == {:error, :snapshot_not_found}
+      end
+    end
+
+    test "with a nil subject records no snapshot", %{stream: stream} do
+      assert take(stream, with_email(nil)) == {:error, :personal_subject_missing}
+      assert stored_snapshot(stream) == {:error, :snapshot_not_found}
+    end
+
+    test "already an envelope records no snapshot", %{stream: stream, subject: subject} do
+      state = %Account{with_email(subject) | email: %{"$pf" => 1}}
+
+      assert take(stream, state) == {:error, :personal_field_is_envelope}
+      assert stored_snapshot(stream) == {:error, :snapshot_not_found}
+    end
+
+    test "erased on a read drops the snapshot and folds from the first event", context do
+      %{stream: stream, subject: subject} = context
+
+      dispatch!(stream, %Registered{user_id: subject, email: email()})
+
+      assert {:ok, _snapshotting} = take(stream, with_email(subject))
+
+      Keys.set(subject, :erased)
+
+      assert %Aggregate{aggregate_version: 1, aggregate_state: %Account{email: nil, seen: 1}} =
+               populate(stream)
+    end
+
+    test "unknown on a read is the typed error", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, with_email(subject))
+
+      Keys.set(subject, :unknown)
+
+      assert populate(stream) == {:error, :key_unknown}
+    end
+
+    test "a bare value passes, and says so", %{stream: stream, subject: subject} do
+      attach_telemetry([[:decree, :personal_field, :plaintext_read]])
+      record(stream, with_email(subject))
+
+      assert %Aggregate{aggregate_state: %Account{email: "alice@secret.example"}} =
+               populate(stream)
+
+      assert [{:telemetry, _event, %{}, %{event_type: "snapshot", field: "email"}}] =
+               flush_telemetry()
+    end
+
+    test "a malformed value is unknown", %{stream: stream, subject: subject} do
+      record(stream, %Account{with_email(subject) | email: %{"$pf" => 2}})
+
+      assert populate(stream) == {:error, :key_unknown}
+    end
+
+    test "can't move to a list path", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, with_email(subject))
+      envelope = stored_email(stream)
+
+      record(stream, account(subject, [%{provider: "p", provider_uid: envelope}]))
+
+      assert populate(stream) == {:error, :key_unknown}
+    end
+
+    test "a list value can't move to the scalar", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, account(subject))
+
+      assert {:ok, %SnapshotData{data: %Account{links: [%{provider_uid: stored}]}}} =
+               stored_snapshot(stream)
+
+      envelope = Map.new(stored, fn {key, value} -> {Atom.to_string(key), value} end)
+
+      record(stream, %Account{account(subject, []) | email: envelope})
+
+      assert populate(stream) == {:error, :key_unknown}
+    end
+
+    test "can't move into an event", %{stream: stream, subject: subject} do
+      assert {:ok, _snapshotting} = take(stream, with_email(subject))
+
+      store_raw!(stream, %Registered{user_id: subject, email: stored_email(stream)})
+
+      assert stream |> read() |> hd() |> decrypt() == {:error, :key_unknown}
+    end
+
+    test "a non-list value under an entry key stays invalid", context do
+      %{stream: stream, subject: subject} = context
+
+      assert take(stream, account(subject, "a scalar")) == {:error, :invalid_personal_state}
+    end
+
+    test "a field can't be `:self` and list an entry key" do
+      assert_raise CompileError, ~r/can't list an entry key too/, fn ->
+        Code.compile_string("""
+        defmodule Decree.PersonalFields.SnapshotTest.Both do
+          use Decree.PersonalFields.Aggregate
+
+          @personal_state [email: :self, email: :provider_uid]
+          @personal_state_subject :id
+
+          defstruct [:id, :email]
+        end
+        """)
+      end
     end
   end
 

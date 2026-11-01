@@ -462,13 +462,7 @@ defmodule Decree.PersonalFields.ReadTest do
         metadata: %{"email" => email(), "password_hash" => password_hash}
       )
 
-      # `@personal_state` covers lists of maps, so the fixture's scalar `email` is left out of
-      # the state this snapshot reads.
-      linked = UUID.uuid4()
-
-      dispatch!(linked, %Linked{user_id: subject, provider_uid: "uid-at-provider"})
-
-      assert :ok = Aggregate.take_snapshot(App, Account, linked)
+      assert :ok = Aggregate.take_snapshot(App, Account, stream)
 
       rows = rows(conn, "events", "data, metadata") ++ rows(conn, "snapshots", "data, metadata")
       scan = Enum.join(rows, "\n")

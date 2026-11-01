@@ -311,6 +311,21 @@ defmodule Decree.PersonalFields do
 
   def encrypt_state(_application, _source_uuid, state), do: {:ok, state}
 
+  defp encrypt_path(application, source_uuid, module, {state_field, :self}, state, answers) do
+    case Map.get(state, state_field) do
+      nil ->
+        {:ok, state, answers}
+
+      value ->
+        subject_id = Map.fetch!(state, module.__personal_state_subject__())
+        context = {application, subject_id, scalar_location(source_uuid, state_field)}
+
+        with {:ok, envelope, answers} <- encrypt_state_value(value, context, answers) do
+          {:ok, Map.put(state, state_field, envelope), answers}
+        end
+    end
+  end
+
   defp encrypt_path(application, source_uuid, module, {state_field, entry_key}, state, answers) do
     case Map.get(state, state_field) do
       empty when empty in [nil, []] ->
@@ -396,6 +411,17 @@ defmodule Decree.PersonalFields do
     end)
   end
 
+  defp decrypt_path(application, source_uuid, {state_field, :self}, state, answers) do
+    location = scalar_location(source_uuid, state_field)
+
+    case read(application, Map.get(state, state_field), :snapshot, location, answers) do
+      {:ok, value, answers} -> {:ok, Map.put(state, state_field, value), answers}
+      :nil_value -> {:ok, state, answers}
+      {:absent, answers} -> {:erased, answers}
+      {:error, :key_unknown} = error -> error
+    end
+  end
+
   defp decrypt_path(application, source_uuid, {state_field, entry_key}, state, answers) do
     case Map.get(state, state_field) do
       nil ->
@@ -441,6 +467,10 @@ defmodule Decree.PersonalFields do
 
   defp decrypt_entry(application, _entry, _entry_key, _location, _answers) do
     unreadable(application, nil)
+  end
+
+  defp scalar_location(source_uuid, state_field) do
+    {source_uuid, @snapshot, Atom.to_string(state_field)}
   end
 
   defp personal_state(module) do
