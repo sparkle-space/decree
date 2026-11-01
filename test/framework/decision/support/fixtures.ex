@@ -171,6 +171,8 @@ defmodule Decree.DecisionFixtures.Scripting do
           _script -> %Claimed{claim_id: command.claim_id, scope: command.scope}
         end
       end
+
+      defoverridable evolve: 2
     end
   end
 end

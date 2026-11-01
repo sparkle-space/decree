@@ -78,20 +78,22 @@ defmodule Decree.Decision do
        more condition items than `max_items` and more probes than `max_probes`. Read the
        items and the command item.
     2. Call `c:followup_query/3` if it is defined, with the events the first read's own
-       items matched. Check both bounds again across both reads, and read the items and the
-       command item. A command match the first read did not have starts over from step 1,
-       using a retry. Merge by position. The first read's `after` stands for both. More
-       matched events than `max_events`, both reads together, refuses.
+       items matched, those the decision lists decrypted. Check both bounds again across both
+       reads, and read the items and the command item. A command match the first read did
+       not have starts over from step 1, using a retry. Merge by position. The first read's
+       `after` stands for both. More matched events than `max_events`, both reads together,
+       refuses.
     3. Fetch the tags of the events matching the command item, in one read by position.
     4. Keep the events the decision's own items matched. An event only the command item
        matched is not shown to `c:evolve/2`.
-    5. Fold them with `c:evolve/2`.
+    5. Decrypt the ones the decision lists, and fold them all with `c:evolve/2`.
     6. Call `c:admit/2`. Its error is the answer.
     7. Classify the command matches. Any match refuses with
        `{:error, :unclassified_command_match}`: this command's events are already in the
        store, and nothing here can tell which outcome the caller is owed.
-    8. Call `c:decide/2`, apply the new events to the state, prepare them, and append them
-       at `:any_version` under the condition.
+    8. Call `c:decide/2` and apply the new events to the state. Prepare them, per member,
+       which takes their tags from the plaintext and encrypts what they declare. Its error
+       is the answer. Append them at `:any_version` under the condition.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
@@ -116,11 +118,54 @@ defmodule Decree.Decision do
     - `:duplicate`, which answers `{:error, :duplicate_command}` and appends nothing.
     - `{:error, reason}`, which is the answer as it stands and never retries.
 
+  ## Personal fields
+
+  New events are prepared as an aggregate's are, by `Decree.Event.Append.prepare_events/4`,
+  once per member with that member's stream, so each envelope is bound to the stream it lands
+  on. `{:error, :key_unknown}`, `{:error, :personal_subject_missing}` and
+  `{:error, :undeclared_personal_metadata}` are the answer as they stand, with nothing
+  appended. A retry prepares again from the plaintext, with fresh lookups.
+
+  What a read answers is ciphertext unless the decision lists it, with the mechanism an
+  aggregate uses:
+
+      defmodule ClaimEmail do
+        use Decree.Decision
+        use Decree.PersonalFields.Aggregate
+
+        @personal_fold [EmailClaimed]
+      end
+
+  A listed event reaches `c:evolve/2` and `c:followup_query/3` with its body decrypted, and
+  an erased subject's field nil. Neither callback sees metadata, so that is not decrypted. An
+  unlisted event reaches them as stored, envelopes included, so a decision that folds a value
+  it never reads is not locked by one subject's lost key. A subject is looked up once in an
+  attempt, and a retry looks it up again, so it sees a key erased between attempts.
+  `@personal_state` and `@personal_state_subject` mean nothing on a decision, which has no
+  snapshot.
+
+  An item's tag goes to the store and to telemetry as it is, so `c:followup_query/3` names an
+  id or a digest, never a value it decrypted.
+
+  A listed event no key can read answers `{:error, :key_unknown}`, with nothing appended and
+  no retry.
+
+  A decision that uses `Decree.PersonalFields.Aggregate` can hold decrypted values whatever it
+  lists. So a raise from any of its callbacks, or from preparing, reaches logs, telemetry,
+  `after_failure` and the answer as a `Decree.PersonalFields.RedactedError` with a scrubbed
+  stacktrace. A decision that doesn't use it keeps the exception.
+
   ## Answers
 
   A raise from any callback, or from a `Decree.Event.Tags` implementation, is rescued, and
   the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An error from a
   `Decree.Event.Tags` implementation is the answer as it stands.
+
+  An exit or a throw from any of it, on any decision, answers
+  `{:error, :decision_execution_failed}`. It logs nothing but what
+  `Decree.PersonalFields.RedactedError.reduce/1` leaves of its value, and it stays in the
+  dispatch's task, because a crash report would print that task's arguments, which hold the
+  command and its metadata.
 
   Two things retry: the store's `{:error, :append_condition_failed}`, and a command match
   only the second read has (step 2). Each runs the dispatch again from step 1 while
@@ -129,7 +174,7 @@ defmodule Decree.Decision do
   answers `{:error, :decision_execution_timeout}`, whether or not its append landed, and
   one whose task died answers `{:error, :decision_execution_failed}`.
 
-  Four refusals are named arms for an event handler, because a handler that dispatches a
+  Five refusals are named arms for an event handler, because a handler that dispatches a
   decision must stop or park on them rather than retry:
 
     - `:decision_query_too_large` - more condition items than `max_items`, more probes than
@@ -137,6 +182,8 @@ defmodule Decree.Decision do
     - `:decision_batch_too_large` - more new events than `max_batch_events`.
     - `:too_many_attempts` - retries are spent.
     - `:unclassified_command_match` - this command already left events in the store.
+    - `:key_unknown` - a personal value it reads or writes has no key to hand. Only the key
+      coming back changes that.
 
   `:reused_command_id` and `:tag_index_not_enabled` are reserved. Nothing answers them yet,
   and a handler that names them now has an arm that never runs.
@@ -187,7 +234,11 @@ defmodule Decree.Decision do
 
     - `[:decree, :decision, :execute, :start | :stop | :exception]`, a span, with metadata
       `application`, `decision`, `stream_uuid` and `execution_context`, and on stop `attempts`
-      and `events` or `error`.
+      and `events` or `error`. On exception `kind` is `:error`, `:exit` or `:throw`, and
+      `reason` and `stacktrace` are what "Answers" and "Personal fields" leave of them. As on
+      an aggregate's span, `execution_context` holds the command and its metadata in the clear,
+      `events` are the new events before they are encrypted, and `error` is the answer. The
+      state is on none of these.
     - `[:decree, :decision, :read]`, once per completed read cycle, one refused on
       `max_events` included. Measurements `items`, `probes`, `matched_events`, `read_time`
       and `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata

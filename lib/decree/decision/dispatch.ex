@@ -8,8 +8,10 @@ defmodule Decree.Decision.Dispatch do
   alias Decree.Commands.Router
   alias Decree.Decision.Read
   alias Decree.Decision.Read.Merged
-  alias Decree.Event.{Append, Mapper, TagContext}
+  alias Decree.Event.{Append, TagContext}
   alias Decree.EventStore
+  alias Decree.PersonalFields
+  alias Decree.PersonalFields.RedactedError
   alias Decree.Store.{AppendResult, ReadResult}
   alias Decree.Telemetry
   alias Decree.UUID
@@ -30,13 +32,15 @@ defmodule Decree.Decision.Dispatch do
     :tag_context,
     :command_tag,
     :bounds,
+    :fold,
     attempt: 1
   ]
 
   @doc """
   Runs the dispatch. Answers `{:decided, outcome, reply}`, `reply` being a
   `ExecutionContext.format_reply/3` tuple, or `{:error, reason}`, or
-  `{:error, error, stacktrace}` for a raise.
+  `{:error, error, stacktrace}` for a raise. An exit or a throw does not leave: this runs in a
+  task with the context in its arguments, and a crash report prints those.
   """
   def execute(application, decision, stream_uuid, identity_prefix, %ExecutionContext{} = context) do
     metadata = %{
@@ -131,7 +135,7 @@ defmodule Decree.Decision.Dispatch do
   defp member(_member), do: {:error, :invalid_decision_stream}
 
   # Everything a raise can come from runs under this, as in an aggregate's `execute_command`.
-  defp run(%__MODULE__{} = dispatch) do
+  defp run(%__MODULE__{decision: decision} = dispatch) do
     with {:ok, dispatch} <- ready(dispatch) do
       attempt(dispatch)
     else
@@ -139,10 +143,16 @@ defmodule Decree.Decision.Dispatch do
     end
   rescue
     error ->
-      stacktrace = __STACKTRACE__
+      {error, stacktrace} = PersonalFields.reported_exception(decision, error, __STACKTRACE__)
       Logger.error(Exception.format(:error, error, stacktrace))
 
       {{:error, error, stacktrace}, nil}
+  catch
+    kind, value ->
+      reduced = RedactedError.reduce(value)
+      Logger.error(fn -> "#{inspect(decision)} left by #{kind}: #{inspect(reduced)}" end)
+
+      {{:left, kind, reduced, RedactedError.scrub_stacktrace(__STACKTRACE__)}, nil}
   end
 
   # Step 0.
@@ -163,7 +173,8 @@ defmodule Decree.Decision.Dispatch do
            dispatch
            | tag_context: %TagContext{metadata: metadata, command: command},
              command_tag: command_tag,
-             bounds: dispatch.decision.__decision__()
+             bounds: dispatch.decision.__decision__(),
+             fold: PersonalFields.fold_events(dispatch.decision)
          }}
     end
   end
@@ -192,7 +203,8 @@ defmodule Decree.Decision.Dispatch do
     end
   end
 
-  # Steps 1 to 8, once.
+  # Steps 1 to 8, once. Key lookups are remembered for this attempt and no longer, so a retry
+  # sees a key erased since.
   defp cycle(%__MODULE__{} = dispatch) do
     started = System.monotonic_time()
 
@@ -200,11 +212,11 @@ defmodule Decree.Decision.Dispatch do
          {:ok, result} <- read_query(dispatch, read),
          merged = Read.first(read, result),
          :ok <- within_events(dispatch, merged, [read], started),
-         {:ok, merged, reads} <- second_read(dispatch, merged, read, started),
+         {:ok, merged, reads, answers} <- second_read(dispatch, merged, read, started),
          {:ok, tags} <- fetch_tags(dispatch, merged),
          :ok <- check_tag_index(tags),
          read_time = System.monotonic_time() - started,
-         state = fold(dispatch, merged, reads, read_time),
+         {:ok, state} <- fold(dispatch, merged, reads, read_time, answers),
          :ok <- admit(dispatch, state),
          {:ok, mode} <- classify(merged, tags) do
       decide(mode, dispatch, state, merged, reads)
@@ -226,36 +238,36 @@ defmodule Decree.Decision.Dispatch do
 
   # Step 2.
   defp second_read(%__MODULE__{bounds: %{followup_query?: false}}, merged, read, _started) do
-    {:ok, merged, [read]}
+    {:ok, merged, [read], %{}}
   end
 
   defp second_read(%__MODULE__{} = dispatch, %Merged{} = merged, first, started) do
     %__MODULE__{decision: decision, context: context, tag_context: tag_context} = dispatch
 
-    business_events = merged |> Read.business_events() |> Enum.map(& &1.data)
+    with {:ok, business_events, answers} <- readable(dispatch, merged, %{}) do
+      case decision.followup_query(context.command, tag_context, business_events) do
+        [] ->
+          {:ok, merged, [first], answers}
 
-    case decision.followup_query(context.command, tag_context, business_events) do
-      [] ->
-        {:ok, merged, [first]}
+        {:error, _reason} = error ->
+          error
 
-      {:error, _reason} = error ->
-        error
+        items ->
+          with {:ok, parsed} <- Read.parse(items),
+               read = Read.layout(parsed, framework_items(dispatch)),
+               {:ok, read} <- bounded(dispatch, [first], read) do
+            reads = [first, read]
 
-      items ->
-        with {:ok, parsed} <- Read.parse(items),
-             read = Read.layout(parsed, framework_items(dispatch)),
-             {:ok, read} <- bounded(dispatch, [first], read) do
-          reads = [first, read]
+            with {:ok, result} <- read_query(dispatch, read),
+                 :ok <- no_new_command_match(merged, read, result) do
+              merged = Read.merge(merged, read, result)
 
-          with {:ok, result} <- read_query(dispatch, read),
-               :ok <- no_new_command_match(merged, read, result) do
-            merged = Read.merge(merged, read, result)
-
-            with :ok <- within_events(dispatch, merged, reads, started) do
-              {:ok, merged, reads}
+              with :ok <- within_events(dispatch, merged, reads, started) do
+                {:ok, merged, reads, answers}
+              end
             end
           end
-        end
+      end
     end
   end
 
@@ -288,17 +300,38 @@ defmodule Decree.Decision.Dispatch do
   defp check_tag_index(_tags), do: :ok
 
   # Steps 4 and 5.
-  defp fold(%__MODULE__{decision: decision} = dispatch, %Merged{} = merged, reads, read_time) do
+  defp fold(%__MODULE__{} = dispatch, %Merged{} = merged, reads, read_time, answers) do
+    %__MODULE__{decision: decision} = dispatch
     started = System.monotonic_time()
 
-    state =
-      merged
-      |> Read.business_events()
-      |> Enum.reduce(decision.initial_state(), &decision.evolve(&2, &1.data))
+    with {:ok, business_events, _answers} <- readable(dispatch, merged, answers) do
+      state = Enum.reduce(business_events, decision.initial_state(), &decision.evolve(&2, &1))
 
-    telemetry_read(dispatch, merged, reads, read_time, System.monotonic_time() - started)
+      telemetry_read(dispatch, merged, reads, read_time, System.monotonic_time() - started)
 
-    state
+      {:ok, state}
+    end
+  end
+
+  # The events the decision's own items matched, as a callback may see them. `fold` is nil for
+  # a decision that lists none.
+  defp readable(%__MODULE__{fold: nil}, %Merged{} = merged, answers) do
+    {:ok, merged |> Read.business_events() |> Enum.map(& &1.data), answers}
+  end
+
+  defp readable(%__MODULE__{application: application, fold: fold}, %Merged{} = merged, answers) do
+    merged
+    |> Read.business_events()
+    |> Enum.reduce_while({[], answers}, fn event, {readable, answers} ->
+      case PersonalFields.readable_event(application, event, fold, answers) do
+        {:ok, data, answers} -> {:cont, {[data | readable], answers}}
+        {:error, :key_unknown} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:error, :key_unknown} = error -> error
+      {readable, answers} -> {:ok, Enum.reverse(readable), answers}
+    end
   end
 
   # Step 6.
@@ -329,11 +362,13 @@ defmodule Decree.Decision.Dispatch do
     end
   end
 
+  # The one prepare step, per member, each with its own stream. Its error is answered here, ahead
+  # of `append/6`'s arms: those read the store's answer, and this is not one. So it never retries.
   defp prepare_members(%__MODULE__{application: application} = dispatch, shape) do
     dispatch
     |> members_of(shape)
     |> Enum.reduce_while([], fn {stream_uuid, context, events}, appends ->
-      case prepare(application, stream_uuid, event_data(events, context), context) do
+      case Append.prepare_events(application, stream_uuid, events, context) do
         {:ok, prepared} -> {:cont, [{stream_uuid, :any_version, prepared} | appends]}
         {:error, _reason} = error -> {:halt, error}
       end
@@ -356,20 +391,6 @@ defmodule Decree.Decision.Dispatch do
 
       {prefix <> identity, member_context, events}
     end
-  end
-
-  defp event_data(events, %ExecutionContext{} = context) do
-    Mapper.map_to_event_data(events,
-      causation_id: context.causation_id,
-      correlation_id: context.correlation_id,
-      metadata: context.metadata
-    )
-  end
-
-  # The one prepare step, per member. Its error is answered here, ahead of `append/6`'s arms:
-  # those read the store's answer, and a `Decree.Event.Tags` implementation's is not one.
-  defp prepare(_application, _stream_uuid, event_data, %ExecutionContext{} = context) do
-    Append.prepare(event_data, context)
   end
 
   defp append(%__MODULE__{} = dispatch, appends, %Merged{} = merged, reads, events, state) do
@@ -407,6 +428,11 @@ defmodule Decree.Decision.Dispatch do
 
   defp answer({:error, _reason} = error, _context), do: error
   defp answer({:error, _error, _stacktrace} = error, _context), do: error
+
+  # What the dispatcher answers for a task that died.
+  defp answer({:left, _kind, _value, _stacktrace}, _context) do
+    {:error, :decision_execution_failed}
+  end
 
   # Steps 1 and 2: what the condition holds so far, with this read not yet sent. One count per
   # step, which the read keeps for `telemetry_read/5`.
@@ -492,5 +518,11 @@ defmodule Decree.Decision.Dispatch do
     metadata = Map.delete(metadata, :attempts)
 
     Telemetry.exception(@execute, start_time, :error, error, stacktrace, metadata)
+  end
+
+  defp telemetry_stop({:left, kind, value, stacktrace}, start_time, metadata) do
+    metadata = Map.delete(metadata, :attempts)
+
+    Telemetry.exception(@execute, start_time, kind, value, stacktrace, metadata)
   end
 end

@@ -151,23 +151,13 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
     %RecordedEvent{stream_version: stream_version} = event
     %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state
 
-    with {:ok, data, answers} <- readable_data(event, state, fold, answers) do
+    with {:ok, data, answers} <-
+           PersonalFields.readable_event(state.application, event, fold, answers) do
       aggregate_state = apply_redacted(aggregate_module, aggregate_state, data)
 
       {:ok, advance(state, stream_version, aggregate_state), answers}
     end
   end
-
-  defp readable_data(%RecordedEvent{data: data} = event, %Aggregate{} = state, fold, answers) do
-    if in_fold?(data, fold) do
-      PersonalFields.decrypt_fold_event(state.application, event, answers)
-    else
-      {:ok, data, answers}
-    end
-  end
-
-  defp in_fold?(%module{}, fold), do: module in fold
-  defp in_fold?(_data, _fold), do: false
 
   defp apply_redacted(aggregate_module, aggregate_state, data) do
     aggregate_module.apply(aggregate_state, data)
