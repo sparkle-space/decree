@@ -170,6 +170,49 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
     assert all_version(context) == 2
   end
 
+  test "a multi-stream victim is retried and its events are written once", context do
+    %{session_x: session_x, appender: appender} = context
+
+    appends = multi_stream_appends()
+
+    log =
+      capture_log(fn ->
+        append = Task.async(fn -> EventStore.append_to_streams(appends, conn: appender) end)
+
+        force_deadlock(context, context.appender_backend)
+
+        assert {:ok, :ok} = LockSession.commit(session_x)
+        assert :ok = Task.await(append, 15_000)
+      end)
+
+    assert log =~ "deadlock_detected"
+    assert stream_versions(context) == [1, 2]
+    assert all_version(context) == 3
+  end
+
+  test "a multi-stream victim in a caller's transaction is answered, not retried", context do
+    %{session_x: session_x, postgrex_config: postgrex_config} = context
+
+    caller = LockSession.start(postgrex_config)
+    appends = multi_stream_appends()
+
+    append =
+      LockSession.start_run(caller, fn tx ->
+        EventStore.append_to_streams(appends, conn: tx)
+      end)
+
+    force_deadlock(context, caller.backend)
+
+    assert {:error, %AppendError{class: :retryable, code: :deadlock_detected}} =
+             LockSession.await_run(append)
+
+    assert {:error, :rollback} = LockSession.commit(caller)
+    assert {:ok, :ok} = LockSession.commit(session_x)
+
+    assert stream_versions(context) == [1]
+    assert all_version(context) == 1
+  end
+
   test "an append through a `DBConnection.run/3` checkout is retried", context do
     assert_run_checkout_retries(context, 3)
 
@@ -221,6 +264,14 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
 
     LockSession.run(session_x, fn tx -> Postgrex.query!(tx, "SAVEPOINT x", []) end)
     LockSession.lock_row(session_x, schema, stream_id)
+  end
+
+  # `other` sorts first and is new, so the victim holds it too when the cycle closes.
+  defp multi_stream_appends do
+    [
+      {"stream", :any_version, EventFactory.create_events(1)},
+      {"other", :any_version, EventFactory.create_events(1)}
+    ]
   end
 
   defp async_append(conn, count) do

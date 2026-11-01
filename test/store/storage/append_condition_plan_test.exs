@@ -3,7 +3,7 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
 
   alias Decree.Store.{Config, EventData, LockSession, Query, UUID}
   alias Decree.Store.Sql.Statements
-  alias Decree.Store.Storage.{CreateStream, Initializer, Schema}
+  alias Decree.Store.Storage.{CreateStream, Initializer, Reader, Schema}
   alias Decree.Store.Streams.Stream
 
   @tables ["streams", "events", "stream_events", "event_tags", "event_types"]
@@ -49,9 +49,91 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
 
       assert_index_bound_after_growth(context, items)
     end
+
+    # The same case, in a call of two members, one of them created after the warming.
+    test "stays index-bound in a multi-stream call, after the store grew", context do
+      assert_index_bound_after_growth(context, [[tags: ["absent"]]], ["second"])
+    end
   end
 
-  defp assert_index_bound_after_growth(context, items) do
+  # A read has none of the function's cached plan: `Postgrex.query/4` without
+  # `cache_statement` sends an unnamed statement, which is planned on every call at its
+  # real parameters. So nothing outlives the growth, which is what this pins, with the
+  # same tiny, analysed store and the same growth as above.
+  describe "the read's plan" do
+    test "is custom, at literal values, and stays index-bound after the store grew", context do
+      %{postgrex_config: postgrex_config} = context
+
+      schema = unique_schema("read_plan")
+      init_schema(context, schema)
+
+      writer = LockSession.connect(postgrex_config)
+      session = LockSession.connect(postgrex_config)
+
+      run = &Postgrex.query!(writer, &1, [], timeout: 60_000)
+
+      run.(~s(SET search_path = "#{schema}", pg_temp))
+
+      for table <- @tables do
+        run.("ALTER TABLE #{table} SET (autovacuum_enabled = off)")
+      end
+
+      seed_tiny_store(writer, schema)
+
+      for table <- @tables, do: run.("ANALYZE #{table}")
+
+      explain_nested_statements(session)
+
+      {:ok, stream_id} = CreateStream.execute(writer, "target", schema: schema)
+      {:ok, %Query{} = query} = Query.compile([[tags: ["seed-1"]]])
+
+      for _call <- 1..@warming_calls do
+        read(session, schema, query)
+      end
+
+      grow(run, stream_id)
+
+      assert %Postgrex.Result{rows: [_row]} = read(session, schema, query)
+
+      # `auto_explain` reports a top-level statement when its portal closes, so the NOTICE
+      # arrives with the next statement's result, where a nested one's arrives in its own.
+      %Postgrex.Result{messages: messages} = Postgrex.query!(session, "SELECT 1", [])
+
+      assert [%{message: message}] = Enum.filter(messages, &(&1.message =~ "WITH head AS"))
+
+      # The message opens with the statement's own text, which names `$1` either way. A
+      # generic plan would show it in the plan too.
+      [_statement, plan] = String.split(message, "Query Parameters:", parts: 2)
+
+      assert plan =~ "unnest('{"
+      refute plan =~ "unnest($"
+
+      assert Regex.scan(~r/Seq Scan on \S*(event_tags|event_types|stream_events)\b/, plan) == [],
+             plan
+
+      assert plan =~ "ix_stream_events"
+
+      assert %Postgrex.Result{rows: []} =
+               Postgrex.query!(session, "SELECT name, statement FROM pg_prepared_statements", [])
+    end
+  end
+
+  defp read(session, schema, %Query{} = query) do
+    params = [
+      query.probe_items,
+      query.probe_tags,
+      query.probe_types,
+      query.rest_items,
+      query.rest_tags,
+      0,
+      10,
+      nil
+    ]
+
+    Postgrex.query!(session, Reader.Query.read_query_statement(schema, :forward), params)
+  end
+
+  defp assert_index_bound_after_growth(context, items, others \\ []) do
     %{postgrex_config: postgrex_config} = context
 
     schema = unique_schema("condition_plan")
@@ -74,16 +156,22 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
 
     explain_nested_statements(session)
 
-    {:ok, stream_id} = CreateStream.execute(writer, "target", schema: schema)
+    members =
+      for stream_uuid <- ["target" | others] do
+        {:ok, stream_id} = CreateStream.execute(writer, stream_uuid, schema: schema)
+
+        {stream_id, stream_uuid}
+      end
+
     {:ok, %Query{} = query} = Query.compile(items)
 
     for _call <- 1..@warming_calls do
-      call(session, schema, stream_id, query)
+      call(session, schema, members, query)
     end
 
-    grow(run, stream_id)
+    grow(run, members |> hd() |> elem(0))
 
-    plan = session |> call(schema, stream_id, query) |> condition_plan()
+    plan = session |> call(schema, members, query) |> condition_plan()
 
     # A custom plan would show the arrays as values. It would also be planned against
     # the grown tables, which is not the case under test.
@@ -160,20 +248,28 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
   end
 
   # The function's own call, so the result keeps the NOTICEs an `Appender` call would drop.
-  defp call(session, schema, stream_id, %Query{} = query) do
+  defp call(session, schema, members, %Query{} = query) do
+    {stream_ids, stream_uuids} = Enum.unzip(members)
+    ordinals = Enum.to_list(1..length(members))
+    each_event = fn value -> Enum.map(members, fn _member -> value end) end
+
     params = [
       schema,
-      stream_id,
-      "target",
+      stream_ids,
+      stream_uuids,
+      each_event.(nil),
+      each_event.(1),
       nil,
-      nil,
-      [UUID.string_to_binary!(UUID.uuid4())],
-      ["written"],
-      [nil],
-      [nil],
-      ["{}"],
-      ["{}"],
-      [DateTime.utc_now()],
+      ordinals,
+      each_event.(1),
+      Enum.map(members, fn _member -> UUID.string_to_binary!(UUID.uuid4()) end),
+      each_event.("written"),
+      each_event.(nil),
+      each_event.(nil),
+      each_event.("{}"),
+      each_event.("{}"),
+      each_event.(DateTime.utc_now()),
+      [],
       [],
       [],
       query.probe_items,

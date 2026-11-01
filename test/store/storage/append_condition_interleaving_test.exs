@@ -138,6 +138,66 @@ defmodule Decree.Store.Storage.AppendConditionInterleavingTest do
     end
   end
 
+  describe "a multi-stream append that waits on `$all`" do
+    test "fails on a matching event committed while it waited", context do
+      %{observer: observer, postgrex_config: postgrex_config} = context
+
+      :ok = EventStore.append_to_stream("before", 0, [event(["other"])])
+      :ok = EventStore.append_to_stream("decision-existing", 0, [event([])])
+
+      after_position = head(context)
+
+      session_a = LockSession.start(postgrex_config)
+
+      LockSession.run(session_a, fn tx ->
+        :ok = EventStore.append_to_stream("session-a", 0, [event(["contested"])], conn: tx)
+      end)
+
+      {session_b, backend_b} = open_session(context)
+      append = conditional_multi_append(session_b, after_position)
+
+      LockSession.wait_until_blocked(observer, backend_b, session_a.backend)
+
+      assert head(context) == after_position
+
+      assert {:ok, :ok} = LockSession.commit(session_a)
+
+      assert Task.await(append) == {:error, :append_condition_failed}
+
+      assert head(context) == after_position + 1
+      assert {:ok, [_event]} = EventStore.read_stream_forward("decision-existing")
+      assert {:error, :stream_not_found} = EventStore.read_stream_forward("decision-new-a")
+      assert {:error, :stream_not_found} = EventStore.read_stream_forward("decision-new-z")
+      assert all_positions(context) == [1, 2, 3]
+    end
+
+    test "passes on an event that does not match, and takes the next positions", context do
+      %{observer: observer, postgrex_config: postgrex_config} = context
+
+      :ok = EventStore.append_to_stream("decision-existing", 0, [event([])])
+
+      after_position = head(context)
+
+      session_a = LockSession.start(postgrex_config)
+
+      LockSession.run(session_a, fn tx ->
+        :ok = EventStore.append_to_stream("session-a", 0, [event(["uncontested"])], conn: tx)
+      end)
+
+      {session_b, backend_b} = open_session(context)
+      append = conditional_multi_append(session_b, after_position)
+
+      LockSession.wait_until_blocked(observer, backend_b, session_a.backend)
+
+      assert {:ok, :ok} = LockSession.commit(session_a)
+
+      assert Task.await(append) == :ok
+
+      assert head(context) == after_position + 4
+      assert all_positions(context) == [1, 2, 3, 4, 5]
+    end
+  end
+
   describe "a burst of creators" do
     test "over one tag with the same `after`: exactly one wins", context do
       creators = 8
@@ -181,6 +241,20 @@ defmodule Decree.Store.Storage.AppendConditionInterleavingTest do
       EventStore.append_to_stream(stream_uuid, expected_version, [event(["contested"])],
         conn: conn,
         condition: [items: items, after: after_position]
+      )
+    end)
+  end
+
+  defp conditional_multi_append(conn, after_position) do
+    Task.async(fn ->
+      EventStore.append_to_streams(
+        [
+          {"decision-new-z", 0, [event(["contested"])]},
+          {"decision-existing", 1, [event(["contested"])]},
+          {"decision-new-a", 0, [event(["contested"])]}
+        ],
+        conn: conn,
+        condition: [items: @contested, after: after_position]
       )
     end)
   end

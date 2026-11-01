@@ -830,7 +830,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
       %Postgrex.Result{rows: [[definition]]} =
         Postgrex.query!(
           conn,
-          "SELECT pg_get_functiondef('public.append_events_v3'::regproc)",
+          "SELECT pg_get_functiondef('public.append_events_v4'::regproc)",
           []
         )
 
@@ -840,7 +840,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     test "is in the migration, byte for byte", %{fragment: fragment} do
       migration =
         :decree
-        |> Application.app_dir("priv/decree/store/migrations/v1.6.0.sql")
+        |> Application.app_dir("priv/decree/store/migrations/v1.7.0.sql")
         |> File.read!()
 
       assert String.contains?(migration, "SELECT EXISTS (\n" <> fragment <> "\n    ) INTO")

@@ -200,6 +200,7 @@ defmodule Decree.Store do
   Two appends to different streams in one such transaction take the second
   stream's row after `$all`, which breaks the lock order every other append
   follows, so that caller can see a `deadlock_detected` `Decree.Store.AppendError`.
+  `c:append_to_streams/2` takes both in one call and keeps the order.
 
   An append refuses any isolation level but READ COMMITTED: in a `REPEATABLE READ`
   or `SERIALIZABLE` transaction it answers a `Decree.Store.AppendError` with class
@@ -290,6 +291,47 @@ defmodule Decree.Store do
   history. With an `after` from a read, that is a few events. `after: 0` over a broad
   first tag scans them all under `$all`: 2.3 s for 200,000 hits in a spike. See "The first
   tag" in `Decree.Store.Query`.
+
+  ## Appending to several streams
+
+  `c:append_to_streams/2` writes to several streams atomically, each with its own expected
+  version, under at most one condition:
+
+      :ok =
+        MyApp.EventStore.append_to_streams(
+          [
+            {"account-1", 4, debit_events},
+            {"account-2", :any_version, credit_events},
+            {"transfer-7", :no_stream, transfer_events}
+          ],
+          condition: [items: items, after: head, target: :transfer]
+        )
+
+  **All or none.** It is one database statement, so a stale member, a failed condition or
+  a duplicate event id leaves no stream row, no event and no position on any member.
+
+  **Positions.** Events take their `$all` positions in the order given, contiguous and
+  with nothing interleaved. Within a stream they keep their order.
+
+  **Locks.** The append takes every member's row and then `$all`, whatever order the
+  list is in: the function sorts the members by the bytes of their names, so a multi-stream
+  append cannot deadlock against another one or against a plain append. Elixir sorts
+  nothing, so no pod can disagree with another about the order. Prefer this to two appends
+  in one transaction, which take the second stream's row after `$all`.
+
+  **Notifications.** One call fires one notification per member, sorted by name, then one
+  for `$all`. A stream's subscribers get their stream's events, and a `$all` subscriber
+  gets the batch in position order.
+
+  **The one-call rule.** A multi-stream append is one function call at any size, with no
+  split into batches of 1,000, because the next batch would take a stream's row while
+  holding `$all`. It holds `$all` no longer than a split would, which holds it from its
+  first batch to the commit, but its `timeout` applies to that one call, so a very large
+  batch needs a larger one. Only `c:append_to_stream/4` splits.
+
+  **The declared rule.** A condition here needs what `c:append_to_stream/4` needs: every
+  member's name starts with a declared prefix, or the condition's `target` is declared.
+  One undeclared member refuses the batch.
 
   """
 
@@ -405,6 +447,14 @@ defmodule Decree.Store do
         opts = Keyword.merge(opts, overrides)
 
         Stream.append_to_stream(conn, stream_uuid, expected_version, events, opts)
+      end
+
+      def append_to_streams(appends, opts \\ []) do
+        overrides = Keyword.take(opts, @accepted_overrides_append_to_stream)
+        {conn, opts} = parse_opts(opts)
+        opts = Keyword.merge(opts, overrides)
+
+        Stream.append_to_streams(conn, appends, opts)
       end
 
       def link_to_stream(
@@ -829,7 +879,8 @@ defmodule Decree.Store do
     * `{:error, :cannot_append_to_all_stream}` for the `$all` stream.
     * `{:error, :duplicate_event}` when an event id was already appended.
     * `{:error, :not_found}` when the stream was removed (hard deleted) between
-      reading its version and appending.
+      reading its version and appending. Inside a caller's transaction this aborts
+      that transaction, as a stale append does.
     * `{:error, :append_condition_failed}` when an event past the condition's
       `after` matches its `items`. A stale append answers
       `{:error, :wrong_expected_version}` instead: it never evaluates a condition.
@@ -876,6 +927,66 @@ defmodule Decree.Store do
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, :rollback}
+              | {:error, reason :: term}
+
+  @doc """
+  Append events to several streams atomically, in one database statement. See "Appending
+  to several streams" in the module documentation for the guarantees, the order of
+  positions and notifications, and the rule that it is one call at any size.
+
+    - `appends` is a non-empty list of `{stream_uuid, expected_version, events}`, one per
+      stream. `expected_version` and `events` are those of `c:append_to_stream/4`, and
+      `events` has at least one event. Events take their `$all` positions in list order.
+
+    - `opts` an optional keyword list containing:
+      - `name` the name of the event store if provided to `start_link/1`.
+      - `conn` an existing Postgrex connection or transaction to append through.
+      - `timeout` an optional timeout for the database statement, in milliseconds.
+        Defaults to 15,000ms. It applies to the one statement, at any size.
+      - `condition` a `Decree.Store.AppendCondition` keyword list, for a conditional
+        append. See "Conditional appends" in `Decree.Store`. It is declared, as
+        `c:append_to_stream/4` says, when every member starts with a declared prefix, or
+        when its `target` is declared.
+      - `created_at_override` dates the new streams and every event.
+
+  Returns `:ok` on success, or the errors of `c:append_to_stream/4`, for any member, and:
+
+    * `{:error, :cannot_append_to_all_stream}` when a member is the `$all` stream.
+    * `{:error, :invalid_append}` when `appends` is not a non-empty list of those tuples.
+    * `{:error, :repeated_stream}` when a stream appears twice, whatever its expected
+      versions. A repeat cannot name one base version.
+
+  These, like a tag that is too long and a condition that cannot run, are answered before
+  any statement is sent, so a caller's transaction stays usable.
+
+  A member's row gone by the time the function locks it answers `{:error, :not_found}`,
+  and aborts a caller's transaction, as a stale append does. Losing a race to create a
+  member is retried once, as a `deadlock_detected` outside a caller's transaction is. Both
+  read every member again and evaluate the condition again, with the same `after`.
+  """
+  @callback append_to_streams(
+              appends :: [{stream_uuid :: String.t(), expected_version, list(EventData.t())}],
+              opts :: [
+                option | {:condition, keyword()} | {:created_at_override, DateTime.t()}
+              ]
+            ) ::
+              :ok
+              | {:error, :cannot_append_to_all_stream}
+              | {:error, :invalid_append}
+              | {:error, :repeated_stream}
+              | {:error, :stream_exists}
+              | {:error, :stream_not_found}
+              | {:error, :wrong_expected_version}
+              | {:error, :stream_deleted}
+              | {:error, :duplicate_event}
+              | {:error, :not_found}
+              | {:error, :append_condition_failed}
+              | {:error, :tag_too_long}
+              | {:error, :invalid_condition}
+              | {:error, :invalid_query}
+              | {:error, :undeclared_conditional_target}
+              | {:error, {:already_retried_once, :duplicate_stream_uuid}}
+              | {:error, Decree.Store.AppendError.t()}
               | {:error, reason :: term}
 
   @doc """

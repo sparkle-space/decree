@@ -14,6 +14,7 @@ defmodule Decree.Store.Streams.Stream do
 
   alias Decree.Store.Streams.StreamInfo
 
+  @all_stream "$all"
   @max_bigint 9_223_372_036_854_775_807
 
   defguardp is_bigint(value) when is_integer(value) and abs(value) <= @max_bigint
@@ -23,19 +24,19 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
-         {:ok, new_opts} <- compile_condition(stream_uuid, new_opts),
+         {:ok, new_opts} <- compile_condition([stream_uuid], new_opts),
          {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts),
          :ok <- do_append_to_storage(conn, stream, events, expected_version, serializer, new_opts) do
       :ok
     end
-    |> maybe_retry_once(conn, stream_uuid, expected_version, events, opts)
+    |> maybe_retry_once(conn, opts, retry_append(conn, stream_uuid, expected_version, events))
   end
 
   def append_to_stream(conn, stream_uuid, expected_version, events, opts) do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
-         {:ok, new_opts} <- compile_condition(stream_uuid, new_opts) do
+         {:ok, new_opts} <- compile_condition([stream_uuid], new_opts) do
       transaction(
         conn,
         fn transaction ->
@@ -56,8 +57,25 @@ defmodule Decree.Store.Streams.Stream do
         end,
         new_opts
       )
-      |> maybe_retry_once(conn, stream_uuid, expected_version, events, opts)
+      |> maybe_retry_once(conn, opts, retry_append(conn, stream_uuid, expected_version, events))
     end
+  end
+
+  # One statement at any size, so no transaction of its own: see `Appender.append_streams/3`.
+  def append_to_streams(conn, appends, opts) do
+    {serializer, new_opts} = Keyword.pop(opts, :serializer)
+
+    with :ok <- validate_appends(appends),
+         :ok <-
+           validate_tags(Enum.flat_map(appends, fn {_stream, _version, events} -> events end)),
+         {:ok, new_opts} <- compile_condition(stream_uuids(appends), new_opts),
+         {:ok, streams} <- streams_info(conn, appends, new_opts) do
+      appends
+      |> Enum.zip(streams)
+      |> Enum.map(&prepare_member(&1, serializer, new_opts))
+      |> then(&Storage.append_to_streams(conn, &1, new_opts))
+    end
+    |> maybe_retry_once(conn, opts, &append_to_streams(conn, appends, &1))
   end
 
   def link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, opts) do
@@ -187,12 +205,70 @@ defmodule Decree.Store.Streams.Stream do
        ) do
     prepared_events = prepare_events(events, stream, serializer, opts)
 
-    # One list per event. The `uniq` is load-bearing: the appender reads any unique
-    # violation it does not name, `event_tags_pkey` included, as a stale version.
-    tags = Enum.map(events, &Enum.uniq(&1.tags))
-
-    write_to_stream(conn, prepared_events, stream, expected_version, tags, opts)
+    write_to_stream(conn, prepared_events, stream, expected_version, unique_tags(events), opts)
   end
+
+  # One list per event. The `uniq` is load-bearing: the appender reads any unique
+  # violation it does not name, `event_tags_pkey` included, as a stale version.
+  defp unique_tags(events), do: Enum.map(events, &Enum.uniq(&1.tags))
+
+  defp prepare_member({{_stream_uuid, expected_version, events}, stream}, serializer, opts) do
+    %StreamInfo{stream_id: stream_id} = stream
+
+    %{
+      stream_id: stream_id,
+      expected_version: expected_version,
+      events: prepare_events(events, stream, serializer, opts),
+      tags: unique_tags(events)
+    }
+  end
+
+  # Every member's version check, so a stale member answers before the function runs.
+  defp streams_info(conn, appends, opts) do
+    appends
+    |> Enum.reduce_while([], fn {stream_uuid, expected_version, _events}, streams ->
+      case stream_info(conn, stream_uuid, expected_version, opts) do
+        {:ok, stream} -> {:cont, [stream | streams]}
+        {:error, _error} = reply -> {:halt, reply}
+      end
+    end)
+    |> case do
+      {:error, _error} = reply -> reply
+      streams -> {:ok, Enum.reverse(streams)}
+    end
+  end
+
+  defp stream_uuids(appends), do: Enum.map(appends, &elem(&1, 0))
+
+  # Runs first, as `validate_tags/1` does and for the same reason. A repeated stream is
+  # refused, whatever its expected versions: a repeat cannot name one base, and its
+  # positions could not both be right.
+  defp validate_appends(appends) do
+    if valid_appends?(appends) do
+      stream_uuids = stream_uuids(appends)
+
+      cond do
+        @all_stream in stream_uuids -> {:error, :cannot_append_to_all_stream}
+        stream_uuids != Enum.uniq(stream_uuids) -> {:error, :repeated_stream}
+        true -> :ok
+      end
+    else
+      {:error, :invalid_append}
+    end
+  end
+
+  defp valid_appends?([_append | _appends] = appends), do: well_formed_appends?(appends)
+  defp valid_appends?(_appends), do: false
+
+  defp well_formed_appends?([]), do: true
+
+  defp well_formed_appends?([{stream_uuid, expected_version, [_event | _events]} | appends])
+       when is_binary(stream_uuid) and
+              (expected_version in [:any_version, :no_stream, :stream_exists] or
+                 (is_integer(expected_version) and expected_version >= 0)),
+       do: well_formed_appends?(appends)
+
+  defp well_formed_appends?(_appends), do: false
 
   # Runs first in both `append_to_stream/5` clauses, so a refusal sends no statement at
   # all, not even a BEGIN, and answers before `stream_info/4` can. A caller's transaction
@@ -211,14 +287,14 @@ defmodule Decree.Store.Streams.Stream do
   # `opts` come back with the compiled condition, and without one a plain append's are
   # untouched. `Keyword.get_values/2` because `condition: nil` is a refused condition, not
   # a plain append, and because a repeated option must not leave one condition unchecked.
-  defp compile_condition(stream_uuid, opts) do
+  defp compile_condition(stream_uuids, opts) do
     case Keyword.get_values(opts, :condition) do
       [] ->
         {:ok, opts}
 
       [condition] ->
         with {:ok, %AppendCondition{} = compiled} <- AppendCondition.compile(condition),
-             :ok <- validate_declared(stream_uuid, compiled, opts) do
+             :ok <- validate_declared(stream_uuids, compiled, opts) do
           {:ok, Keyword.put(opts, :condition, compiled)}
         end
 
@@ -228,13 +304,16 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   # Declared by the store's config, which `opts` carry. `Decree.Store` passes no caller
-  # option of this name through, so a caller cannot declare its own append.
-  defp validate_declared(stream_uuid, %AppendCondition{target: target}, opts) do
+  # option of this name through, so a caller cannot declare its own append. Every member
+  # must start with a declared prefix, or the condition's `target` must be declared.
+  defp validate_declared(stream_uuids, %AppendCondition{target: target}, opts) do
     declared = Keyword.get(opts, :conditional_appends, [])
     prefixes = Keyword.get(declared, :stream_prefixes, [])
     targets = Keyword.get(declared, :targets, [])
 
-    if String.starts_with?(stream_uuid, prefixes) or (not is_nil(target) and target in targets) do
+    prefixed? = Enum.all?(stream_uuids, &String.starts_with?(&1, prefixes))
+
+    if prefixed? or (not is_nil(target) and target in targets) do
       :ok
     else
       {:error, :undeclared_conditional_target}
@@ -514,18 +593,14 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  defp maybe_retry_once(
-         {:error, :duplicate_stream_uuid},
-         conn,
-         stream_uuid,
-         expected_version,
-         events,
-         opts
-       ) do
-    unless Keyword.has_key?(opts, :retried_once) do
-      opts = Keyword.put(opts, :retried_once, true)
+  defp retry_append(conn, stream_uuid, expected_version, events) do
+    &append_to_stream(conn, stream_uuid, expected_version, events, &1)
+  end
 
-      append_to_stream(conn, stream_uuid, expected_version, events, opts)
+  # `retry` runs the whole append again with the given opts, from its stream-info reads.
+  defp maybe_retry_once({:error, :duplicate_stream_uuid}, _conn, opts, retry) do
+    unless Keyword.has_key?(opts, :retried_once) do
+      retry.(Keyword.put(opts, :retried_once, true))
     else
       {:error, {:already_retried_once, :duplicate_stream_uuid}}
     end
@@ -539,31 +614,25 @@ defmodule Decree.Store.Streams.Stream do
   defp maybe_retry_once(
          {:error, %AppendError{code: :deadlock_detected}} = error,
          %DBConnection{conn_mode: :transaction},
-         _stream_uuid,
-         _expected_version,
-         _events,
-         _opts
+         _opts,
+         _retry
        ),
        do: error
 
   defp maybe_retry_once(
          {:error, %AppendError{code: :deadlock_detected}} = error,
-         conn,
-         stream_uuid,
-         expected_version,
-         events,
-         opts
+         _conn,
+         opts,
+         retry
        ) do
     if Keyword.has_key?(opts, :retried_deadlock_once) do
       error
     else
-      opts = Keyword.put(opts, :retried_deadlock_once, true)
-
-      append_to_stream(conn, stream_uuid, expected_version, events, opts)
+      retry.(Keyword.put(opts, :retried_deadlock_once, true))
     end
   end
 
-  defp maybe_retry_once(error, _conn, _stream_uuid, _expected_version, _events, _opts), do: error
+  defp maybe_retry_once(reply, _conn, _opts, _retry), do: reply
 
   defp transaction(conn, transaction_fun, opts) do
     case Postgrex.transaction(conn, transaction_fun, opts) do

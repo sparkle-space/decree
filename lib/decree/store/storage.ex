@@ -22,6 +22,11 @@ defmodule Decree.Store.Storage do
   defdelegate append_to_stream(conn, stream_id, events, opts), to: Appender, as: :append
 
   @doc """
+  Append to several streams at once, atomically, in one statement.
+  """
+  defdelegate append_to_streams(conn, members, opts), to: Appender, as: :append_streams
+
+  @doc """
   Link the existing event ids already present in a stream to the given stream.
   """
   defdelegate link_to_stream(conn, stream_id, event_ids, opts), to: Appender, as: :link
