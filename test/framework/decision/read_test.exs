@@ -120,6 +120,20 @@ defmodule Decree.Decision.ReadTest do
       assert Read.replays_tag?(parsed, "b")
       refute Read.replays_tag?(parsed, "a")
     end
+
+    test "`replays_outside?/2` asks every replay item for a scope tag, and no other item" do
+      {:ok, parsed} =
+        Read.parse([
+          [types: ["A"], tags: ["a"]],
+          [types: ["B"], tags: ["b", @kind], replay: true],
+          %{types: ["C"], tags: ["c", @kind], replay: true}
+        ])
+
+      refute Read.replays_outside?(parsed, ["b", "c"])
+      assert Read.replays_outside?(parsed, ["b"])
+      assert Read.replays_outside?(parsed, ["a"])
+      assert Read.replays_outside?(parsed, [@kind <> "-other"])
+    end
   end
 
   describe "layout/3" do

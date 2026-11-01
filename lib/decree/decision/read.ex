@@ -52,7 +52,8 @@ defmodule Decree.Decision.Read do
   @doc """
   Checks a decision's items: each a keyword list or a map naming `:types` and at most
   `:tags` and `:replay`. A `replay: true` item names a `command_kind:` tag and at least one
-  other. The store checks the rest, so a repeated key is left for it.
+  other, and that it names a scope tag is `replays_outside?/2`, which needs the dispatch. The
+  store checks the rest, so a repeated key is left for it.
   """
   @spec parse(term()) :: {:ok, [parsed()]} | {:error, :invalid_query}
   def parse([_item | _items] = items) do
@@ -125,6 +126,16 @@ defmodule Decree.Decision.Read do
   def replays_tag?(parsed, tag) do
     Enum.any?(parsed, fn %{item: item, replay: replay} ->
       replay and tag in item_tags(item)
+    end)
+  end
+
+  @doc """
+  Whether a `replay: true` item names no tag of `scope`.
+  """
+  @spec replays_outside?([parsed()], [String.t()]) :: boolean()
+  def replays_outside?(parsed, scope) do
+    Enum.any?(parsed, fn %{item: item, replay: replay} ->
+      replay and not Enum.any?(item_tags(item), &(&1 in scope))
     end)
   end
 

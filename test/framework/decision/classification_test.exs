@@ -25,6 +25,31 @@ defmodule Decree.Decision.ClassificationTest do
     )
   end
 
+  defmodule RefusingCreate do
+    defstruct [:command_id, :claim_id, :scope, script: %{}]
+  end
+
+  # A create that records a refusal as an event, so `create:` lists that type beside the fact's.
+  defmodule RefusingCreateDecision do
+    use Decree.DecisionFixtures.Scripting,
+      create: [
+        types: [
+          "Elixir.Decree.DecisionFixtures.Claimed",
+          "Elixir.Decree.DecisionFixtures.Released"
+        ]
+      ]
+  end
+
+  defmodule RefusingCreateRouter do
+    use Decree.Commands.Router
+
+    decide(RefusingCreate,
+      to: RefusingCreateDecision,
+      identity: :claim_id,
+      identity_prefix: "create-"
+    )
+  end
+
   @retry [:decree, :decision, :retry]
   @read_query [:decree, :event_store, :read_query, :start]
   @append [:decree, :event_store, :append_to_streams, :start]
@@ -173,6 +198,7 @@ defmodule Decree.Decision.ClassificationTest do
         scripted(
           command_id: first.command_id,
           scope: scope,
+          scope_tags: fn _command -> ["scope:" <> scope] end,
           query: fn _command, _context -> [shared] end,
           decide: fn _state, _command -> {:error, :reached_decide} end
         )
@@ -612,7 +638,29 @@ defmodule Decree.Decision.ClassificationTest do
       refute_received {:telemetry, @read_query, _, _}
     end
 
-    test "a `replay: true` item on another tag passes" do
+    test "a `replay: true` item on the fact tag is refused with a scope tag beside it" do
+      query = fn command, _context ->
+        [
+          [
+            types: [Atom.to_string(Claimed)],
+            tags: [
+              "claim:" <> command.claim_id,
+              "scope:" <> command.scope,
+              Append.kind_tag(command)
+            ],
+            replay: true
+          ]
+        ]
+      end
+
+      command = create(query: query, scope_tags: &["scope:" <> &1.scope])
+
+      assert {:error, :invalid_query} = App.dispatch(command)
+
+      refute_received {:telemetry, @read_query, _, _}
+    end
+
+    test "a `replay: true` item's scope tag has to come from `scope_tags/1`" do
       query = fn command, _context ->
         [
           [
@@ -623,7 +671,100 @@ defmodule Decree.Decision.ClassificationTest do
         ]
       end
 
-      assert :ok = App.dispatch(create(query: query))
+      assert {:error, :invalid_query} = App.dispatch(create(query: query))
+
+      refute_received {:telemetry, @read_query, _, _}
+
+      assert :ok = App.dispatch(create(query: query, scope_tags: &["scope:" <> &1.scope]))
+    end
+
+    defp released(command), do: %Released{claim_id: command.claim_id, scope: command.scope}
+
+    test "an undeclared type is refused for every `command_id`, with nothing stored" do
+      attach_telemetry([@append])
+
+      command = create(decide: fn _state, command -> released(command) end)
+
+      assert {:error, :batch_lacks_fact} = App.dispatch(command)
+
+      assert {:error, :batch_lacks_fact} =
+               App.dispatch(%{command | command_id: UUID.uuid4()})
+
+      refute_received {:telemetry, @append, _, _}
+      assert stored(fact_stream(command)) == []
+    end
+
+    test "the declared type on another member, the route tag on another type, is refused" do
+      attach_telemetry([@append])
+
+      other = UUID.uuid4()
+
+      decide = fn _state, command ->
+        {:streams,
+         [
+           {:claim, command.claim_id, released(command)},
+           {:claim, other, claimed(command)}
+         ]}
+      end
+
+      command = create(decide: decide)
+
+      assert {:error, :batch_lacks_fact} = App.dispatch(command)
+
+      refute_received {:telemetry, @append, _, _}
+      assert stored(fact_stream(command)) == []
+      assert stored("create-" <> other) == []
+    end
+
+    test "the declared type on the route commits, beside any other event" do
+      route = create(decide: fn _state, command -> claimed(command) end)
+      batch = create(decide: fn _state, command -> [released(command), claimed(command)] end)
+      other = UUID.uuid4()
+
+      members =
+        create(
+          decide: fn _state, command ->
+            {:streams,
+             [
+               {:claim, other, released(command)},
+               {:claim, command.claim_id, claimed(command)}
+             ]}
+          end
+        )
+
+      assert :ok = App.dispatch(route)
+      assert :ok = App.dispatch(batch)
+      assert :ok = App.dispatch(members)
+
+      assert [%Claimed{}] = data(stored(fact_stream(route)))
+      assert [%Released{}, %Claimed{}] = data(stored(fact_stream(batch)))
+      assert [%Claimed{}] = data(stored(fact_stream(members)))
+      assert [%Released{}] = data(stored("create-" <> other))
+    end
+
+    test "a refusal recorded as an event commits when declared, and a later create folds it" do
+      decide = first_then(&released/1, fn _command -> {:error, :refused_before} end)
+
+      command = scripted([query: fn _c, _t -> [] end, decide: decide], RefusingCreate)
+
+      assert :ok = RefusingCreateRouter.dispatch(command, application: App)
+
+      assert {:error, :refused_before} =
+               RefusingCreateRouter.dispatch(%{command | command_id: UUID.uuid4()},
+                 application: App
+               )
+
+      assert [%Released{}] = data(stored(fact_stream(command)))
+    end
+
+    test "`:batch_lacks_fact` does not retry" do
+      command = create(decide: fn _state, command -> released(command) end)
+
+      assert {:error, :batch_lacks_fact} = App.dispatch(command)
+
+      assert_received {:telemetry, @read_query, _, _}
+      refute_received {:telemetry, @read_query, _, _}
+      refute_received {:telemetry, @retry, _, _}
     end
 
     test "a `query` that is no list stays `:invalid_query`" do
@@ -669,6 +810,58 @@ defmodule Decree.Decision.ClassificationTest do
 
       assert {:error, :invalid_query} =
                App.dispatch(scripted(followup: fn _c, _t, _e -> [item] end))
+    end
+
+    defp replay_on(command, tag) do
+      [types: [Atom.to_string(Claimed)], tags: [tag, Append.kind_tag(command)], replay: true]
+    end
+
+    test "naming the kind and no scope tag is `:invalid_query`, with no statement" do
+      query = fn command, _context -> [replay_on(command, "correlation:shared")] end
+
+      assert {:error, :invalid_query} = App.dispatch(scripted(query: query))
+
+      refute_received {:telemetry, @read_query, _, _}
+    end
+
+    test "naming the kind and no scope tag in a follow-up sends no second read" do
+      followup = fn command, _context, _events -> [replay_on(command, "correlation:shared")] end
+
+      assert {:error, :invalid_query} = App.dispatch(scripted(followup: followup))
+
+      assert_received {:telemetry, @read_query, _, _}
+      refute_received {:telemetry, @read_query, _, _}
+    end
+
+    test "naming a tag of `scope_tags/1` passes, in either read" do
+      query = fn command, _context -> [replay_on(command, "scope:" <> command.scope)] end
+      followup = fn command, _context, _events -> query.(command, nil) end
+      scope_tags = &["scope:" <> &1.scope]
+
+      assert :ok = App.dispatch(scripted(query: query, scope_tags: scope_tags))
+      assert :ok = App.dispatch(scripted(followup: followup, scope_tags: scope_tags))
+    end
+
+    test "another entity's gate, out of the window, cannot be read by what they share" do
+      first = scripted(correlation_id: "shared")
+
+      assert :ok = App.dispatch(first)
+      assert_received {:telemetry, @read_query, _, _}
+
+      age_stamps(first.command_id, @an_hour)
+
+      second =
+        scripted(
+          command_id: first.command_id,
+          correlation_id: "shared",
+          query: fn command, _context -> [replay_on(command, "correlation:shared")] end,
+          decide: fn _state, _command -> {:error, :folded_the_gate} end
+        )
+
+      assert {:error, :invalid_query} = App.dispatch(second)
+
+      refute_received {:telemetry, @read_query, _, _}
+      assert stored(stream(second)) == []
     end
   end
 

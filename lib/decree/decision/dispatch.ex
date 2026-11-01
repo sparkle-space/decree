@@ -252,7 +252,7 @@ defmodule Decree.Decision.Dispatch do
 
       items ->
         with {:ok, parsed} <- Read.parse(own_items(dispatch, items)),
-             :ok <- no_replay_of_fact(dispatch, parsed) do
+             :ok <- replays_in_scope(dispatch, parsed) do
           bounded(dispatch, [], Read.layout(parsed, framework_items(dispatch)))
         end
     end
@@ -266,10 +266,18 @@ defmodule Decree.Decision.Dispatch do
     [[types: types, tags: [stream_tag]] | items]
   end
 
-  defp no_replay_of_fact(%__MODULE__{bounds: %{create: false}}, _parsed), do: :ok
+  # Past the window step 7 checks nothing, so a replay item's own scope tag is what keeps
+  # another entity's gate out of it. On a create the stream tag is the fact's, and a replay item
+  # may not name it, so its scope tag comes from `scope_tags/1`.
+  defp replays_in_scope(%__MODULE__{bounds: %{create: create}} = dispatch, parsed) do
+    %__MODULE__{stream_tag: stream_tag, scope: scope} = dispatch
 
-  defp no_replay_of_fact(%__MODULE__{stream_tag: stream_tag}, parsed) do
-    if Read.replays_tag?(parsed, stream_tag), do: {:error, :invalid_query}, else: :ok
+    if Read.replays_outside?(parsed, scope) or
+         (create != false and Read.replays_tag?(parsed, stream_tag)) do
+      {:error, :invalid_query}
+    else
+      :ok
+    end
   end
 
   # Step 2.
@@ -290,7 +298,7 @@ defmodule Decree.Decision.Dispatch do
 
         items ->
           with {:ok, parsed} <- Read.parse(items),
-               :ok <- no_replay_of_fact(dispatch, parsed),
+               :ok <- replays_in_scope(dispatch, parsed),
                read = Read.layout(parsed, framework_items(dispatch)),
                {:ok, read} <- bounded(dispatch, [first], read) do
             reads = [first, read]
@@ -435,7 +443,8 @@ defmodule Decree.Decision.Dispatch do
          # Before anything commits: a raise here has to leave the store as it was.
          state = Enum.reduce(events, state, &decision.evolve(&2, &1)),
          {:ok, appends} <- prepare_members(dispatch, shape),
-         :ok <- within_scope(dispatch, appends) do
+         :ok <- within_scope(dispatch, appends),
+         :ok <- lands_fact(dispatch, appends) do
       append(dispatch, appends, merged, reads, events, state)
     end
   end
@@ -454,6 +463,20 @@ defmodule Decree.Decision.Dispatch do
     else
       {:error, :batch_lacks_scope_tag}
     end
+  end
+
+  # What a create's fact item reads, asked of one event that lands: its type and the stream tag
+  # together, or a racing create reads nothing and commits too.
+  defp lands_fact(%__MODULE__{bounds: %{create: false}}, _appends), do: :ok
+
+  defp lands_fact(%__MODULE__{bounds: %{create: types}, stream_tag: stream_tag}, appends) do
+    facts =
+      for {_stream_uuid, _version, prepared} <- appends,
+          %EventStore.EventData{event_type: event_type, tags: tags} <- prepared,
+          event_type in types and stream_tag in tags,
+          do: event_type
+
+    if facts == [], do: {:error, :batch_lacks_fact}, else: :ok
   end
 
   # The one prepare step, per member, each with its own stream. Its error is answered here, ahead

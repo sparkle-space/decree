@@ -64,7 +64,8 @@ defmodule Decree.Decision do
   that reads nothing has nothing to decide on, unless it is a create. `replay: true` marks an
   item as finding this command's own earlier work, and sends a resend to `c:decide/2` to say
   what its first answer was: see "Replay safety". Its `:tags` must hold a `command_kind:` tag
-  and at least one other, or it answers `{:error, :invalid_query}`.
+  and a tag of the command's scope, the route's stream tag or one of `c:scope_tags/1`, or it
+  answers `{:error, :invalid_query}`.
 
   **Lead with the narrowest tag.** An item's first tag is the one the index searches, and
   what a condition costs under the `$all` lock is that tag's hits after `after`. So a broad
@@ -106,8 +107,9 @@ defmodule Decree.Decision do
        answer `{:error, :reused_command_id}`, with nothing appended. Otherwise apply the new
        events to the state and prepare them, per member, which takes their tags from the
        plaintext and encrypts what they declare. Its error is the answer. Refuse a batch
-       lacking a scope tag, `{:error, :batch_lacks_scope_tag}`. Append them at `:any_version`
-       under the condition.
+       lacking a scope tag, `{:error, :batch_lacks_scope_tag}`, and on a create a batch with
+       no event of a declared type on the stream tag, `{:error, :batch_lacks_fact}`. Append
+       them at `:any_version` under the condition.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
@@ -153,9 +155,17 @@ defmodule Decree.Decision do
   `c:query/2` may answer `[]`. Past the window a resend is a new command, and this item is what
   still finds the fact, so `c:decide/2` answers its own "already exists".
 
+  What that item reads has to land. A create's batch needs at least one event whose type is
+  declared and whose own tags hold the stream tag, or the dispatch answers
+  `{:error, :batch_lacks_fact}` with nothing appended. One event has to do both: a declared
+  type on another member and the stream tag on another event add up to nothing the item finds.
+  A create that records a refusal as an event lists that type in `create:` too, so a later
+  create folds it, and is otherwise refused the same way: the rule fails closed.
+
   Anything else says `create: false`. The item cannot be `replay: true`, which fails the build,
   and a `replay: true` item of `c:query/2` or `c:followup_query/3` naming the stream tag on a
-  create answers `{:error, :invalid_query}` before that read is sent.
+  create answers `{:error, :invalid_query}` before that read is sent. So a create's replay item
+  takes its scope tag from `c:scope_tags/1`.
 
   ## Replay safety
 
@@ -167,6 +177,10 @@ defmodule Decree.Decision do
 
       [types: ["Elixir.BoardGated"], tags: [key_tag, target_tag, "command_kind:CloseBoard"],
        replay: true]
+
+  The item needs its `command_kind:` tag and a scope tag. `target_tag` is that one: past the
+  window nothing else keeps another entity's gate out of the fold, so a target other than the
+  route goes in `c:scope_tags/1`.
 
   It folds what the first run recorded, so `c:decide/2` can reproduce a refusal it recorded as
   an event, or answer `:duplicate`. A batch of a gate event and another answers from the gate.
@@ -283,7 +297,8 @@ defmodule Decree.Decision do
   `:invalid_decision_identity`, `:invalid_query`, `:decision_returned_no_events` for `[]`,
   `:ok` or `nil` from `c:decide/2` and `[]` for a member, `:invalid_decision_return` for
   anything else it may not answer, `:invalid_decision_stream` for a malformed member,
-  `:batch_lacks_scope_tag`, `:invalid_scope_tags` and `:invalid_command_window`.
+  `:batch_lacks_scope_tag`, `:batch_lacks_fact`, `:invalid_scope_tags` and
+  `:invalid_command_window`.
 
   ## Bounds
 
