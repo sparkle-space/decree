@@ -23,6 +23,9 @@ defmodule Decree.PersonalFields.KeySource do
   Decree treats a raise, an exit, a throw and any other answer as `:unknown`, without logging
   what was raised. It holds no answer beyond one append, one fold or one delivered event, so an
   implementation decides every time.
+
+  `Decree.PersonalFields.KeyStream` is what an implementation reads a subject's wrapped key
+  from.
   """
 
   @doc """

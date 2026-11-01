@@ -144,6 +144,34 @@ defmodule Decree.EventStore do
   end
 
   @doc """
+  Reads the last event of the given stream, upcast as `stream_forward/4` upcasts.
+
+  Answers `{:ok, recorded_event}`, or `{:error, :stream_not_found}` for a stream that never
+  existed and for one hard-deleted, which nothing tells apart, or `{:error, reason}` for a read
+  that failed. A failed read is never `:stream_not_found`.
+
+  Its cost does not grow with the stream.
+  """
+  # No `span/3`: a span's exception event holds the raised term, and `Jason.DecodeError` holds
+  # the row it failed on.
+  def read_stream_head(application, stream_uuid) do
+    {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+    with {:ok, event} <- adapter.read_stream_head(adapter_meta, stream_uuid) do
+      {:ok, Upcast.upcast_event(event, additional_metadata: %{application: application})}
+    end
+  end
+
+  @doc """
+  The stream prefixes the application's event store declares as deletable.
+  """
+  def deletable_stream_prefixes(application) do
+    {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+    adapter.deletable_stream_prefixes(adapter_meta)
+  end
+
+  @doc """
   Create a transient subscription to a single event stream.
 
   The event store will publish any events appended to the given stream to the

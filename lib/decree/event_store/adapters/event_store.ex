@@ -4,6 +4,7 @@ defmodule Decree.EventStore.Adapters.EventStore do
   """
 
   alias Decree.EventStore.Adapters.EventStore.Mapper
+  alias Decree.Store.Config
   alias Decree.Store.ReadResult
 
   @behaviour Decree.EventStore.Adapter
@@ -79,6 +80,28 @@ defmodule Decree.EventStore.Adapters.EventStore do
     case event_store.stream_forward(stream_uuid, start_version, opts) do
       {:error, error} -> {:error, error}
       stream -> Stream.map(stream, &Mapper.from_recorded_event/1)
+    end
+  end
+
+  @impl Decree.EventStore.Adapter
+  def read_stream_head(adapter_meta, stream_uuid) do
+    {event_store, name} = extract_adapter_meta(adapter_meta)
+
+    case event_store.read_stream_backward(stream_uuid, -1, 1, name: name) do
+      {:ok, [event]} -> {:ok, Mapper.from_recorded_event(event)}
+      # The store reads the stream's row, then its events: a hard delete can land between them.
+      {:ok, []} -> {:error, :stream_not_found}
+      {:error, _error} = error -> error
+    end
+  end
+
+  @impl Decree.EventStore.Adapter
+  def deletable_stream_prefixes(adapter_meta) do
+    {_event_store, name} = extract_adapter_meta(adapter_meta)
+
+    case Config.lookup(name, :deletable) do
+      nil -> []
+      deletable -> Keyword.get(deletable, :stream_prefixes, [])
     end
   end
 
