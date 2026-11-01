@@ -1,0 +1,28 @@
+<%!--
+  A subject's tag rows, by kind. `own.original_stream_id = $1` is load-bearing: a stream can
+  hold links to another subject's events, and those rows are not this subject's. The rows are
+  found through the stream's own events and their `$all` links, never by tag value, so a later
+  holder of the same value keeps theirs. `stream_id = 0 AND original_stream_id = $1` has no
+  index, which is why this goes through the stream's own rows.
+
+  `event_tags` rows are locked by `position, tag`, the order `hard_delete_stream` locks them
+  in. The two meet on tag rows through a link stream, with no common lock: this one holds the
+  subject's row and that one the link stream's. One order means no cycle. A row the other
+  took first is skipped, so the count is of what this statement deleted.
+--%>
+WITH locked_event_tags AS (
+  SELECT t.tag, t.position
+  FROM "<%= schema %>".stream_events own
+  JOIN "<%= schema %>".stream_events link
+    ON link.event_id = own.event_id AND link.stream_id = 0
+  JOIN "<%= schema %>".event_tags t
+    ON t.position = link.stream_version
+  WHERE own.stream_id = $1
+    AND own.original_stream_id = $1
+    AND split_part(t.tag, ':', 1) = ANY($2::text[])
+  ORDER BY t.position, t.tag
+  FOR UPDATE OF t
+)
+DELETE FROM "<%= schema %>".event_tags t
+USING locked_event_tags locked
+WHERE t.tag = locked.tag AND t.position = locked.position;

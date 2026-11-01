@@ -11,15 +11,22 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
   @shared_names 40
   @link_source "link-source"
   @link_source_events 64
+  @doomed_streams 8
   @append_opts [schema: "public", serializer: Decree.Store.JsonSerializer]
+  @delete_opts [schema: "public", enable_hard_deletes: true]
 
   # The store retries a deadlock once, so a deadlock would not show in any answer. The
   # proof is `pg_stat_database.deadlocks`, and this database is the test's own, so no
   # other test's backend can move that counter. A backend flushes the counter when it
   # exits, so every session closes, and is seen gone, before the counter is read.
   #
-  # Hard deletes stay out of this, because a link and a hard delete have a cycle of their
-  # own, which `Decree.Store.Storage.AppendLockOrderTest` notes.
+  # Hard deletes run here over `doomed-` streams of their own, with links of one of their
+  # events at a time. A link of several of a stream's events stays out: it can deadlock with
+  # a hard delete, because the two lock event rows in different orders. That cycle is a
+  # measured residual, which `Decree.Store.Storage.HardDeleteTest` pins, and it would move
+  # this counter. So links of several events keep to `link-source`, which nothing deletes. No
+  # doomed stream is a link's target, because two hard deletes meeting only through a link
+  # stream can cycle the same way.
   setup do
     config =
       TestEventStore
@@ -38,7 +45,7 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     [config: config, postgrex_config: postgrex_config, observer: observer]
   end
 
-  test "random batches, plain appends and links over shared names never deadlock", context do
+  test "random batches, plain appends, links and hard deletes never deadlock", context do
     %{observer: observer, postgrex_config: postgrex_config} = context
 
     seed(observer)
@@ -74,8 +81,10 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     assert Map.keys(answers) -- legitimate_answers() == [], inspect(answers)
     assert answers[:ok] > @sessions * @operations_per_session / 2, inspect(answers)
 
+    assert answers[:hard_deleted] > 0, inspect(answers)
+
     assert_streams_gapless(observer)
-    assert_all_gapless(observer)
+    assert_all_consistent(observer)
     assert_batches_contiguous(observer, results)
   end
 
@@ -86,7 +95,14 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
       # A link of an event already in the target.
       {:error, :duplicate_event},
       # A link that lost the race to create its target.
-      {:error, :stream_exists}
+      {:error, :stream_exists},
+      :hard_deleted,
+      # An append, or a link, that a hard delete got to first.
+      {:error, :not_found},
+      # A hard delete another one, or the stream's absence, got to first.
+      {:error, :stream_not_found},
+      # A hard delete that a committed link of one of its events got to first.
+      {:error, :foreign_key_violation}
     ]
   end
 
@@ -105,9 +121,12 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
 
     for operation <- 1..@operations_per_session do
       case :rand.uniform(100) do
-        roll when roll <= 55 -> multi_stream_append(conn, session, operation)
-        roll when roll <= 85 -> plain_append(conn, session, operation)
-        _roll -> link(conn, session, operation, links)
+        roll when roll <= 45 -> multi_stream_append(conn, session, operation)
+        roll when roll <= 70 -> plain_append(conn, session, operation)
+        roll when roll <= 82 -> link(conn, session, operation, links)
+        roll when roll <= 90 -> doomed_append(conn, session, operation)
+        roll when roll <= 95 -> doomed_link(conn, operation)
+        _roll -> hard_delete(conn)
       end
     end
   end
@@ -150,6 +169,78 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
 
     %{answer: answer, event_ids: []}
   end
+
+  # Its events leave no position to check once deleted, so these report none, and neither
+  # does a batch with a doomed member. The other members still keep all of theirs.
+  defp doomed_append(conn, session, operation) do
+    events = for _event <- 1..:rand.uniform(3), do: event()
+
+    answer =
+      case :rand.uniform(2) do
+        1 ->
+          Stream.append_to_stream(conn, doomed_name(), :any_version, events, @append_opts)
+
+        2 ->
+          appends = [
+            {doomed_name(), :any_version, events},
+            {name(session, operation), :any_version, [event()]}
+          ]
+
+          Stream.append_to_streams(conn, Enum.shuffle(appends), @append_opts)
+      end
+
+    %{answer: answer, event_ids: []}
+  end
+
+  # One event, and into a stream of its own: see the note at the top.
+  defp doomed_link(conn, operation) do
+    target = "linked-doomed-#{rem(operation, @doomed_streams)}"
+
+    case doomed_event_id(conn) do
+      nil ->
+        %{answer: :ok, event_ids: []}
+
+      event_id ->
+        answer =
+          Stream.link_to_stream(conn, target, :any_version, [event_id], @append_opts)
+
+        %{answer: answer, event_ids: []}
+    end
+  end
+
+  defp doomed_event_id(conn) do
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(
+        conn,
+        """
+        SELECT se.event_id
+        FROM stream_events se
+        JOIN streams s USING (stream_id)
+        WHERE s.stream_uuid = $1
+        ORDER BY se.stream_version DESC
+        LIMIT 1
+        """,
+        [doomed_name()]
+      )
+
+    case rows do
+      [[event_id]] -> UUID.binary_to_string!(event_id)
+      [] -> nil
+    end
+  end
+
+  defp hard_delete(conn) do
+    answer =
+      case Stream.delete(conn, doomed_name(), :any_version, :hard, @delete_opts) do
+        :ok -> :hard_deleted
+        {:error, %Postgrex.Error{postgres: %{code: code}}} -> {:error, code}
+        {:error, _error} = reply -> reply
+      end
+
+    %{answer: answer, event_ids: []}
+  end
+
+  defp doomed_name, do: "doomed-#{:rand.uniform(@doomed_streams)}"
 
   # A name every session uses, one a few sessions race to create as `operation` moves
   # through the same values in each, or a name of this operation's own.
@@ -269,6 +360,7 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
                  max(se.stream_version)
                FROM streams s
                JOIN stream_events se USING (stream_id)
+               WHERE s.stream_id <> 0 AND s.stream_uuid NOT LIKE '%doomed-%'
                GROUP BY s.stream_id, s.stream_uuid, s.stream_version
                HAVING count(*) <> s.stream_version
                  OR min(se.stream_version) <> 1
@@ -278,22 +370,44 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
              )
   end
 
-  defp assert_all_gapless(conn) do
-    %Postgrex.Result{rows: rows} =
-      Postgrex.query!(
-        conn,
-        "SELECT stream_version FROM stream_events WHERE stream_id = 0 ORDER BY stream_version",
-        []
-      )
+  # A hard delete leaves holes in `$all`, and no position past its head. Every event still
+  # has its one position, and no position has lost its type row or kept a tag row or a type
+  # row with no event, which is what a hard delete's one statement owes.
+  defp assert_all_consistent(conn) do
+    assert %Postgrex.Result{rows: [[events, positions, head]]} =
+             Postgrex.query!(
+               conn,
+               """
+               SELECT
+                 (SELECT count(*) FROM events),
+                 (SELECT count(*) FROM stream_events WHERE stream_id = 0),
+                 (SELECT stream_version FROM streams WHERE stream_id = 0)
+               """,
+               []
+             )
 
-    positions = Enum.map(rows, &hd/1)
+    assert events == positions
+    assert positions < head
 
-    assert positions == Enum.to_list(1..length(positions))
-
-    assert %Postgrex.Result{rows: [[head]]} =
-             Postgrex.query!(conn, "SELECT stream_version FROM streams WHERE stream_id = 0", [])
-
-    assert head == length(positions)
+    assert %Postgrex.Result{rows: [[0, 0, 0]]} =
+             Postgrex.query!(
+               conn,
+               """
+               SELECT
+                 (SELECT count(*) FROM event_tags t WHERE NOT EXISTS (
+                   SELECT 1 FROM stream_events se
+                   WHERE se.stream_id = 0 AND se.stream_version = t.position
+                 )),
+                 (SELECT count(*) FROM event_types t WHERE NOT EXISTS (
+                   SELECT 1 FROM stream_events se
+                   WHERE se.stream_id = 0 AND se.stream_version = t.position
+                 )),
+                 (SELECT count(*) FROM stream_events se WHERE se.stream_id = 0 AND NOT EXISTS (
+                   SELECT 1 FROM event_types t WHERE t.position = se.stream_version
+                 ))
+               """,
+               []
+             )
   end
 
   # A batch's events hold a contiguous run of positions in input order, which also says

@@ -20,6 +20,7 @@ defmodule Decree.Store.Sql.Init do
       create_stream_events_index(),
       create_event_tags_table(),
       create_event_tags_index(),
+      create_event_tags_position_index(),
       create_event_types_table(),
       create_event_store_exception_function(),
       create_event_store_delete_function(),
@@ -184,10 +185,11 @@ defmodule Decree.Store.Sql.Init do
     """
   end
 
-  # Neither `event_tags` nor `event_types` has a foreign key: one from a tag row would
-  # make a hard delete fail or force a tag-row CTE into `hard_delete_stream`.
-  # Their text columns hold machine identifiers matched by equality, so bytewise
-  # comparison keeps index work under `$all` cheap and independent of the host's locale.
+  # Neither `event_tags` nor `event_types` has a foreign key: a row of either carries a
+  # position, and `hard_delete_stream` removes it by that position in the statement that
+  # removes the event. Their text columns hold machine identifiers matched by equality, so
+  # bytewise comparison keeps index work under `$all` cheap and independent of the host's
+  # locale.
   defp create_event_tags_table do
     """
     CREATE TABLE event_tags
@@ -205,6 +207,14 @@ defmodule Decree.Store.Sql.Init do
   defp create_event_tags_index do
     """
     CREATE INDEX ix_event_tags_tag_event_type_position ON event_tags (tag, event_type, position);
+    """
+  end
+
+  # Finds a stream's tag rows by position, for `hard_delete_stream` and
+  # `delete_stream_tags`. The primary key leads with the tag, so it cannot.
+  defp create_event_tags_position_index do
+    """
+    CREATE INDEX ix_event_tags_position ON event_tags (position);
     """
   end
 
@@ -615,7 +625,7 @@ defmodule Decree.Store.Sql.Init do
   defp record_event_store_schema_version do
     """
     INSERT INTO schema_migrations (major_version, minor_version, patch_version)
-    VALUES (1, 7, 0);
+    VALUES (1, 8, 0);
     """
   end
 end

@@ -69,9 +69,17 @@ defmodule Decree.Store.Storage do
   defdelegate soft_delete_stream(conn, stream_id, opts), to: DeleteStream, as: :soft_delete
 
   @doc """
-  Hard delete a stream by removing the stream and all its event.
+  Hard delete a stream by removing the stream and all its events, with their tag and type
+  rows. An event the stream holds through a link goes from every stream, as it always has.
   """
   defdelegate hard_delete_stream(conn, stream_id, opts), to: DeleteStream, as: :hard_delete
+
+  @doc """
+  Delete a stream's own tag rows of the given kinds, answering how many went.
+  """
+  defdelegate delete_stream_tags(conn, stream_id, tag_kinds, opts),
+    to: DeleteStream,
+    as: :delete_tags
 
   @doc """
   Create, or locate an existing, persistent subscription to a stream using a

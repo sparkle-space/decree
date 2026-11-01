@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.ReadQueryTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{Config, EventData, LockSession, ReadResult, RecordedEvent, UUID}
+  alias Decree.Store.{Config, EventData, LockSession, ReadResult, RecordedEvent, StoreRows, UUID}
   alias Decree.Store.Storage.{Initializer, Schema}
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
@@ -561,7 +561,10 @@ defmodule Decree.Store.Storage.ReadQueryTest do
           )
       end
 
-      [delete: delete]
+      [
+        delete: delete,
+        orphan: &StoreRows.orphan_stream(deleter, schema, &1)
+      ]
     end
 
     test "leaves holes the read skips, and `after` does not fall", %{delete: delete} do
@@ -587,13 +590,13 @@ defmodule Decree.Store.Storage.ReadQueryTest do
           {"a tag item", [tags: ["tag"]]},
           {"a type item", [types: ["typed"]]}
         ] do
-      test "uses up no `count`, for #{name}", %{delete: delete} do
+      test "rows with no `$all` row use up no `count`, for #{name}", %{orphan: orphan} do
         append("gone", for(_ <- 1..3, do: event("typed", ["tag"])))
         append("keep", for(_ <- 1..2, do: event("typed", ["tag"])))
         append("gone-too", for(_ <- 1..3, do: event("typed", ["tag"])))
 
-        delete.("gone")
-        delete.("gone-too")
+        orphan.("gone")
+        orphan.("gone-too")
 
         item = unquote(item)
 
@@ -602,21 +605,21 @@ defmodule Decree.Store.Storage.ReadQueryTest do
       end
     end
 
-    test "uses up no `count` when a later tag is the one that matches", %{delete: delete} do
+    test "rows with no `$all` row use up no `count` when a later tag matches", %{orphan: orphan} do
       append("gone", for(_ <- 1..3, do: event("typed", ["first", "second"])))
       append("keep", [event("typed", ["first", "second"])])
 
-      delete.("gone")
+      orphan.("gone")
 
       assert positions([[tags: ["first", "second"]]], count: 1) == [4]
     end
 
-    test "a whole page of orphans does not end `stream_query`", %{delete: delete} do
+    test "a whole page of orphans does not end `stream_query`", %{orphan: orphan} do
       append("keep-1", [event("typed", ["tag"])])
       append("gone", for(_ <- 1..4, do: event("typed", ["tag"])))
       append("keep-2", [event("typed", ["tag"])])
 
-      delete.("gone")
+      orphan.("gone")
 
       read =
         &(EventStore.stream_query([[tags: ["tag"]]], &1) |> Enum.map(fn e -> e.event_number end))

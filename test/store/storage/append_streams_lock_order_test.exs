@@ -461,41 +461,61 @@ defmodule Decree.Store.Storage.AppendStreamsLockOrderTest do
       assert all_version(context) == all_version
     end
 
-    test "second: blocked on the member, it fails the foreign key and the append stands",
+    test "second, at an integer version: `:wrong_expected_version`, and the append stands",
          context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-      %{second_appender_backend: deleter_backend} = context
-
       stream_id = create_stream(context, "kept")
       create_stream(context, "other")
       all_version = all_version(context)
 
-      holder = LockSession.start(context.postgrex_config)
-      LockSession.lock_row(holder, context.schema, @all_stream)
+      delete = stage_delete_behind_append(context, "kept", 1)
 
-      append = async_append(appender, [{"other", :any_version}, {"kept", :any_version}])
-      LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
-
-      delete =
-        Task.async(fn ->
-          Stream.delete(context.second_appender, "kept", :any_version, :hard,
-            schema: context.schema,
-            enable_hard_deletes: true
-          )
-        end)
-
-      LockSession.wait_until_blocked(observer, deleter_backend, appender_backend)
-
-      assert {:ok, :ok} = LockSession.commit(holder)
-      assert :ok = Task.await(append)
-
-      assert {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}} =
-               Task.await(delete)
+      assert {:error, :wrong_expected_version} = Task.await(delete)
 
       assert stream_id(context, "kept") == stream_id
       assert stream_versions(context, "kept") == [1, 2]
       assert all_version(context) == all_version + 2
     end
+
+    test "second, at `:any_version`: it deletes what the append wrote too", context do
+      create_stream(context, "kept")
+      create_stream(context, "other")
+
+      delete = stage_delete_behind_append(context, "kept", :any_version)
+
+      assert :ok = Task.await(delete)
+
+      assert stream_id(context, "kept") == nil
+      assert stream_versions(context, "other") == [1, 2]
+      assert count(context, "events") == 2
+    end
+  end
+
+  # The append holds both members and waits for `$all`, the delete has read the member's
+  # version and waits for its row, and the append then commits.
+  defp stage_delete_behind_append(context, stream_uuid, expected_version) do
+    %{observer: observer, appender: appender, appender_backend: appender_backend} = context
+    %{second_appender_backend: deleter_backend} = context
+
+    holder = LockSession.start(context.postgrex_config)
+    LockSession.lock_row(holder, context.schema, @all_stream)
+
+    append = async_append(appender, [{"other", :any_version}, {stream_uuid, :any_version}])
+    LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
+
+    delete =
+      Task.async(fn ->
+        Stream.delete(context.second_appender, stream_uuid, expected_version, :hard,
+          schema: context.schema,
+          enable_hard_deletes: true
+        )
+      end)
+
+    LockSession.wait_until_blocked(observer, deleter_backend, appender_backend)
+
+    assert {:ok, :ok} = LockSession.commit(holder)
+    assert :ok = Task.await(append)
+
+    delete
   end
 
   # Whatever `append` does in the transaction loses to `creator`. A retry there would have

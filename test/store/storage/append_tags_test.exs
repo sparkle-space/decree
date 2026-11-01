@@ -415,9 +415,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
   end
 
   describe "a hard delete" do
-    # ST-6 owns removing them. Until then the rows are orphans, and harmless: `$all` never
-    # goes back, so no later event takes their position.
-    test "leaves the deleted events' tag and type rows behind", context do
+    test "takes the deleted events' tag and type rows with them", context do
       %{postgrex_config: postgrex_config, schema: schema} = context
 
       events = [%{event("typed") | tags: ["tenant:a"]}]
@@ -432,13 +430,14 @@ defmodule Decree.Store.Storage.AppendTagsTest do
                )
 
       assert {:error, :stream_not_found} = EventStore.read_stream_forward("deleted-stream")
-      assert tag_rows(context) == [[1, "tenant:a", "typed"]]
-      assert type_rows(context) == [[1, "typed"]]
+      assert tag_rows(context) == []
+      assert type_rows(context) == []
 
+      # `$all` never goes back, so the next event takes a position of its own.
       assert :ok = EventStore.append_to_stream("other-stream", 0, events)
 
-      assert tag_rows(context) == [[1, "tenant:a", "typed"], [2, "tenant:a", "typed"]]
-      assert type_rows(context) == [[1, "typed"], [2, "typed"]]
+      assert tag_rows(context) == [[2, "tenant:a", "typed"]]
+      assert type_rows(context) == [[2, "typed"]]
     end
   end
 

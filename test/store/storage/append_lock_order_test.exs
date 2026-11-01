@@ -106,43 +106,41 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
       assert all_version(context) == all_version
     end
 
-    test "second: blocked on the stream, it fails the foreign key and the append stands",
+    test "second, at an integer version: `:wrong_expected_version`, and the append stands",
          context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-      %{second_appender_backend: deleter_backend} = context
-
       stream_id = create_stream(context, "kept-stream")
       all_version = all_version(context)
 
-      holder = LockSession.start(context.postgrex_config)
-      LockSession.lock_row(holder, context.schema, @all_stream)
+      delete = stage_delete_behind_append(context, "kept-stream", 1)
 
-      append = async_append(appender, "kept-stream", :any_version, 2)
-      LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
-
-      delete = async_hard_delete(context, "kept-stream")
-
-      LockSession.wait_until_blocked(observer, deleter_backend, appender_backend)
-
-      assert {:ok, :ok} = LockSession.commit(holder)
-      assert :ok = Task.await(append)
-
-      # The delete's statement took its snapshot before the append committed, so its
-      # DELETE of `stream_events` missed the appended rows, and removing the stream's
-      # row fails on them. Nothing is lost, the delete is refused, and no deadlock.
-      assert {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}} =
-               Task.await(delete)
+      # The first read saw version 1, so only the check under the lock can answer this.
+      assert {:error, :wrong_expected_version} = Task.await(delete)
 
       assert stream_id(context, "kept-stream") == stream_id
       assert stream_versions(context, stream_id) == [1, 2, 3]
       assert all_version(context) == all_version + 2
     end
+
+    test "second, at `:any_version`: it deletes what the append wrote too", context do
+      create_stream(context, "gone-stream")
+
+      delete = stage_delete_behind_append(context, "gone-stream", :any_version)
+
+      assert :ok = Task.await(delete)
+
+      assert stream_id(context, "gone-stream") == nil
+      assert event_count(context) == 0
+
+      for table <- ["stream_events", "event_tags", "event_types"] do
+        assert [[0]] = query!(context, ~s[SELECT count(*) FROM "#{context.schema}".#{table}], [])
+      end
+    end
   end
 
-  # The order of a statement's data-modifying CTEs is not documented, so this pins the
-  # one measured: `hard_delete_stream` takes the stream's row before any event row. An
-  # append holding the row and re-sending a stored event id therefore waits on nothing
-  # the delete holds. If the order flips, that append and the delete form a cycle.
+  # A hard delete is three statements, so its lock order is its code's: the stream's row,
+  # then the events, then the delete of the stream's row. An append holding the row and
+  # re-sending a stored event id therefore waits on nothing the delete holds. If the order
+  # flips, that append and the delete form a cycle.
   describe "a hard delete's own lock order" do
     test "blocked on the stream's row, it holds no event row", context do
       %{observer: observer, schema: schema, second_appender_backend: deleter_backend} = context
@@ -438,9 +436,40 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
     %{stale_append: stale_append, writer: writer, event_id: event_id}
   end
 
-  defp async_hard_delete(context, stream_uuid) do
+  # The append holds the stream's row and waits for `$all`, the delete has read the stream's
+  # version and waits for that row, and the append then commits.
+  defp stage_delete_behind_append(context, stream_uuid, expected_version) do
+    %{observer: observer, appender: appender, appender_backend: appender_backend} = context
+    %{second_appender_backend: deleter_backend} = context
+
+    holder = LockSession.start(context.postgrex_config)
+    LockSession.lock_row(holder, context.schema, @all_stream)
+
+    events = [
+      %EventData{hd(EventFactory.create_events(1)) | tags: ["tenant:a"]},
+      %EventData{hd(EventFactory.create_events(1)) | tags: ["tenant:b"]}
+    ]
+
+    append =
+      Task.async(fn ->
+        EventStore.append_to_stream(stream_uuid, :any_version, events, conn: appender)
+      end)
+
+    LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
+
+    delete = async_hard_delete(context, stream_uuid, expected_version)
+
+    LockSession.wait_until_blocked(observer, deleter_backend, appender_backend)
+
+    assert {:ok, :ok} = LockSession.commit(holder)
+    assert :ok = Task.await(append)
+
+    delete
+  end
+
+  defp async_hard_delete(context, stream_uuid, expected_version \\ :any_version) do
     Task.async(fn ->
-      Stream.delete(context.second_appender, stream_uuid, :any_version, :hard,
+      Stream.delete(context.second_appender, stream_uuid, expected_version, :hard,
         schema: context.schema,
         enable_hard_deletes: true
       )

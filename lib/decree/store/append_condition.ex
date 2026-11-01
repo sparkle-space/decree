@@ -11,7 +11,9 @@ defmodule Decree.Store.AppendCondition do
     - `target` - optional, any term. It names what the condition protects, for a store
       that declares it in `conditional_appends`, and is compared and nothing else.
 
-  See "Conditional appends" in `Decree.Store`.
+  See "Conditional appends" in `Decree.Store`. A store that declares `deletable` refuses a
+  condition naming it with `{:error, :query_names_deletable}`, as it refuses a read: see
+  "Deletable streams" there.
   """
 
   alias Decree.Store.Query

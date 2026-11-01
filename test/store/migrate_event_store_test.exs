@@ -148,27 +148,27 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   describe "version bookkeeping" do
-    test "the store knows migration 1.7.0" do
-      assert "1.7.0" in Migrations.available_migrations()
-      assert List.last(Migrations.available_migrations()) == "1.7.0"
+    test "the store knows migration 1.8.0" do
+      assert "1.8.0" in Migrations.available_migrations()
+      assert List.last(Migrations.available_migrations()) == "1.8.0"
     end
 
-    test "a new event store records 1.7.0 and has nothing pending", %{config: config} do
+    test "a new event store records 1.8.0 and has nothing pending", %{config: config} do
       create_new_database(config)
 
-      assert schema_versions(config) == [[1, 7, 0]]
+      assert schema_versions(config) == [[1, 8, 0]]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
 
-      assert schema_versions(config) == [[1, 7, 0]]
+      assert schema_versions(config) == [[1, 8, 0]]
     end
 
-    test "the migration records 1.7.0", %{config: config} do
+    test "the migration records 1.8.0", %{config: config} do
       restore_pre_migration_event_store(config)
       migrate_eventstore(config, quiet: true, is_mix: false)
 
-      assert List.last(schema_versions(config)) == [1, 7, 0]
+      assert List.last(schema_versions(config)) == [1, 8, 0]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
@@ -522,6 +522,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       "1\t4\t0\tNOW" -> true
       "1\t5\t0\tNOW" -> true
       "1\t6\t0\tNOW" -> true
+      "1\t7\t0\tNOW" -> true
       _line -> false
     end)
     |> reject_superseded_append_functions()
