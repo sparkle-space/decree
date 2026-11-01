@@ -334,9 +334,9 @@ defmodule Decree.Store.Storage.Appender do
         {:error, :duplicate_event}
 
       %{constraint: "ix_streams_stream_uuid"} ->
-        # Decree.Store.Streams.Stream will retry when it gets this error code. That will always work
-        # because on the second time around, the stream will have been made, so the race to create
-        # the stream will have been resolved.
+        # Decree.Store.Streams.Stream will retry when it gets this error code, outside a caller's
+        # transaction. That will always work because on the second time around, the stream will
+        # have been made, so the race to create the stream will have been resolved.
         {:error, :duplicate_stream_uuid}
 
       _postgres ->

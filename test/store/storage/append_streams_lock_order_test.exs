@@ -216,6 +216,75 @@ defmodule Decree.Store.Storage.AppendStreamsLockOrderTest do
     end
   end
 
+  # The creator holds its new row uncommitted, waiting on `$all`, so the loser reads no
+  # stream and its insert waits on the creator's entry in the unique index.
+  describe "losing a race to create a stream" do
+    setup context do
+      holder = LockSession.start(context.postgrex_config)
+      LockSession.lock_row(holder, context.schema, @all_stream)
+
+      creator = async_plain_append(context.appender, "new")
+      LockSession.wait_until_blocked(context.observer, context.appender_backend, holder.backend)
+
+      [holder: holder, creator: creator]
+    end
+
+    test "a multi-stream append in a caller's transaction answers it", context do
+      appends = [
+        {"new", :any_version, EventFactory.create_events(1)},
+        {"a-first", :any_version, EventFactory.create_events(1)}
+      ]
+
+      assert_race_answered(context, &EventStore.append_to_streams(appends, conn: &1))
+
+      # It sorts first, so the loser had created it before it waited.
+      assert stream_id(context, "a-first") == nil
+    end
+
+    test "a plain append in a caller's transaction answers it", context do
+      events = EventFactory.create_events(1)
+
+      assert_race_answered(
+        context,
+        &EventStore.append_to_stream("new", :any_version, events, conn: &1)
+      )
+    end
+
+    test "1,000 or more events in a caller's transaction answer it", context do
+      events = EventFactory.create_events(1_000)
+
+      assert_race_answered(
+        context,
+        &EventStore.append_to_stream("new", :any_version, events, conn: &1)
+      )
+    end
+
+    test "a `DBConnection.run/3` checkout is no transaction, and retries", context do
+      %{observer: observer, holder: holder, creator: creator} = context
+      %{appender_backend: appender_backend} = context
+      %{second_appender: second_appender, second_appender_backend: second_backend} = context
+
+      events = EventFactory.create_events(1)
+
+      loser =
+        Task.async(fn ->
+          DBConnection.run(second_appender, fn checkout ->
+            assert %DBConnection{conn_mode: nil} = checkout
+
+            EventStore.append_to_stream("new", :any_version, events, conn: checkout)
+          end)
+        end)
+
+      LockSession.wait_until_blocked(observer, second_backend, appender_backend)
+
+      assert {:ok, :ok} = LockSession.commit(holder)
+      assert :ok = Task.await(creator)
+      assert :ok = Task.await(loser)
+
+      assert stream_versions(context, "new") == [1, 2]
+    end
+  end
+
   describe "a plain append on a member stream" do
     setup context do
       holder = LockSession.start(context.postgrex_config)
@@ -427,6 +496,35 @@ defmodule Decree.Store.Storage.AppendStreamsLockOrderTest do
       assert stream_versions(context, "kept") == [1, 2]
       assert all_version(context) == all_version + 2
     end
+  end
+
+  # Whatever `append` does in the transaction loses to `creator`. A retry there would have
+  # answered `in_failed_sql_transaction`, not the race.
+  defp assert_race_answered(context, append) do
+    %{observer: observer, holder: holder, creator: creator} = context
+
+    caller = LockSession.start(context.postgrex_config)
+
+    reply =
+      LockSession.start_run(caller, fn tx ->
+        assert %DBConnection{conn_mode: :transaction} = tx
+
+        append.(tx)
+      end)
+
+    LockSession.wait_until_blocked(observer, caller.backend, context.appender_backend)
+
+    assert {:ok, :ok} = LockSession.commit(holder)
+    assert :ok = Task.await(creator)
+
+    assert {:error, :duplicate_stream_uuid} = LockSession.await_run(reply)
+
+    # Aborted, so a following statement fails and the commit rolls back.
+    assert {:error, _error} = LockSession.run(caller, &Postgrex.query(&1, "SELECT 1", []))
+    assert {:error, :rollback} = LockSession.commit(caller)
+
+    assert stream_versions(context, "new") == [1]
+    assert all_events(context) == [{"new", 1}]
   end
 
   defp async_append(conn, members) do

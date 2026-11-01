@@ -315,9 +315,12 @@ defmodule Decree.Store do
 
   **Locks.** The append takes every member's row and then `$all`, whatever order the
   list is in: the function sorts the members by the bytes of their names, so a multi-stream
-  append cannot deadlock against another one or against a plain append. Elixir sorts
-  nothing, so no pod can disagree with another about the order. Prefer this to two appends
-  in one transaction, which take the second stream's row after `$all`.
+  append cannot deadlock against another one or against a plain append. That holds for a
+  call that takes its own locks: a caller's transaction that has already appended holds
+  `$all` before the call's members, as "Using an existing database connection or
+  transaction" says. Elixir sorts nothing, so no pod can disagree with another about the
+  order. Prefer this to two appends in one transaction, which take the second stream's row
+  after `$all`.
 
   **Notifications.** One call fires one notification per member, sorted by name, then one
   for `$all`. A stream's subscribers get their stream's events, and a `$all` subscriber
@@ -891,8 +894,12 @@ defmodule Decree.Store do
       `{:error, :undeclared_conditional_target}` when the `condition` is malformed,
       when its `items` are, and when the store does not declare it. Each is answered
       after a tag that is too long and before any statement is sent, as that one is.
+    * `{:error, :duplicate_stream_uuid}` when the append lost the race to create a
+      new stream inside a caller's transaction. That aborts the transaction, so it
+      is answered and not retried.
     * `{:error, {:already_retried_once, :duplicate_stream_uuid}}` when the
-      append lost the race to create a new stream twice.
+      append lost the race to create a new stream twice, outside a caller's
+      transaction.
     * `{:error, %Decree.Store.AppendError{}}` for any other failure of the
       append statement, classified `:unavailable`, `:retryable` or `:rejected`
       (see `Decree.Store.AppendError`).
@@ -924,6 +931,7 @@ defmodule Decree.Store do
               | {:error, :invalid_condition}
               | {:error, :invalid_query}
               | {:error, :undeclared_conditional_target}
+              | {:error, :duplicate_stream_uuid}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, :rollback}
@@ -960,9 +968,11 @@ defmodule Decree.Store do
   any statement is sent, so a caller's transaction stays usable.
 
   A member's row gone by the time the function locks it answers `{:error, :not_found}`,
-  and aborts a caller's transaction, as a stale append does. Losing a race to create a
-  member is retried once, as a `deadlock_detected` outside a caller's transaction is. Both
-  read every member again and evaluate the condition again, with the same `after`.
+  and aborts a caller's transaction, as a stale append does. Outside a caller's
+  transaction, losing a race to create a member and a `deadlock_detected` are each retried
+  once, reading every member again and evaluating the condition again, with the same
+  `after`. Inside one, either aborts it and is answered, a lost race to create a member as
+  `{:error, :duplicate_stream_uuid}`.
   """
   @callback append_to_streams(
               appends :: [{stream_uuid :: String.t(), expected_version, list(EventData.t())}],
@@ -985,6 +995,7 @@ defmodule Decree.Store do
               | {:error, :invalid_condition}
               | {:error, :invalid_query}
               | {:error, :undeclared_conditional_target}
+              | {:error, :duplicate_stream_uuid}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, reason :: term}

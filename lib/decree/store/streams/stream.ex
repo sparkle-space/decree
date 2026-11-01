@@ -598,6 +598,17 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   # `retry` runs the whole append again with the given opts, from its stream-info reads.
+  # Not inside a caller's transaction: the unique violation aborted it, so the read would
+  # answer `in_failed_sql_transaction`, and the caller decides. A `DBConnection.run/3`
+  # checkout is not one, and retries.
+  defp maybe_retry_once(
+         {:error, :duplicate_stream_uuid} = error,
+         %DBConnection{conn_mode: :transaction},
+         _opts,
+         _retry
+       ),
+       do: error
+
   defp maybe_retry_once({:error, :duplicate_stream_uuid}, _conn, opts, retry) do
     unless Keyword.has_key?(opts, :retried_once) do
       retry.(Keyword.put(opts, :retried_once, true))
