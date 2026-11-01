@@ -882,7 +882,6 @@ defmodule Decree.Store.Storage.AppendConditionTest do
       {[items: @tag_matcher], {:error, :invalid_condition}},
       {%{items: @tag_matcher, after: 0}, {:error, :invalid_condition}},
       {[items: [], after: 0], {:error, :invalid_query}},
-      {[items: [[tags: [<<0>>]]], after: 0], {:error, :invalid_tag}},
       {[items: [[tags: [long_tag()]]], after: 0], {:error, :tag_too_long}}
     ]
   end

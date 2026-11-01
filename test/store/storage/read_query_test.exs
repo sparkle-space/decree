@@ -464,7 +464,7 @@ defmodule Decree.Store.Storage.ReadQueryTest do
     test "answers its error from `read_query`" do
       assert {:error, :invalid_query} = EventStore.read_query([])
       assert {:error, :invalid_query} = EventStore.read_query([[]])
-      assert {:error, :invalid_tag} = EventStore.read_query([[tags: [:atom]]])
+      assert {:error, :invalid_query} = EventStore.read_query([[tags: [:atom]]])
 
       assert {:error, :tag_too_long} =
                EventStore.read_query([[tags: [String.duplicate("a", 513)]]])
@@ -472,7 +472,6 @@ defmodule Decree.Store.Storage.ReadQueryTest do
 
     test "answers its error from `stream_query`, before any stream exists" do
       assert {:error, :invalid_query} = EventStore.stream_query([])
-      assert {:error, :invalid_tag} = EventStore.stream_query([[tags: [<<0>>]]])
 
       assert {:error, :tag_too_long} =
                EventStore.stream_query([[tags: [String.duplicate("a", 513)]]])
@@ -482,7 +481,7 @@ defmodule Decree.Store.Storage.ReadQueryTest do
       session = LockSession.start(postgrex_config)
 
       LockSession.run(session, fn tx ->
-        assert {:error, :invalid_tag} = EventStore.read_query([[tags: [<<0>>]]], conn: tx)
+        assert {:error, :invalid_query} = EventStore.read_query([[tags: [<<0>>]]], conn: tx)
         assert {:ok, %ReadResult{after: 0}} = EventStore.read_query([[tags: ["a"]]], conn: tx)
       end)
 

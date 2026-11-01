@@ -52,16 +52,12 @@ defmodule Decree.Store.Query do
   @doc """
   Compiles a list of items.
 
-  Answers `{:error, :invalid_query}` for anything but a non-empty list of items,
-  `{:error, :invalid_tag}` for a tag `Decree.Store.EventData.valid_tag?/1` refuses, and
+  Answers `{:error, :invalid_query}` for anything but a non-empty list of items, and
   `{:error, :tag_too_long}` for a tag over `Decree.Store.EventData.max_tag_bytes/0`. A
   refusal sends nothing to the database, so a caller's transaction stays alive.
   """
   @spec compile(items :: [item()]) ::
-          {:ok, t()}
-          | {:error, :invalid_query}
-          | {:error, :invalid_tag}
-          | {:error, :tag_too_long}
+          {:ok, t()} | {:error, :invalid_query} | {:error, :tag_too_long}
   def compile([_item | _items] = items) do
     if List.improper?(items) do
       {:error, :invalid_query}
@@ -110,7 +106,6 @@ defmodule Decree.Store.Query do
   defp compile_parsed(parsed) do
     cond do
       :error in parsed -> {:error, :invalid_query}
-      Enum.any?(parsed, &invalid_tag?/1) -> {:error, :invalid_tag}
       Enum.any?(parsed, &tag_too_long?/1) -> {:error, :tag_too_long}
       true -> {:ok, build(parsed)}
     end
@@ -132,7 +127,7 @@ defmodule Decree.Store.Query do
     types = pairs |> List.keyfind(:types, 0, {:types, []}) |> elem(1)
     tags = pairs |> List.keyfind(:tags, 0, {:tags, []}) |> elem(1)
 
-    if keys in [[:tags], [:types], [:tags, :types]] and strings?(types) and proper_list?(tags) and
+    if keys in [[:tags], [:types], [:tags, :types]] and strings?(types) and strings?(tags) and
          (types != [] or tags != []) do
       {Enum.uniq(types), Enum.uniq(tags)}
     else
@@ -145,14 +140,10 @@ defmodule Decree.Store.Query do
   # A string Postgres cannot hold could match nothing, and sending it would abort a
   # caller's transaction.
   defp strings?([string | strings]) when is_binary(string) do
-    String.valid?(string) and not String.contains?(string, <<0>>) and strings?(strings)
+    EventData.valid_tag?(string) and strings?(strings)
   end
 
   defp strings?(_strings), do: false
-
-  defp proper_list?(list), do: is_list(list) and not List.improper?(list)
-
-  defp invalid_tag?({_types, tags}), do: not Enum.all?(tags, &EventData.valid_tag?/1)
 
   defp tag_too_long?({_types, tags}) do
     Enum.any?(tags, fn tag -> byte_size(tag) > EventData.max_tag_bytes() end)
