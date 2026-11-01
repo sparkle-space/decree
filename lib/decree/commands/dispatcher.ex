@@ -24,6 +24,7 @@ defmodule Decree.Commands.Dispatcher do
       :aggregate_module,
       :identity,
       :identity_prefix,
+      :stream_tag,
       :timeout,
       :lifespan,
       :metadata,
@@ -170,9 +171,11 @@ defmodule Decree.Commands.Dispatcher do
       handler_module: handler_module,
       handler_function: handler_function,
       handler_before_execute: handler_before_execute,
+      identity: identity,
       lifespan: lifespan,
       retry_attempts: retry_attempts,
-      returning: returning
+      returning: returning,
+      stream_tag: stream_tag
     } = payload
 
     %ExecutionContext{
@@ -184,6 +187,8 @@ defmodule Decree.Commands.Dispatcher do
       handler: handler_module,
       function: handler_function,
       before_execute: handler_before_execute,
+      identity: identity,
+      stream_tag: stream_tag,
       lifespan: lifespan,
       retry_attempts: retry_attempts,
       returning: returning

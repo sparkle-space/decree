@@ -104,6 +104,7 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Aggregates.AggregateStateBuilder
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Application.Config
+  alias Decree.Event.Append
   alias Decree.Event.Mapper
   alias Decree.Event.Upcast
   alias Decree.EventStore
@@ -635,7 +636,9 @@ defmodule Decree.Aggregates.Aggregate do
         metadata: metadata
       )
 
-    EventStore.append_to_stream(application, aggregate_uuid, expected_version, event_data)
+    with {:ok, event_data} <- Append.prepare(event_data, context) do
+      EventStore.append_to_stream(application, aggregate_uuid, expected_version, event_data)
+    end
   end
 
   defp do_take_snapshot(%Aggregate{} = state) do
