@@ -30,6 +30,8 @@ defmodule Decree.Event.Append do
        its value, and no tag holds ciphertext. Then the kinds the event requires, from
        `Decree.Event.RequiredTags.required/2`, on the same copy and the same tag context, so an
        erased value reads as absent. They go in `required_tag_kinds`, for the store to refuse.
+       An event that requires kinds, on a command with no `command:` tag of its own, stops here
+       with `{:error, :missing_required_tag}`, whatever tags the implementation answered.
 
     4. **Encrypt.** Declared fields and metadata entries become envelopes.
 
@@ -176,13 +178,23 @@ defmodule Decree.Event.Append do
 
     case Tags.tags(event, tag_context) do
       {:ok, tags} when is_list(tags) ->
-        with {:ok, required_tag_kinds} <- RequiredTags.required(event, tag_context) do
+        with {:ok, required_tag_kinds} <- RequiredTags.required(event, tag_context),
+             :ok <- has_command_tag(required_tag_kinds, command) do
           {:ok, tags, required_tag_kinds}
         end
 
       {:error, _reason} = error ->
         error
     end
+  end
+
+  # The store takes any tag of a kind, so an implementation answering a `command` tag would
+  # satisfy it. The kind is the framework's: only the tag `command_tag/1` writes counts, and
+  # the check reads that and never `tags`. An event with no list has not opted in.
+  defp has_command_tag([], _command), do: :ok
+
+  defp has_command_tag(_required_tag_kinds, command) do
+    if command_tag(command), do: :ok, else: {:error, :missing_required_tag}
   end
 
   defp framework_tags(%ExecutionContext{command: command} = context) do

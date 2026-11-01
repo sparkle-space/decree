@@ -8,6 +8,7 @@ defmodule Decree.Decision.RequiredTagsTest do
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.Append
+  alias Decree.EventStore
   alias Decree.EventStore.Adapters.Mock, as: MockEventStore
   alias Decree.EventStore.{EventData, RecordedEvent}
   alias Decree.PersonalFields.Envelope
@@ -20,6 +21,7 @@ defmodule Decree.Decision.RequiredTagsTest do
     DecisionApp,
     Digested,
     Emit,
+    Forged,
     Indexed,
     Injected,
     Malformed,
@@ -57,6 +59,16 @@ defmodule Decree.Decision.RequiredTagsTest do
   end
 
   defp stored_plain(%Emit{ledger_id: ledger_id}), do: stored(ledger_id, PlainApp)
+
+  # An aggregate route answers no position, so the stream's entity tag finds the event.
+  defp stored_tags(%Emit{ledger_id: ledger_id}) do
+    assert {:ok, %ReadResult{events: [%{event_number: position}]}} =
+             EventStore.read_query(PlainApp, [[tags: ["ledger:" <> ledger_id]]])
+
+    assert {:ok, %{^position => tags}} = EventStore.read_tags(PlainApp, [position])
+
+    tags
+  end
 
   defp deciding(module, items, decide) when is_function(decide) do
     scripted([query: fn _command, _context -> items end, decide: decide], module)
@@ -333,6 +345,26 @@ defmodule Decree.Decision.RequiredTagsTest do
       assert stored_plain(command) == []
     end
 
+    test "a domain tag of the `command` kind does not stand in for a missing `command_id`" do
+      for forged <- ["command:forged", "command"], command_id <- [nil, ""] do
+        command = emit(%Forged{tags: [forged]}, command_id: command_id)
+
+        assert {:error, :missing_required_tag} = PlainApp.dispatch(command),
+               inspect({forged, command_id})
+
+        assert stored_plain(command) == []
+      end
+    end
+
+    test "a domain tag equal to the framework's appends, and is stored once" do
+      command_id = UUID.uuid4()
+      tag = "command:" <> command_id
+      command = emit(%Forged{tags: [tag]}, command_id: command_id)
+
+      assert :ok = PlainApp.dispatch(command)
+      assert Enum.count(stored_tags(command), &(&1 == tag)) == 1
+    end
+
     test "a decision's step 0 still answers first" do
       for command_id <- [nil, ""] do
         command = %{deciding(Unindexed, read_nothing(), %Addressed{}) | command_id: command_id}
@@ -348,6 +380,15 @@ defmodule Decree.Decision.RequiredTagsTest do
 
       assert :ok = PlainApp.dispatch(command)
       assert [%RecordedEvent{data: %Unopted{}}] = stored_plain(command)
+    end
+
+    test "keeps a `command` kind tag, with no usable `command_id`" do
+      for forged <- ["command:forged", "command"], command_id <- [nil, ""] do
+        command = emit(%Unopted{tags: [forged]}, command_id: command_id)
+
+        assert :ok = PlainApp.dispatch(command)
+        assert forged in stored_tags(command)
+      end
     end
 
     test "carries an empty list" do

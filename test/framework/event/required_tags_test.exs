@@ -8,7 +8,7 @@ defmodule Decree.Event.RequiredTagsTest do
   alias Decree.Event.Tagging.Events.{Reloaded, Unimplemented}
   alias Decree.EventStore.Adapters.EventStore.Mapper
   alias Decree.EventStore.EventData
-  alias Decree.RequiredTagsFixtures.{Addressed, Digested, Malformed, Unlisted, Unopted}
+  alias Decree.RequiredTagsFixtures.{Addressed, Digested, Forged, Malformed, Unlisted, Unopted}
 
   defmodule App do
     use Decree.Application, otp_app: :decree
@@ -18,8 +18,8 @@ defmodule Decree.Event.RequiredTagsTest do
     Config.associate(self(), App, application: App)
   end
 
-  defp prepare(event) do
-    context = %ExecutionContext{command: %Emit{}, metadata: %{}}
+  defp prepare(event, command_id \\ "command-1") do
+    context = %ExecutionContext{command: %Emit{command_id: command_id}, metadata: %{}}
 
     Append.prepare(App, "stream-1", [%EventData{data: event, metadata: %{}}], context)
   end
@@ -78,6 +78,19 @@ defmodule Decree.Event.RequiredTagsTest do
 
     test "gives an event without the export an empty list" do
       assert {:ok, [%EventData{required_tag_kinds: []}]} = prepare(%Unimplemented{})
+    end
+
+    # This `App` has no store, so the answer can only be `prepare/4`'s.
+    test "refuses an opted-in event with no usable `command_id`, a forged tag or none" do
+      for tags <- [[], ["command:forged"], ["command"]], command_id <- [nil, ""] do
+        assert prepare(%Forged{tags: tags}, command_id) == {:error, :missing_required_tag},
+               inspect({tags, command_id})
+      end
+    end
+
+    test "passes an event without the export with no `command_id`" do
+      assert {:ok, [%EventData{tags: tags}]} = prepare(%Unopted{tags: ["command:forged"]}, nil)
+      assert "command:forged" in tags
     end
 
     test "the list reaches the store's event data" do

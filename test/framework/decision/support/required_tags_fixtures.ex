@@ -117,6 +117,21 @@ defmodule Decree.RequiredTagsFixtures.Unopted do
   end
 end
 
+defmodule Decree.RequiredTagsFixtures.Forged do
+  @moduledoc false
+
+  # Opted in, requiring only `always/0`, and answering whatever tags it is given: a `command`
+  # one among them.
+  @derive Jason.Encoder
+  defstruct tags: []
+
+  def __required_tag_kinds__(%__MODULE__{}, _tag_context), do: []
+
+  defimpl Decree.Event.Tags do
+    def tags(%{tags: tags}, _context), do: {:ok, tags}
+  end
+end
+
 defmodule Decree.RequiredTagsFixtures.Digested do
   @moduledoc false
 

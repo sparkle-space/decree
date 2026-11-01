@@ -42,6 +42,13 @@ defmodule Decree.Event.RequiredTags do
   not kinds, an improper one included. A kind is carried by a tag equal to it, or by
   `<kind>:<value>` with a value.
 
+  The `command` kind is carried by the framework's own tag and no other. A `Decree.Event.Tags`
+  implementation answering `command:forged` or a bare `command` does not satisfy it, so
+  `Decree.Event.Append.prepare/4` answers `{:error, :missing_required_tag}` for an opted-in
+  event on a command with no usable `command_id`, ahead of the store. Such a tag is not
+  dropped: one equal to the framework's is stored once. `command_kind` needs no such rule,
+  because the framework always writes it.
+
   ## On a decision
 
   A decision's own append requires more, of every event it appends, opted in or not:

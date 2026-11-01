@@ -537,19 +537,21 @@ defmodule Decree.Decision.Dispatch do
     batch =
       for {_stream, _version, prepared} <- appends, data <- prepared, tag <- data.tags, do: tag
 
+    on_batch =
+      for {kind, :digest} <- families,
+          batch_tags = Read.tags_of_kind(batch, kind),
+          MapSet.size(batch_tags) > 0,
+          do: {kind, batch_tags}
+
+    if digests_read?(on_batch, items), do: :ok, else: {:error, :digest_tag_mismatch}
+  end
+
+  defp digests_read?([], _items), do: true
+
+  defp digests_read?(on_batch, items) do
     read = Enum.flat_map(items, &Read.item_tags/1)
 
-    digests_match? = fn {kind, _family} ->
-      batch_tags = Read.tags_of_kind(batch, kind)
-
-      MapSet.size(batch_tags) == 0 or batch_tags == Read.tags_of_kind(read, kind)
-    end
-
-    if families |> Enum.filter(&(elem(&1, 1) == :digest)) |> Enum.all?(digests_match?) do
-      :ok
-    else
-      {:error, :digest_tag_mismatch}
-    end
+    Enum.all?(on_batch, fn {kind, batch_tags} -> batch_tags == Read.tags_of_kind(read, kind) end)
   end
 
   defp required(appends, items) do
