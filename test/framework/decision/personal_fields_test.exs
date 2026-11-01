@@ -795,6 +795,45 @@ defmodule Decree.Decision.PersonalFieldsTest do
       end
     end
 
+    test "from `decide` on a replay exit holds no value, anywhere it goes", %{user: user} do
+      secret = email("replay-" <> UUID.uuid4())
+
+      query = fn command, _tag_context ->
+        tags = ["claim:" <> command.claim_id, Append.kind_tag(command)]
+
+        [[types: @types, tags: tags, replay: true]]
+      end
+
+      decide = fn
+        [], _command -> %Registered{user_id: user, email: secret}
+        [%Registered{email: decrypted}], _command -> {:error, {:invalid, decrypted}}
+      end
+
+      command = scripted([query: query, decide: decide], Personal)
+
+      assert :ok = PersonalApp.dispatch(command)
+
+      # The first dispatch's span holds its new events in the clear, as a span does.
+      flush_telemetry()
+
+      assert {:error, {:invalid, :redacted}} = PersonalApp.dispatch(command)
+
+      pipeline = after_failure()
+
+      assert pipeline.response == {:error, {:invalid, :redacted}}
+      assert pipeline.assigns.error == {:invalid, :redacted}
+      refute leaks?(pipeline, secret)
+
+      assert_received {:telemetry, @stop, _, %{error: {:invalid, :redacted}} = metadata}
+      refute leaks?(metadata, secret)
+
+      assert_received {:telemetry, @dispatch_stop, _, %{error: {:invalid, :redacted}} = metadata}
+
+      refute leaks?(metadata, secret)
+
+      refute leaks?(flush_telemetry(), secret)
+    end
+
     test "from `query/2` stands, which holds nothing decrypted" do
       reason = {:invalid, "kept-" <> UUID.uuid4()}
       query = fn _command, _tag_context -> {:error, reason} end
