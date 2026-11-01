@@ -3,7 +3,12 @@ defmodule Decree.Decision.UseTest do
 
   alias Decree.DecisionFixtures.{ClaimDecision, TightDecision}
 
+  # A decision the build takes, but for what a test adds.
   defp compile(opts, body \\ "") do
+    source(", create: false" <> opts, "def command_window_ms, do: 1\n" <> body)
+  end
+
+  defp source(opts, body) do
     name = "Decree.Decision.UseTest.Fixture#{System.unique_integer([:positive])}"
 
     Code.eval_string("""
@@ -74,12 +79,72 @@ defmodule Decree.Decision.UseTest do
     end
   end
 
+  describe "`create:`" do
+    test "is required" do
+      assert_raise ArgumentError, ~r/no `create:` option/, fn ->
+        source("", "def command_window_ms, do: 1")
+      end
+    end
+
+    test "takes `false` or a list of types, and `__decision__/0` holds it" do
+      assert %{create: false} = compile("").__decision__()
+
+      assert %{create: ["Elixir.A", "Elixir.B"]} =
+               source(
+                 ~S|, create: [types: ["Elixir.A", "Elixir.B"]]|,
+                 "def command_window_ms, do: 1"
+               ).__decision__()
+    end
+
+    test "refuses anything else" do
+      for create <- [
+            "true",
+            "nil",
+            ":always",
+            ~s(["Elixir.A"]),
+            "[types: []]",
+            "[types: nil]",
+            ~s([types: "Elixir.A"]),
+            ~s([types: [""]]),
+            "[types: [Elixir.A]]",
+            ~s([types: ["Elixir.A"], tags: ["t"]]),
+            ~s([tags: ["t"]])
+          ] do
+        assert_raise ArgumentError, ~r/invalid `create`/, fn ->
+          source(", create: #{create}", "def command_window_ms, do: 1")
+        end
+      end
+    end
+
+    test "cannot be a replay item" do
+      assert_raise ArgumentError, ~r/`replay:` in `create:`/, fn ->
+        source(~S|, create: [types: ["Elixir.A"], replay: true]|, "def command_window_ms, do: 1")
+      end
+    end
+  end
+
+  describe "`command_window_ms/0`" do
+    test "is required" do
+      assert_raise ArgumentError, ~r/does not define `command_window_ms\/0`/, fn ->
+        source(", create: false", "")
+      end
+    end
+  end
+
   describe "optional callbacks" do
     test "`admit/2` defaults to `:ok` and can be overridden" do
       assert compile("").admit(:state, :command) == :ok
 
       assert compile("", "def admit(_state, _command), do: {:error, :no}").admit(:s, :c) ==
                {:error, :no}
+    end
+
+    test "`scope_tags/1` defaults to `[]` and can be overridden" do
+      assert compile("").scope_tags(:command) == []
+
+      decision = compile("", ~S|def scope_tags(_command), do: ["a:b"]|)
+
+      assert decision.scope_tags(:command) == ["a:b"]
     end
 
     test "`followup_query/3` is noticed when it is defined" do
@@ -119,11 +184,13 @@ defmodule Decree.Decision.UseTest do
 
       assert Enum.sort(callbacks) == [
                admit: 2,
+               command_window_ms: 0,
                decide: 2,
                evolve: 2,
                followup_query: 3,
                initial_state: 0,
-               query: 2
+               query: 2,
+               scope_tags: 1
              ]
     end
   end

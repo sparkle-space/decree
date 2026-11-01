@@ -219,7 +219,7 @@ defmodule Decree.Decision.DispatchTest do
       seed(%Stored{scope: scope}, [])
       seed(%Claimed{scope: scope, note: "mine"}, ["scope:" <> scope])
 
-      assert {:error, :unclassified_command_match} =
+      assert {:error, :reused_command_id} =
                RecordingRouter.dispatch(command, application: App)
 
       assert [{:query, _}, {:followup_query, [%Claimed{note: "mine"}]} | rest] = callbacks()
@@ -538,7 +538,7 @@ defmodule Decree.Decision.DispatchTest do
       seed(%Released{scope: "other"}, ["command:" <> command.command_id])
       seed(%Released{scope: "unrelated"}, ["scope:" <> scope])
 
-      assert {:error, :unclassified_command_match} = App.dispatch(command)
+      assert {:error, :reused_command_id} = App.dispatch(command)
 
       refute_received {:state, _state}
 
@@ -597,8 +597,8 @@ defmodule Decree.Decision.DispatchTest do
     end
   end
 
-  describe "F7, a command match" do
-    test "refuses, whatever `decide` would say" do
+  describe "step 7, a command match" do
+    test "that is not this command's refuses, whatever `decide` would say" do
       attach_telemetry([@append, @read_tags])
 
       test = self()
@@ -614,18 +614,18 @@ defmodule Decree.Decision.DispatchTest do
 
       position = seed(%Released{scope: "x"}, ["command:" <> command.command_id])
 
-      assert {:error, :unclassified_command_match} = App.dispatch(command)
+      assert {:error, :reused_command_id} = App.dispatch(command)
 
       refute_received :decided
       refute_received {:telemetry, @append, _, _}
       assert_received {:telemetry, @read_tags, _, %{positions: [^position]}}
     end
 
-    test "a resend of a command that landed refuses" do
+    test "a resend of a command that landed is a duplicate" do
       command = claim()
 
       assert :ok = App.dispatch(command)
-      assert {:error, :unclassified_command_match} = App.dispatch(command)
+      assert {:error, :duplicate_command} = App.dispatch(command)
       assert [_one] = stored("claim-" <> command.claim_id)
     end
 
@@ -646,7 +646,8 @@ defmodule Decree.Decision.DispatchTest do
       decide = fn _state, command ->
         {:streams,
          [
-           {:user, user, %Claimed{claim_id: user, scope: command.scope, note: "one"}},
+           {:claim, command.claim_id,
+            %Claimed{claim_id: command.claim_id, scope: command.scope, note: "one"}},
            {:order, order,
             [
               %Claimed{claim_id: order, scope: command.scope, note: "two"},
@@ -664,34 +665,32 @@ defmodule Decree.Decision.DispatchTest do
       assert {:ok, %ExecutionResult{} = result} =
                App.dispatch(command, returning: :execution_result)
 
-      [one] = positioned("scripted-" <> context.user)
+      route = "scripted-" <> command.claim_id
+
+      [one] = positioned(route)
       [two, three] = positioned("scripted-" <> context.order)
 
       assert {:ok, tags} =
                EventStore.read_tags(App, [one.event_number, two.event_number, three.event_number])
 
-      user_tag = "user:" <> context.user
+      route_tag = "claim:" <> command.claim_id
       order_tag = "order:" <> context.order
 
-      assert user_tag in tags[one.event_number]
+      assert route_tag in tags[one.event_number]
       refute order_tag in tags[one.event_number]
 
       for event <- [two, three] do
         assert order_tag in tags[event.event_number]
-        refute user_tag in tags[event.event_number]
+        refute route_tag in tags[event.event_number]
       end
 
       for event <- [one, two, three] do
-        refute ("claim:" <> command.claim_id) in tags[event.event_number]
         assert ("command:" <> command.command_id) in tags[event.event_number]
       end
 
-      assert result.stream_versions == %{
-               ("scripted-" <> context.user) => 1,
-               ("scripted-" <> context.order) => 2
-             }
+      assert result.stream_versions == %{route => 1, ("scripted-" <> context.order) => 2}
 
-      assert result.aggregate_uuid == "scripted-" <> context.user
+      assert result.aggregate_uuid == route
       assert result.aggregate_version == 1
       assert result.position == three.event_number
 
@@ -702,9 +701,11 @@ defmodule Decree.Decision.DispatchTest do
     end
 
     test "gives the members contiguous positions, in order", context do
-      assert :ok = App.dispatch(scripted(decide: context.decide))
+      command = scripted(decide: context.decide)
 
-      [one] = positioned("scripted-" <> context.user)
+      assert :ok = App.dispatch(command)
+
+      [one] = positioned("scripted-" <> command.claim_id)
       [two, three] = positioned("scripted-" <> context.order)
 
       assert [two.event_number, three.event_number] ==
@@ -712,25 +713,55 @@ defmodule Decree.Decision.DispatchTest do
     end
 
     test "a member's stream version carries on from what is there", context do
-      assert :ok = App.dispatch(scripted(decide: context.decide))
+      first = scripted(decide: context.decide)
+
+      assert :ok = App.dispatch(first)
 
       assert {:ok, %ExecutionResult{stream_versions: versions}} =
-               App.dispatch(scripted(decide: context.decide), returning: :execution_result)
+               App.dispatch(scripted(claim_id: first.claim_id, decide: context.decide),
+                 returning: :execution_result
+               )
 
       assert versions == %{
-               ("scripted-" <> context.user) => 2,
+               ("scripted-" <> first.claim_id) => 2,
                ("scripted-" <> context.order) => 4
              }
     end
 
-    test "one member is a batch too", context do
-      user = context.user
-      event = %Claimed{claim_id: user}
-
-      command = scripted(decide: fn _state, _command -> {:streams, [{:user, user, event}]} end)
+    test "one member is a batch too" do
+      command =
+        scripted(
+          decide: fn _state, command ->
+            {:streams, [{:claim, command.claim_id, %Claimed{claim_id: command.claim_id}}]}
+          end
+        )
 
       assert :ok = App.dispatch(command)
-      assert [%{stream_version: 1}] = stored("scripted-" <> user)
+      assert [%{stream_version: 1}] = stored("scripted-" <> command.claim_id)
+    end
+
+    test "a batch with no event carrying the route's stream tag stores nothing", context do
+      attach_telemetry([@append])
+
+      decide = fn _state, _command ->
+        {:streams, [{:user, context.user, %Claimed{}}, {:order, context.order, %Claimed{}}]}
+      end
+
+      command = scripted(decide: decide)
+
+      assert {:error, :batch_lacks_scope_tag} = App.dispatch(command)
+
+      refute_received {:telemetry, @append, _, _}
+      assert stored("scripted-" <> context.user) == []
+      assert stored("scripted-" <> context.order) == []
+    end
+
+    test "the route's stream tag on another kind is not the route's", context do
+      decide = fn _state, command ->
+        {:streams, [{:user, command.claim_id, %Claimed{}}, {:order, context.order, %Claimed{}}]}
+      end
+
+      assert {:error, :batch_lacks_scope_tag} = App.dispatch(scripted(decide: decide))
     end
 
     test "a non-canonical member identity refuses", context do
@@ -757,11 +788,11 @@ defmodule Decree.Decision.DispatchTest do
       end
     end
 
-    test "a repeated member answers the store's atom", context do
+    test "a repeated member answers the store's atom" do
       event = %Claimed{}
 
-      decide = fn _state, _command ->
-        {:streams, [{:user, context.user, event}, {:order, context.user, event}]}
+      decide = fn _state, command ->
+        {:streams, [{:claim, command.claim_id, event}, {:order, command.claim_id, event}]}
       end
 
       assert {:error, :repeated_stream} = App.dispatch(scripted(decide: decide))
@@ -997,7 +1028,7 @@ defmodule Decree.Decision.DispatchTest do
       seed_claims(command.scope, 2)
       seed(%Released{scope: "x"}, ["command:" <> command.command_id])
 
-      assert {:error, :unclassified_command_match} = App.dispatch(command)
+      assert {:error, :reused_command_id} = App.dispatch(command)
     end
 
     test "both reads together, an event in both counted once" do
@@ -1167,7 +1198,7 @@ defmodule Decree.Decision.DispatchTest do
       :ok
     end
 
-    test "is still refused: `command` tags cannot be erased" do
+    test "is still a duplicate: `command` tags cannot be erased" do
       command = scripted()
       stream_uuid = "scripted-" <> command.claim_id
       store = Module.concat([HardDeletesApp, "FrameworkEventStore"])
@@ -1179,7 +1210,7 @@ defmodule Decree.Decision.DispatchTest do
                  name: store
                )
 
-      assert {:error, :unclassified_command_match} = HardDeletesApp.dispatch(command)
+      assert {:error, :duplicate_command} = HardDeletesApp.dispatch(command)
 
       assert [_only_one] = stored(stream_uuid, HardDeletesApp)
     end
@@ -1212,7 +1243,7 @@ defmodule Decree.Decision.DispatchTest do
 
       seed(%Claimed{scope: "s"}, ["secret:1", "command:" <> command.command_id], DeletableApp)
 
-      assert {:error, :unclassified_command_match} = DeletableApp.dispatch(command)
+      assert {:error, :reused_command_id} = DeletableApp.dispatch(command)
     end
   end
 end

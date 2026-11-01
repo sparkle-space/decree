@@ -139,12 +139,12 @@ defmodule Decree.Decision.PersonalFieldsTest do
       decide = fn _state, _command ->
         {:streams,
          [
-           {:user, user, %Registered{user_id: user, email: first}},
+           {:claim, user, %Registered{user_id: user, email: first}},
            {:order, other, %Registered{user_id: other, email: second}}
          ]}
       end
 
-      command = scripted([query: reading(tag), decide: decide], Personal)
+      command = scripted([claim_id: user, query: reading(tag), decide: decide], Personal)
 
       assert :ok = PersonalApp.dispatch(command)
 

@@ -20,8 +20,9 @@ defmodule Decree.Decision.Assertions do
   `c:Decree.Decision.decide/2` with no store: the given events stand for what the reads
   would answer, decrypted where the decision lists them, so they never read time or a
   database. What only a store can answer, such
-  as a retry or a command match, needs a dispatch. So does what a dispatch reduces: on a
-  decision that lists its fold, a reason here is the callback's whole.
+  as a retry or a command match, needs a dispatch. So does a batch's scope check, which runs on
+  prepared tags, and what a dispatch reduces: on a decision that lists its fold, a reason here
+  is the callback's whole.
 
   A failure is an `ExUnit.AssertionError`, which is why ExUnit has to be running, as it is
   under `mix test`.

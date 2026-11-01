@@ -247,7 +247,14 @@ defmodule Decree.Decision.DecideRouteTest do
       assert outer.__stream_prefixes__().other == ["parity-aggregate-"]
 
       assert Enum.sort(outer.__stream_prefixes__().decision) ==
-               Enum.sort(["parity-decision-", "claim-", "scripted-", "tight-", "function-"])
+               Enum.sort([
+                 "parity-decision-",
+                 "claim-",
+                 "scripted-",
+                 "tight-",
+                 "create-",
+                 "function-"
+               ])
     end
 
     test "raises when two routers overlap, in either order" do
