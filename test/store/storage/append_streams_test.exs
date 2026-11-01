@@ -472,7 +472,7 @@ defmodule Decree.Store.Storage.AppendStreamsTest do
                )
 
       assert_received {:statement, statement}
-      assert statement =~ "append_events_v4"
+      assert statement =~ "append_events_v5"
       refute_received {:statement, _statement}
 
       assert stream_versions(context, "z-first") == Enum.to_list(1..@first)

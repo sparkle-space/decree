@@ -4,6 +4,7 @@ defmodule Decree.Store.Streams.Stream do
   alias Decree.Store.{
     AppendCondition,
     AppendError,
+    AppendResult,
     EventData,
     Query,
     ReadResult,
@@ -25,10 +26,10 @@ defmodule Decree.Store.Streams.Stream do
 
     with :ok <- validate_tags(events),
          :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
+         :ok <- validate_returning(new_opts),
          {:ok, new_opts} <- compile_condition([stream_uuid], new_opts),
-         {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts),
-         :ok <- do_append_to_storage(conn, stream, events, expected_version, serializer, new_opts) do
-      :ok
+         {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts) do
+      do_append_to_storage(conn, stream, events, expected_version, serializer, new_opts)
     end
     |> maybe_retry_once(conn, opts, retry_append(conn, stream_uuid, expected_version, events))
   end
@@ -38,23 +39,24 @@ defmodule Decree.Store.Streams.Stream do
 
     with :ok <- validate_tags(events),
          :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
+         :ok <- validate_returning(new_opts),
          {:ok, new_opts} <- compile_condition([stream_uuid], new_opts) do
       transaction(
         conn,
         fn transaction ->
-          with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, new_opts),
-               :ok <-
-                 do_append_to_storage(
-                   transaction,
-                   stream,
-                   events,
-                   expected_version,
-                   serializer,
-                   new_opts
-                 ) do
-            :ok
-          else
+          with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, new_opts) do
+            do_append_to_storage(
+              transaction,
+              stream,
+              events,
+              expected_version,
+              serializer,
+              new_opts
+            )
+          end
+          |> case do
             {:error, error} -> Postgrex.rollback(transaction, error)
+            reply -> reply
           end
         end,
         new_opts
@@ -71,6 +73,7 @@ defmodule Decree.Store.Streams.Stream do
          :ok <-
            validate_tags(Enum.flat_map(appends, fn {_stream, _version, events} -> events end)),
          :ok <- validate_deletable_types(appends, new_opts),
+         :ok <- validate_returning(new_opts),
          {:ok, new_opts} <- compile_condition(stream_uuids(appends), new_opts),
          {:ok, streams} <- streams_info(conn, appends, new_opts) do
       appends
@@ -152,6 +155,16 @@ defmodule Decree.Store.Streams.Stream do
          :ok <- validate_deletable(query, opts),
          :ok <- validate_command_tag(query, command_tag) do
       read_query_storage(conn, query, direction, bound, count, command_tag, opts)
+    end
+  end
+
+  def read_tags(_conn, [], _opts), do: {:ok, %{}}
+
+  def read_tags(conn, positions, opts) do
+    with :ok <- validate_positions(positions) do
+      tag_kinds = opts |> Keyword.get(:deletable, []) |> Keyword.get(:tag_kinds, [])
+
+      Storage.read_tags(conn, positions, tag_kinds, opts)
     end
   end
 
@@ -336,13 +349,23 @@ defmodule Decree.Store.Streams.Stream do
   defp any_tag?(events, fun), do: Enum.any?(events, &Enum.any?(&1.tags, fun))
 
   # Runs where `validate_tags/1` does, for the same reason: a refusal sends no statement.
+  # `Keyword.get_values/2` for what `compile_condition/2` says of it.
+  defp validate_returning(opts) do
+    case Keyword.get_values(opts, :returning) do
+      [] -> :ok
+      [:append_result] -> :ok
+      _invalid -> {:error, :invalid_returning}
+    end
+  end
+
+  # Runs where `validate_tags/1` does, for the same reason: a refusal sends no statement.
   # `opts` come back with the compiled condition, and without one a plain append's are
   # untouched. `Keyword.get_values/2` because `condition: nil` is a refused condition, not
   # a plain append, and because a repeated option must not leave one condition unchecked.
   defp compile_condition(stream_uuids, opts) do
     case Keyword.get_values(opts, :condition) do
       [] ->
-        {:ok, opts}
+        with :ok <- validate_plain_append(stream_uuids, opts), do: {:ok, opts}
 
       [condition] ->
         with {:ok, %AppendCondition{} = compiled} <- AppendCondition.compile(condition),
@@ -356,13 +379,30 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  # A declared prefix is a decision's: everything on such a stream was decided against a
+  # condition, and an append without one would write what no decision saw. One such member
+  # refuses the batch. `compile_condition/2` calls this from its one arm for no condition,
+  # which every append crosses, so the refusal lives once.
+  defp validate_plain_append(stream_uuids, opts) do
+    prefixes = conditional_prefixes(opts)
+
+    if Enum.any?(stream_uuids, &String.starts_with?(&1, prefixes)) do
+      {:error, :plain_append_to_conditional_prefix}
+    else
+      :ok
+    end
+  end
+
+  defp conditional_prefixes(opts) do
+    opts |> Keyword.get(:conditional_appends, []) |> Keyword.get(:stream_prefixes, [])
+  end
+
   # Declared by the store's config, which `opts` carry. `Decree.Store` passes no caller
   # option of this name through, so a caller cannot declare its own append. Every member
   # must start with a declared prefix, or the condition's `target` must be declared.
   defp validate_declared(stream_uuids, %AppendCondition{target: target}, opts) do
-    declared = Keyword.get(opts, :conditional_appends, [])
-    prefixes = Keyword.get(declared, :stream_prefixes, [])
-    targets = Keyword.get(declared, :targets, [])
+    prefixes = conditional_prefixes(opts)
+    targets = opts |> Keyword.get(:conditional_appends, []) |> Keyword.get(:targets, [])
 
     prefixed? = Enum.all?(stream_uuids, &String.starts_with?(&1, prefixes))
 
@@ -412,18 +452,21 @@ defmodule Decree.Store.Streams.Stream do
   # A hard delete of a stream holding links removes those events from every stream, so a
   # link into a stream that can be deleted would put an event of another stream in its way.
   # Runs where `validate_deletable_types/2` does, for the same reason: a refusal sends no
-  # statement.
+  # statement. A link into a decision's stream would put there an event no decision saw, as
+  # `validate_plain_append/2` says of an append.
   defp validate_link_target(stream_uuid, opts) do
-    case Keyword.get(opts, :deletable) do
-      nil ->
-        :ok
+    deletable_prefixes =
+      opts |> Keyword.get(:deletable, []) |> Keyword.get(:stream_prefixes, [])
 
-      deletable ->
-        if String.starts_with?(stream_uuid, Keyword.get(deletable, :stream_prefixes, [])) do
-          {:error, :link_into_deletable_stream}
-        else
-          :ok
-        end
+    cond do
+      String.starts_with?(stream_uuid, deletable_prefixes) ->
+        {:error, :link_into_deletable_stream}
+
+      String.starts_with?(stream_uuid, conditional_prefixes(opts)) ->
+        {:error, :link_into_conditional_prefix}
+
+      true ->
+        :ok
     end
   end
 
@@ -661,6 +704,16 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  # Walked by hand because an improper list must answer, not raise. `$1` is a `bigint[]`, so
+  # a position past a bigint could not be sent, and a refusal here leaves a caller's
+  # transaction alive.
+  defp validate_positions([]), do: :ok
+
+  defp validate_positions([position | positions]) when is_bigint(position) and position >= 0,
+    do: validate_positions(positions)
+
+  defp validate_positions(_positions), do: {:error, :invalid_positions}
+
   defp validate_tag_kinds([_kind | _kinds] = tag_kinds) do
     if Query.tag_kinds?(tag_kinds), do: :ok, else: {:error, :invalid_tag_kinds}
   end
@@ -787,6 +840,7 @@ defmodule Decree.Store.Streams.Stream do
   defp transaction(conn, transaction_fun, opts) do
     case Postgrex.transaction(conn, transaction_fun, opts) do
       {:ok, :ok} -> :ok
+      {:ok, {:ok, %AppendResult{}} = reply} -> reply
       {:error, _error} = reply -> reply
     end
   end

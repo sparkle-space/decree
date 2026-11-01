@@ -114,7 +114,7 @@ defmodule Decree.Store.Storage.AppendConditionInterleavingTest do
     test "on an existing stream fails the same way", context do
       %{observer: observer, postgrex_config: postgrex_config} = context
 
-      :ok = EventStore.append_to_stream("decision-b", 0, [event([])])
+      :ok = seed("decision-b")
 
       after_position = head(context)
 
@@ -143,7 +143,7 @@ defmodule Decree.Store.Storage.AppendConditionInterleavingTest do
       %{observer: observer, postgrex_config: postgrex_config} = context
 
       :ok = EventStore.append_to_stream("before", 0, [event(["other"])])
-      :ok = EventStore.append_to_stream("decision-existing", 0, [event([])])
+      :ok = seed("decision-existing")
 
       after_position = head(context)
 
@@ -174,7 +174,7 @@ defmodule Decree.Store.Storage.AppendConditionInterleavingTest do
     test "passes on an event that does not match, and takes the next positions", context do
       %{observer: observer, postgrex_config: postgrex_config} = context
 
-      :ok = EventStore.append_to_stream("decision-existing", 0, [event([])])
+      :ok = seed("decision-existing")
 
       after_position = head(context)
 
@@ -234,6 +234,14 @@ defmodule Decree.Store.Storage.AppendConditionInterleavingTest do
     conn = LockSession.connect(postgrex_config)
 
     {conn, LockSession.backend_pid(conn)}
+  end
+
+  # A declared prefix takes conditional appends and nothing else, so a test's starting rows
+  # go in through a condition that nothing matches.
+  defp seed(stream_uuid) do
+    EventStore.append_to_stream(stream_uuid, 0, [event([])],
+      condition: [items: [[tags: ["seed"]]], after: 0]
+    )
   end
 
   defp conditional_append(conn, stream_uuid, items, after_position, expected_version \\ 0) do

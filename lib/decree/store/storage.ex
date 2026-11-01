@@ -54,6 +54,11 @@ defmodule Decree.Store.Storage do
     to: Reader
 
   @doc """
+  Read the tags at the given positions, leaving out the given kinds, in one statement.
+  """
+  defdelegate read_tags(conn, positions, tag_kinds, opts), to: Reader
+
+  @doc """
   Get a `StreamInfo` struct for the stream identified by the `stream_uuid`.
   """
   defdelegate stream_info(conn, stream_uuid, opts), to: Stream

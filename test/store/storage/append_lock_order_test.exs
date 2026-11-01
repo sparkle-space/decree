@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.AppendLockOrderTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{EventData, EventFactory, LockSession, UUID}
+  alias Decree.Store.{AppendResult, EventData, EventFactory, LockSession, UUID}
   alias Decree.Store.Storage.Appender
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
@@ -328,6 +328,32 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
       assert :ok = Task.await(second)
 
       assert stream_versions(context, stream_id(context, "new-stream")) == [1, 2, 3, 4, 5]
+    end
+
+    test "the loser of the race keeps `returning:` through its retry", context do
+      %{observer: observer, holder: holder} = context
+      %{appender: appender, appender_backend: appender_backend} = context
+      %{second_appender: second_appender, second_appender_backend: second_backend} = context
+
+      first = async_append(appender, "new-stream", :any_version, 2)
+      LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
+
+      events = EventFactory.create_events(3)
+
+      second =
+        Task.async(fn ->
+          EventStore.append_to_stream("new-stream", :any_version, events,
+            conn: second_appender,
+            returning: :append_result
+          )
+        end)
+
+      LockSession.wait_until_blocked(observer, second_backend, appender_backend)
+
+      assert {:ok, :ok} = LockSession.commit(holder)
+      assert :ok = Task.await(first)
+
+      assert {:ok, %AppendResult{stream_versions: %{"new-stream" => 5}}} = Task.await(second)
     end
 
     test "creating it with `:no_stream` answers `:stream_exists` from its retry", context do

@@ -3,7 +3,7 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
 
   import ExUnit.CaptureLog
 
-  alias Decree.Store.{AppendError, EventFactory, LockSession}
+  alias Decree.Store.{AppendError, AppendResult, EventFactory, LockSession}
   alias TestEventStore, as: EventStore
 
   # A real `deadlock_detected`. Session X takes `$all`, an append on the stream takes
@@ -64,6 +64,67 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
     assert log =~ "deadlock_detected"
     assert stream_versions(context) == [1, 2, 3, 4]
     assert all_version(context) == 4
+  end
+
+  test "the retry keeps `returning:`, and answers what it wrote", context do
+    %{session_x: session_x, appender: appender} = context
+
+    log =
+      capture_log(fn ->
+        append = async_append_result(appender, 3)
+
+        force_deadlock(context, context.appender_backend)
+
+        assert {:ok, :ok} = LockSession.commit(session_x)
+
+        assert Task.await(append, 15_000) ==
+                 {:ok, %AppendResult{position: 4, stream_versions: %{"stream" => 4}}}
+      end)
+
+    assert log =~ "deadlock_detected"
+  end
+
+  test "the path for 1,000 or more events keeps `returning:` through its retry", context do
+    %{session_x: session_x, appender: appender} = context
+
+    log =
+      capture_log(fn ->
+        append = async_append_result(appender, 1_000)
+
+        force_deadlock(context, context.appender_backend)
+
+        assert {:ok, :ok} = LockSession.commit(session_x)
+
+        assert Task.await(append, 15_000) ==
+                 {:ok, %AppendResult{position: 1_001, stream_versions: %{"stream" => 1_001}}}
+      end)
+
+    assert log =~ "deadlock_detected"
+  end
+
+  test "a multi-stream victim keeps `returning:` through its retry", context do
+    %{session_x: session_x, appender: appender} = context
+
+    log =
+      capture_log(fn ->
+        append =
+          Task.async(fn ->
+            EventStore.append_to_streams(multi_stream_appends(),
+              conn: appender,
+              returning: :append_result
+            )
+          end)
+
+        force_deadlock(context, context.appender_backend)
+
+        assert {:ok, :ok} = LockSession.commit(session_x)
+
+        assert Task.await(append, 15_000) ==
+                 {:ok,
+                  %AppendResult{position: 3, stream_versions: %{"stream" => 2, "other" => 1}}}
+      end)
+
+    assert log =~ "deadlock_detected"
   end
 
   test "the path for 1,000 or more events retries its whole transaction", context do
@@ -279,6 +340,17 @@ defmodule Decree.Store.Storage.AppendDeadlockTest do
 
     Task.async(fn ->
       EventStore.append_to_stream("stream", :any_version, events, conn: conn)
+    end)
+  end
+
+  defp async_append_result(conn, count) do
+    events = EventFactory.create_events(count)
+
+    Task.async(fn ->
+      EventStore.append_to_stream("stream", :any_version, events,
+        conn: conn,
+        returning: :append_result
+      )
     end)
   end
 

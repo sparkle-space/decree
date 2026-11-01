@@ -181,7 +181,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     end
 
     test "on an existing stream leaves it where it was", context do
-      :ok = EventStore.append_to_stream("decision-old", 0, [event("typed", [])])
+      :ok = seed("decision-old", event("typed", []))
 
       assert EventStore.append_to_stream("decision-old", 1, [event("typed", ["more"])],
                condition: [items: @tag_matcher, after: 0]
@@ -253,46 +253,51 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     end
 
     test "leaves the stream appendable", context do
-      :ok = EventStore.append_to_stream("decision-old", 0, [event("typed", [])])
+      :ok = seed("decision-old", event("typed", []))
 
       assert EventStore.append_to_stream("decision-old", 1, [event("typed", [])],
                condition: [items: @tag_matcher, after: 0]
              ) == {:error, :append_condition_failed}
 
-      assert :ok = EventStore.append_to_stream("decision-old", 1, [event("typed", [])])
+      assert :ok =
+               EventStore.append_to_stream("decision-old", 1, [event("typed", [])],
+                 condition: [items: @tag_matcher, after: head(context)]
+               )
+
       assert head(context) == 3
     end
   end
 
   describe "plain and conditional appends on one stream" do
     test "keep versions and positions gapless", context do
-      stream = "decision-mixed"
+      # A declared target, because a declared prefix takes conditional appends alone.
+      stream = "mixed"
       tagged = fn -> [event("typed", ["mixed"])] end
 
       assert :ok = EventStore.append_to_stream(stream, 0, tagged.())
 
       assert :ok =
                EventStore.append_to_stream(stream, 1, tagged.(),
-                 condition: [items: [[tags: ["mixed"]]], after: 1]
+                 condition: [items: [[tags: ["mixed"]]], after: 1, target: :declared_target]
                )
 
       # A plain append with a tag some condition reads evaluates nothing.
       assert :ok = EventStore.append_to_stream(stream, :any_version, tagged.())
 
       assert EventStore.append_to_stream(stream, 3, tagged.(),
-               condition: [items: [[tags: ["mixed"]]], after: 2]
+               condition: [items: [[tags: ["mixed"]]], after: 2, target: :declared_target]
              ) == {:error, :append_condition_failed}
 
       assert :ok = EventStore.append_to_stream(stream, 3, tagged.())
 
       assert :ok =
                EventStore.append_to_stream(stream, :any_version, tagged.(),
-                 condition: [items: [[tags: ["mixed"]]], after: 4]
+                 condition: [items: [[tags: ["mixed"]]], after: 4, target: :declared_target]
                )
 
       assert :ok =
                EventStore.append_to_stream(stream, 5, tagged.(),
-                 condition: [items: [[tags: ["other"]]], after: 0]
+                 condition: [items: [[tags: ["other"]]], after: 0, target: :declared_target]
                )
 
       assert {:ok, events} = EventStore.read_stream_forward(stream)
@@ -318,7 +323,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
 
   describe "a stale append" do
     setup do
-      :ok = EventStore.append_to_stream("decision-stale", 0, [event("typed", ["tag"])])
+      :ok = seed("decision-stale", event("typed", ["tag"]))
     end
 
     test "answers `:wrong_expected_version` from the read, with a failing condition", context do
@@ -376,7 +381,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     end
 
     test "under an existing stream keeps numbering from it" do
-      :ok = EventStore.append_to_stream("decision-big", 0, [event("typed", ["tag"])])
+      :ok = seed("decision-big", event("typed", ["tag"]))
 
       assert :ok =
                EventStore.append_to_stream("decision-big", 1, events(2_500, ["tag"]),
@@ -640,7 +645,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     end
 
     test "and a refusal answers before a stale version would", context do
-      :ok = EventStore.append_to_stream("decision-x", 0, [event("typed", [])])
+      :ok = seed("decision-x", event("typed", []))
 
       assert EventStore.append_to_stream("decision-x", 0, [event("typed", [])],
                condition: [items: @tag_matcher, after: nil]
@@ -823,7 +828,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
       %Postgrex.Result{rows: [[definition]]} =
         Postgrex.query!(
           conn,
-          "SELECT pg_get_functiondef('public.append_events_v4'::regproc)",
+          "SELECT pg_get_functiondef('public.append_events_v5'::regproc)",
           []
         )
 
@@ -833,7 +838,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     test "is in the migration, byte for byte", %{fragment: fragment} do
       migration =
         :decree
-        |> Application.app_dir("priv/decree/store/migrations/v1.7.0.sql")
+        |> Application.app_dir("priv/decree/store/migrations/v1.9.0.sql")
         |> File.read!()
 
       assert String.contains?(migration, "SELECT EXISTS (\n" <> fragment <> "\n    ) INTO")
@@ -862,6 +867,14 @@ defmodule Decree.Store.Storage.AppendConditionTest do
 
     EventStore.append_to_stream(stream_uuid, 0, [event("written", tags)],
       condition: [items: items, after: position]
+    )
+  end
+
+  # A declared prefix takes conditional appends and nothing else, so a test's starting rows
+  # go in through a condition that nothing matches.
+  defp seed(stream_uuid, event) do
+    EventStore.append_to_stream(stream_uuid, 0, [event],
+      condition: [items: [[tags: ["seed"]]], after: 0]
     )
   end
 
