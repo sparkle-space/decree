@@ -9,7 +9,8 @@ defprotocol Decree.Event.Tags do
 
   `Decree.Event.Append.prepare/4` calls it for every event a command appends, then adds
   the framework's tags: `command:`, `command_kind:`, `correlation:` and the stream's
-  entity tag. Those need nothing from this protocol.
+  entity tag. Those need nothing from this protocol. It calls it on the plaintext that will be
+  stored: a declared value erased at append is already gone, and none is encrypted yet.
 
   ## An event with no implementation
 
@@ -36,7 +37,8 @@ defprotocol Decree.Event.Tags do
 
   `{:error, reason}` fails the append and is the command's answer, as it stands. Nothing is
   appended and the aggregate's state is unchanged. A raise is answered the same way, as a
-  raise from `execute/2` is.
+  raise from `execute/2` is, except that one on an event declaring personal fields becomes a
+  `Decree.PersonalFields.RedactedError`, because it can carry the value it failed on.
 
   Every event is prepared before the event store is called, so an implementation's error
   never reads as the store's: `:wrong_expected_version` is answered with no retry. `reason`

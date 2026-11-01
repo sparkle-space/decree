@@ -171,10 +171,10 @@ defmodule Decree.PersonalFields.Fixtures.Events do
     defstruct [:user_id, :email]
   end
 
-  # `apply/2` raises on it with the value in hand.
+  # `apply/2` raises on it with the value in hand, as its `mode` says.
   defmodule Poison do
     @derive [Jason.Encoder, {Decree.Event.PersonalFields, personal: [email: :user_id]}]
-    defstruct [:user_id, :email]
+    defstruct [:user_id, :email, mode: "match"]
   end
 
   # `Decree.Event.Tags` reads the plaintext, and can raise with it.
@@ -284,6 +284,11 @@ defmodule Decree.PersonalFields.Fixtures.Commands do
   defmodule ClauseOnState do
     defstruct [:account_id]
   end
+
+  # A database-shaped exception whose message holds the state's email.
+  defmodule DetailOnState do
+    defstruct [:account_id]
+  end
 end
 
 defmodule Decree.PersonalFields.Fixtures.Account do
@@ -293,6 +298,7 @@ defmodule Decree.PersonalFields.Fixtures.Account do
 
   alias Decree.PersonalFields.Fixtures.Commands.{
     ClauseOnState,
+    DetailOnState,
     Emit,
     ExitNow,
     Hold,
@@ -310,7 +316,7 @@ defmodule Decree.PersonalFields.Fixtures.Account do
     Unfolded
   }
 
-  alias Decree.PersonalFields.Fixtures.Keys
+  alias Decree.PersonalFields.Fixtures.{Keys, LeakyFailures}
 
   @personal_fold [Registered, Linked, Poison, TwoSubjects, PassedThrough, Renamed]
   @personal_state [links: :provider_uid]
@@ -339,6 +345,10 @@ defmodule Decree.PersonalFields.Fixtures.Account do
 
   def execute(%__MODULE__{} = state, %ClauseOnState{}), do: check(state)
 
+  def execute(%__MODULE__{email: email}, %DetailOnState{}) do
+    LeakyFailures.fail("database", email)
+  end
+
   defp check(%__MODULE__{email: nil}), do: []
 
   def apply(%__MODULE__{} = state, %Registered{user_id: user_id, email: email}) do
@@ -352,8 +362,9 @@ defmodule Decree.PersonalFields.Fixtures.Account do
     seen(%__MODULE__{state | user_id: user_id, links: links ++ [link]})
   end
 
-  def apply(%__MODULE__{} = state, %Poison{email: email}) do
-    "never" = email
+  def apply(%__MODULE__{} = state, %Poison{mode: mode, email: email}) do
+    LeakyFailures.fail(mode, email)
+
     state
   end
 
@@ -389,6 +400,7 @@ defmodule Decree.PersonalFields.Fixtures.Router do
 
   alias Decree.PersonalFields.Fixtures.Commands.{
     ClauseOnState,
+    DetailOnState,
     Emit,
     ExitNow,
     Hold,
@@ -398,7 +410,7 @@ defmodule Decree.PersonalFields.Fixtures.Router do
 
   identify Account, by: :account_id
 
-  dispatch [ClauseOnState, Emit, ExitNow, Hold, MatchState, RaiseNow], to: Account
+  dispatch [ClauseOnState, DetailOnState, Emit, ExitNow, Hold, MatchState, RaiseNow], to: Account
 end
 
 defmodule Decree.PersonalFields.Fixtures.App do

@@ -255,6 +255,26 @@ defmodule Decree.PersonalFields.AppendTest do
                ])
     end
 
+    for mode <- [:raise, :exit, :throw, :garbage, :empty_id, :other] do
+      test "that answers #{mode} fails the append and leaves the aggregate", context do
+        %{conn: conn, subject: subject} = context
+        stream = UUID.uuid4()
+
+        :ok = App.dispatch(%Emit{account_id: stream, events: [%Plain{user_id: subject}]})
+
+        Keys.set(subject, unquote(mode))
+
+        assert {:error, :key_unknown} =
+                 App.dispatch(%Emit{
+                   account_id: stream,
+                   events: [%Registered{user_id: subject, email: email()}]
+                 })
+
+        assert %{rows: [[1]]} = Postgrex.query!(conn, "SELECT count(*)::int FROM events", [])
+        assert :ok = App.dispatch(%Emit{account_id: stream})
+      end
+    end
+
     test "with no key source, a declared value fails the append", %{subject: subject} do
       assert {:error, :key_unknown} =
                prepare(event_data(%Registered{user_id: subject, email: email()}),
