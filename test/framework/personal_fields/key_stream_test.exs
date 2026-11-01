@@ -27,7 +27,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
   alias Decree.PersonalFields.KeyStream
   alias Decree.PersonalFields.KeyStream.Head
   alias Decree.PersonalFields.{SubjectDataKeyMinted, SubjectDataKeyRewrapped}
-  alias Decree.Store.{AppendError, Config, EventData, LockSession, TcpProxy}
+  alias Decree.Store.{AppendError, AppendResult, Config, EventData, LockSession, TcpProxy}
 
   @app LedgerApp
   @store LedgerApp.FrameworkEventStore
@@ -480,6 +480,54 @@ defmodule Decree.PersonalFields.KeyStreamTest do
         adapter: FailingAdapter,
         deletable: [stream_prefixes: [@prefix], event_types: KeyStream.event_types()]
       )
+    end
+  end
+
+  describe "a store configured" do
+    test "with `returning: :append_result` still answers a key write's success", context do
+      %{subject: subject, stream: stream} = context
+
+      event_store =
+        Keyword.merge(undeletable_store(), enable_hard_deletes: true, returning: :append_result)
+
+      start_supervised!({LedgerApp, name: :result_ledger, event_store: event_store})
+
+      # What the option does to every append, so this test can't pass without it.
+      assert {:ok, %AppendResult{}} =
+               EventStore.append_to_stream(:result_ledger, stream, :no_stream, [
+                 Mapper.map_to_event_data(%Plain{note: "first"})
+               ])
+
+      assert {:ok, key_id} = KeyStream.mint(:result_ledger, @prefix, subject, @wrap, @tag_v1)
+
+      {:ok, %Head{version: 1, key_id: ^key_id} = head} =
+        KeyStream.head(:result_ledger, @prefix, subject)
+
+      assert KeyStream.rewrap(:result_ledger, head, @second_wrap, @tag_v2) == :ok
+
+      assert {:ok,
+              %Head{
+                version: 2,
+                key_id: ^key_id,
+                wrapped_key: @second_wrap,
+                master_tag: @tag_v2
+              }} = KeyStream.head(:result_ledger, @prefix, subject)
+    end
+
+    test "with `enable_hard_deletes` as text mints, and hard deletes", context do
+      %{conn: conn, subject: subject, key_stream: key_stream} = context
+
+      event_store = Keyword.merge(undeletable_store(), enable_hard_deletes: "true")
+
+      start_supervised!({LedgerApp, name: :text_ledger, event_store: event_store})
+
+      assert {:ok, _key_id} = KeyStream.mint(:text_ledger, @prefix, subject, @wrap, @tag_v1)
+
+      assert Store.delete_stream(key_stream, :any_version, :hard,
+               name: Module.concat([:text_ledger, "FrameworkEventStore"])
+             ) == :ok
+
+      assert event_count(conn) == 0
     end
   end
 

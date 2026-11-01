@@ -90,6 +90,7 @@ defmodule Decree.PersonalFields.KeyStream do
   alias Decree.PersonalFields.SubjectDataKeyMinted
   alias Decree.PersonalFields.SubjectDataKeyRewrapped
   alias Decree.Store.AppendError
+  alias Decree.Store.AppendResult
   alias Decree.UUID
 
   defmodule Head do
@@ -247,12 +248,17 @@ defmodule Decree.PersonalFields.KeyStream do
   # With no span, whose exception event would hold what `mint/5`'s catch has not yet reduced: a
   # failed clause under the adapter lists the `EventData`, and the wrap's base64 with it.
   defp append(application, stream_uuid, expected_version, event) do
-    EventStore.append_without_span(
-      application,
-      stream_uuid,
-      expected_version,
-      [Mapper.map_to_event_data(event)]
-    )
+    case EventStore.append_without_span(
+           application,
+           stream_uuid,
+           expected_version,
+           [Mapper.map_to_event_data(event)]
+         ) do
+      # A store configured with `returning: :append_result` answers this for every append, and
+      # the write has committed: a host's re-check after a success depends on it being one.
+      {:ok, %AppendResult{}} -> :ok
+      answer -> answer
+    end
   end
 
   # `:wrong_expected_version` is a row at version 0 that another writer appended to first.
