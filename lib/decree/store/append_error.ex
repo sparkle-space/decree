@@ -7,8 +7,8 @@ defmodule Decree.Store.AppendError do
   appender's statement as plain atoms, because they are domain answers:
   `{:error, :wrong_expected_version}`, `{:error, :duplicate_event}`,
   `{:error, :not_found}`, `{:error, :append_condition_failed}` and (retried once
-  inside the store, see below) `{:error, :duplicate_stream_uuid}`. Every other
-  failure of that statement is returned as
+  outside a caller's transaction, see below) `{:error, :duplicate_stream_uuid}`.
+  Every other failure of that statement is returned as
   `{:error, %Decree.Store.AppendError{}}`, with these fields:
 
     - `class` — what a caller can do:
@@ -76,8 +76,10 @@ defmodule Decree.Store.AppendError do
   `Decree.Aggregates.DefaultLifespan` answers `:infinity` for it.
 
   `{:error, :duplicate_stream_uuid}` means two appends raced to create the
-  same stream; `append_to_stream/4` retries it once and then answers
-  `{:error, {:already_retried_once, :duplicate_stream_uuid}}`.
+  same stream. `append_to_stream/4` retries it once and then answers
+  `{:error, {:already_retried_once, :duplicate_stream_uuid}}`. It does not retry
+  inside a caller's transaction, which the race aborted: it answers
+  `{:error, :duplicate_stream_uuid}`.
   """
 
   @type class :: :unavailable | :retryable | :rejected

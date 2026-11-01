@@ -305,7 +305,7 @@ defmodule Decree.Store.Sql.Init do
   # The append function, in its latest version only: a fresh store carries no older
   # one. The signature follows the `events` columns, because Postgrex encodes from
   # the declared types. The body must stay byte-identical to the migration that
-  # adds this version (priv/decree/store/migrations/v1.6.0.sql); the comment at its
+  # adds this version (priv/decree/store/migrations/v1.7.0.sql); the comment at its
   # top states the name resolution and the versioning contract. The condition is
   # rendered from the one text that says what a query matches, and the migration
   # embeds the same bytes, so a change to that template fails their comparison.
@@ -326,12 +326,15 @@ defmodule Decree.Store.Sql.Init do
       |> IO.iodata_to_binary()
 
     """
-    CREATE FUNCTION append_events_v3(
+    CREATE FUNCTION append_events_v4(
       p_schema text,
-      p_stream_id bigint,
-      p_stream_uuid text,
-      p_expected_version bigint,
+      p_stream_ids bigint[],
+      p_stream_uuids text[],
+      p_expected_versions bigint[],
+      p_stream_counts bigint[],
       p_stream_created_at timestamptz,
+      p_event_streams bigint[],
+      p_event_offsets bigint[],
       p_event_ids uuid[],
       p_event_types text[],
       p_causation_ids #{causation_id_type}[],
@@ -341,22 +344,31 @@ defmodule Decree.Store.Sql.Init do
       p_created_at timestamptz[],
       p_tag_event_indexes bigint[],
       p_tags text[],
+      p_tag_event_types text[],
       p_probe_items bigint[],
       p_probe_tags text[],
       p_probe_types text[],
       p_rest_items bigint[],
       p_rest_tags text[],
       p_after bigint
-    ) RETURNS bigint
+    ) RETURNS bigint[]
     LANGUAGE plpgsql VOLATILE
     SET search_path TO pg_catalog, pg_temp
     SET enable_seqscan TO off
     AS $$
-    -- Appends events to one stream, in one round trip and in one lock order: the
-    -- stream's row first (FOR NO KEY UPDATE, or the insert of a new row), then $all.
-    -- $all is always the last lock an append takes, so appends cannot cycle on these
-    -- two locks. Batches sharing event ids in another order can still meet on
-    -- events_pkey, as they could in the statements this replaces.
+    -- Appends events to one or more member streams, atomically, in one round trip and in
+    -- one lock order: every member's row, sorted by stream_uuid (FOR NO KEY UPDATE, or the
+    -- insert of a new row), then $all. $all is always the last lock an append takes, and
+    -- members are always taken in one order, so appends cannot cycle on these locks: a
+    -- holder of $all never waits on a stream's row. Batches sharing event ids in another
+    -- order can still meet on events_pkey, as they could in the statements this replaces.
+    --
+    -- The members are locked one statement at a time, because a single
+    -- WHERE ... = ANY(...) FOR NO KEY UPDATE has no documented lock order and this loop
+    -- has. The sort is bytewise and lives only here, so it does not depend on a store's
+    -- collation, and no pod can disagree with another about it. It covers new and existing
+    -- members alike: an insert's wait on the unique index of stream_uuid sits at the same
+    -- sorted position a row lock would, so racing creators keep the one order.
     --
     -- Name resolution: the body names tables unqualified, and the set_config below
     -- points search_path at p_schema for this call. The attached SET search_path
@@ -366,12 +378,21 @@ defmodule Decree.Store.Sql.Init do
     -- needs nothing but the config change. SET search_path FROM CURRENT, or a schema
     -- baked into this text, would freeze the name the function was created under.
     --
-    -- The _v3 suffix is a contract: a later change adds a new version and never
+    -- The _v4 suffix is a contract: a later change adds a new version and never
     -- replaces or drops this one, because an old pod still calls this signature.
     --
-    -- Tags travel as two parallel flat arrays, because Postgres arrays are rectangular:
-    -- p_tag_event_indexes[n] is the 1-based ordinal, within this batch, of the event
-    -- p_tags[n] belongs to.
+    -- The p_stream_* arrays are parallel, one entry per member in the caller's order:
+    -- p_stream_ids[n] NULL creates that stream, p_expected_versions[n] NULL means any
+    -- version, and p_stream_counts[n] is that member's events in this call, at least 1.
+    -- p_event_streams[k] is the 1-based member ordinal of event k, and p_event_offsets[k]
+    -- its 1-based ordinal within that member in this call. Positions in $all follow the
+    -- order of the events here, not the sort.
+    --
+    -- Tags travel as three parallel flat arrays, because Postgres arrays are rectangular:
+    -- p_tag_event_indexes[n] is the 1-based ordinal, within this call, of the event
+    -- p_tags[n] belongs to, and p_tag_event_types[n] is that event's type. The type comes
+    -- with the tag because a call has no bound on its events, and subscripting a text
+    -- array is linear in the array.
     --
     -- A condition is a compiled query and a position, p_after, whose NULL means a plain
     -- append. It fails the append if any event after p_after matches. It is a statement
@@ -389,47 +410,69 @@ defmodule Decree.Store.Sql.Init do
     -- on success and on a raise, also inside a caller's transaction, as search_path is.
     DECLARE
       v_count bigint := cardinality(p_event_ids);
-      v_stream_id bigint := p_stream_id;
-      v_stream_version bigint := 0;
+      v_stream_ids bigint[] := p_stream_ids;
+      v_versions bigint[] := array_fill(0::bigint, ARRAY[cardinality(p_stream_uuids)]);
+      v_member integer;
+      v_stream_id bigint;
+      v_version bigint;
       v_all_version bigint;
       v_stale boolean := false;
       v_stamp timestamptz;
       v_conflict boolean;
     BEGIN
       IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION 'append_events_v3 needs READ COMMITTED, not %',
+        RAISE EXCEPTION 'append_events_v4 needs READ COMMITTED, not %',
           current_setting('transaction_isolation')
           USING ERRCODE = 'invalid_transaction_state';
       END IF;
 
       PERFORM set_config('search_path', quote_ident(p_schema) || ', pg_temp', true);
 
-      -- Both arms write the stream's row here, so its event_notification NOTIFY still
-      -- fires before the one for $all. A stale append writes no row and fires neither.
-      IF p_stream_id IS NULL THEN
-        INSERT INTO streams (stream_uuid, stream_version, created_at)
-        VALUES (p_stream_uuid, v_count, COALESCE(p_stream_created_at, now()))
-        RETURNING stream_id INTO v_stream_id;
-      ELSE
-        SELECT stream_version INTO v_stream_version
-        FROM streams
-        WHERE stream_id = p_stream_id
-        FOR NO KEY UPDATE;
+      -- Every arm writes its member's row here, so the members' event_notification NOTIFYs
+      -- fire in this order, before the one for $all. A stale member writes no row, and the
+      -- raise below takes back any NOTIFY an earlier member queued.
+      FOR v_member IN
+        SELECT member.index
+        FROM unnest(p_stream_uuids) WITH ORDINALITY AS member (stream_uuid, index)
+        ORDER BY member.stream_uuid COLLATE "C"
+      LOOP
+        IF p_stream_ids[v_member] IS NULL THEN
+          INSERT INTO streams (stream_uuid, stream_version, created_at)
+          VALUES (
+            p_stream_uuids[v_member],
+            p_stream_counts[v_member],
+            COALESCE(p_stream_created_at, now())
+          )
+          RETURNING stream_id INTO v_stream_id;
 
-        IF NOT FOUND THEN
-          RETURN NULL;
-        END IF;
+          v_stream_ids[v_member] := v_stream_id;
+        ELSE
+          SELECT stream_version INTO v_version
+          FROM streams
+          WHERE stream_id = p_stream_ids[v_member]
+          FOR NO KEY UPDATE;
 
-        -- Decided here, on the locked row, and answered after the events insert, whose
-        -- unique index answers a duplicate event id first, stored or in flight.
-        v_stale := p_expected_version IS NOT NULL AND p_expected_version <> v_stream_version;
+          -- A raise, because RETURN NULL would be a successful statement, and in
+          -- autocommit it would commit a new member's row inserted earlier in this loop.
+          -- So this race inside a caller's transaction aborts it, as a stale append does.
+          IF NOT FOUND THEN
+            RAISE EXCEPTION 'stream row is gone' USING ERRCODE = 'ZD002';
+          END IF;
 
-        IF NOT v_stale THEN
+          v_versions[v_member] := v_version;
+
+          -- Decided here, on the locked row, and answered after the events insert, whose
+          -- unique index answers a duplicate event id first, stored or in flight.
+          v_stale := p_expected_versions[v_member] IS NOT NULL
+            AND p_expected_versions[v_member] <> v_version;
+
+          EXIT WHEN v_stale;
+
           UPDATE streams
-          SET stream_version = stream_version + v_count
-          WHERE stream_id = p_stream_id;
+          SET stream_version = stream_version + p_stream_counts[v_member]
+          WHERE stream_id = p_stream_ids[v_member];
         END IF;
-      END IF;
+      END LOOP;
 
       -- These rows carry no position, so they stay out of the $all lock.
       INSERT INTO events
@@ -473,13 +516,19 @@ defmodule Decree.Store.Sql.Init do
       SELECT
         new_events.event_id,
         target.stream_id,
-        target.base_version + new_events.index,
-        v_stream_id,
-        v_stream_version + new_events.index
-      FROM unnest(p_event_ids) WITH ORDINALITY AS new_events (event_id, index)
-      CROSS JOIN (
-        VALUES (v_stream_id, v_stream_version), (0, v_all_version)
-      ) AS target (stream_id, base_version);
+        target.stream_version,
+        v_stream_ids[new_events.member],
+        v_versions[new_events.member] + new_events.member_offset
+      FROM unnest(p_event_ids, p_event_streams, p_event_offsets) WITH ORDINALITY
+        AS new_events (event_id, member, member_offset, index)
+      CROSS JOIN LATERAL (
+        VALUES
+          (
+            v_stream_ids[new_events.member],
+            v_versions[new_events.member] + new_events.member_offset
+          ),
+          (0, v_all_version + new_events.index)
+      ) AS target (stream_id, stream_version);
 
       -- These rows carry the position, so they wait for $all. Every event gets its
       -- event_types row, tagged or not: that is what an item with types and no tags reads.
@@ -496,11 +545,12 @@ defmodule Decree.Store.Sql.Init do
       SELECT
         v_all_version + new_tags.index,
         new_tags.tag,
-        p_event_types[new_tags.index],
+        new_tags.event_type,
         CASE WHEN starts_with(new_tags.tag, 'command:') THEN v_stamp END
-      FROM unnest(p_tag_event_indexes, p_tags) AS new_tags (index, tag);
+      FROM unnest(p_tag_event_indexes, p_tags, p_tag_event_types)
+        AS new_tags (index, tag, event_type);
 
-      RETURN v_stream_id;
+      RETURN v_stream_ids;
     END;
     $$;
     """
@@ -565,7 +615,7 @@ defmodule Decree.Store.Sql.Init do
   defp record_event_store_schema_version do
     """
     INSERT INTO schema_migrations (major_version, minor_version, patch_version)
-    VALUES (1, 6, 0);
+    VALUES (1, 7, 0);
     """
   end
 end

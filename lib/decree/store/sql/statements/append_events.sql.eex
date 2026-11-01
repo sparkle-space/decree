@@ -2,27 +2,31 @@
   # Elixir template variables:
   #   schema - string
 
-  # Bind variables, the parameters of `append_events_v3` (see
-  # `Decree.Store.Sql.Init`):
+  # Bind variables, the parameters of `append_events_v4` (see
+  # `Decree.Store.Sql.Init`). One call is one atomic append to its member streams:
   #   1 - schema - text
-  #   2 - stream_id - bigint, NULL creates the stream
-  #   3 - stream_uuid - text
-  #   4 - expected_version - bigint, NULL means any version
-  #   5 - stream_created_at - timestamptz, NULL means now()
-  #   6 - event_ids - uuid[]
-  #   7 - event_types - text[]
-  #   8 - causation_ids - <causation id type>[]
-  #   9 - correlation_ids - <correlation id type>[]
-  #  10 - data - <serialized event data format (bytea, jsonb)>[]
-  #  11 - metadata - <serialized event data format (bytea, jsonb)>[]
-  #  12 - created_at - timestamptz[]
-  #  13 - tag_event_indexes - bigint[], the 1-based ordinal in this batch of each tag's event
-  #  14 - tags - text[], parallel to tag_event_indexes
-  #  15 - probe_items - bigint[], a condition's `Decree.Store.Query`, NULL without one
-  #  16 - probe_tags - text[], parallel to probe_items
-  #  17 - probe_types - text[], parallel to probe_items
-  #  18 - rest_items - bigint[]
-  #  19 - rest_tags - text[], parallel to rest_items
-  #  20 - after - bigint, the condition's position, NULL means a plain append
+  #   2 - stream_ids - bigint[], one per member, in the caller's order, NULL creates it
+  #   3 - stream_uuids - text[], parallel to stream_ids
+  #   4 - expected_versions - bigint[], parallel to stream_ids, NULL means any version
+  #   5 - stream_counts - bigint[], parallel to stream_ids, the member's events in this call
+  #   6 - stream_created_at - timestamptz, NULL means now()
+  #   7 - event_streams - bigint[], the 1-based member ordinal of each event
+  #   8 - event_offsets - bigint[], each event's 1-based ordinal within its member in this call
+  #   9 - event_ids - uuid[]
+  #  10 - event_types - text[]
+  #  11 - causation_ids - <causation id type>[]
+  #  12 - correlation_ids - <correlation id type>[]
+  #  13 - data - <serialized event data format (bytea, jsonb)>[]
+  #  14 - metadata - <serialized event data format (bytea, jsonb)>[]
+  #  15 - created_at - timestamptz[]
+  #  16 - tag_event_indexes - bigint[], the 1-based ordinal in this call of each tag's event
+  #  17 - tags - text[], parallel to tag_event_indexes
+  #  18 - tag_event_types - text[], parallel to tag_event_indexes, the type of each tag's event
+  #  19 - probe_items - bigint[], a condition's `Decree.Store.Query`, NULL without one
+  #  20 - probe_tags - text[], parallel to probe_items
+  #  21 - probe_types - text[], parallel to probe_items
+  #  22 - rest_items - bigint[]
+  #  23 - rest_tags - text[], parallel to rest_items
+  #  24 - after - bigint, the condition's position, NULL means a plain append
 %>
-SELECT "<%= schema %>".append_events_v3($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20);
+SELECT "<%= schema %>".append_events_v4($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24);
