@@ -22,6 +22,7 @@ defmodule Decree.Decision.RequiredTagsTest do
     Malformed,
     PlainRaising,
     Unindexed,
+    Unlisted,
     Unopted
   }
 
@@ -31,6 +32,8 @@ defmodule Decree.Decision.RequiredTagsTest do
   @contact Atom.to_string(Contact)
   @digested Atom.to_string(Digested)
   @unopted Atom.to_string(Unopted)
+
+  @not_lists [nil, :address, %{}]
 
   setup do
     start_supervised!(Keys)
@@ -94,6 +97,15 @@ defmodule Decree.Decision.RequiredTagsTest do
 
       assert {:error, :missing_required_tag} = PlainApp.dispatch(command)
       assert stored_plain(command) == []
+    end
+
+    test "an answer that is not a list refuses, and stores nothing" do
+      for answer <- @not_lists do
+        command = emit(%Unlisted{answer: answer})
+
+        assert {:error, :invalid_required_tag_kinds} = PlainApp.dispatch(command), inspect(answer)
+        assert stored_plain(command) == []
+      end
     end
   end
 
@@ -203,6 +215,17 @@ defmodule Decree.Decision.RequiredTagsTest do
       command = deciding(Unindexed, read_nothing(), %Malformed{})
 
       assert {:error, :invalid_required_tag_kinds} = DecisionApp.dispatch(command)
+    end
+
+    test "an answer that is not a list refuses, and stores nothing" do
+      for answer <- @not_lists do
+        command = deciding(Unindexed, read_nothing(), %Unlisted{answer: answer})
+
+        assert {:error, :invalid_required_tag_kinds} = DecisionApp.dispatch(command),
+               inspect(answer)
+
+        assert stored_decided(command) == []
+      end
     end
   end
 

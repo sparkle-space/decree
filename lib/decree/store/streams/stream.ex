@@ -511,7 +511,9 @@ defmodule Decree.Store.Streams.Stream do
   # goes by the stream the event was appended to, whatever the target and whatever a
   # `deletable` prefix says of it. A bare id can't say which stream that is without a
   # statement, so a store that declares a prefix takes no bare ids. Runs where
-  # `validate_link_target/2` does, after it, for the same reason.
+  # `validate_link_target/2` does, after it, for the same reason. This reads what a
+  # `RecordedEvent` says and a caller can change that, so it is an early answer: the store's
+  # own rows decide in `Appender.link/4`, before anything is written.
   defp validate_link_source(events_or_event_ids, opts) do
     case conditional_prefixes(opts) do
       [] ->
@@ -610,7 +612,12 @@ defmodule Decree.Store.Streams.Stream do
     %StreamInfo{stream_id: stream_id} = stream
 
     event_ids = Enum.map(events_or_event_ids, &extract_event_id/1)
-    opts = Keyword.put(opts, :expected_version, expected_version)
+
+    opts =
+      Keyword.merge(opts,
+        expected_version: expected_version,
+        conditional_prefixes: conditional_prefixes(opts)
+      )
 
     Storage.link_to_stream(conn, stream_id, event_ids, opts)
   end

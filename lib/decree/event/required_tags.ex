@@ -22,7 +22,8 @@ defmodule Decree.Event.RequiredTags do
       It is called where `Decree.Event.Tags.tags/2` is, with the same plaintext and the same
       `Decree.Event.TagContext`, so an erased subject's dropped value reads as absent, and
       fails as `tags/2` fails, redactions included. Answering `{:error, reason}` fails the
-      append.
+      append, and anything else that is not a list fails it with
+      `{:error, :invalid_required_tag_kinds}`.
     - `__conditional_tag_kinds__()` lists the kinds an event of this module can lack. A
       condition naming one requires nothing of itself: the tag is required when
       `__required_tag_kinds__/2` answers its kind, and only then. So a tag is present if and
@@ -37,7 +38,8 @@ defmodule Decree.Event.RequiredTags do
 
   The store refuses, before any statement: `{:error, :missing_required_tag}` for an event
   lacking a kind on its list, and `{:error, :invalid_required_tag_kinds}` for a list that is
-  not kinds. A kind is carried by a tag equal to it, or by `<kind>:<value>` with a value.
+  not kinds, an improper one included. A kind is carried by a tag equal to it, or by
+  `<kind>:<value>` with a value.
 
   ## On a decision
 
@@ -65,7 +67,8 @@ defmodule Decree.Event.RequiredTags do
 
   @doc """
   The kinds this event requires: `always/0` and its answer, or none for an event without the
-  export. What the answer holds is the store's to check.
+  export. An answer that is not a list is `{:error, :invalid_required_tag_kinds}`, here. What
+  a list holds is the store's to check.
   """
   @spec required(struct(), TagContext.t()) :: {:ok, list()} | {:error, term()}
   def required(%module{} = event, %TagContext{} = context) do
@@ -73,6 +76,7 @@ defmodule Decree.Event.RequiredTags do
       case module.__required_tag_kinds__(event, context) do
         kinds when is_list(kinds) -> {:ok, @always ++ kinds}
         {:error, _reason} = error -> error
+        _other -> {:error, :invalid_required_tag_kinds}
       end
     else
       {:ok, []}

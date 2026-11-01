@@ -8,7 +8,7 @@ defmodule Decree.Event.RequiredTagsTest do
   alias Decree.Event.Tagging.Events.{Reloaded, Unimplemented}
   alias Decree.EventStore.Adapters.EventStore.Mapper
   alias Decree.EventStore.EventData
-  alias Decree.RequiredTagsFixtures.{Addressed, Digested, Unopted}
+  alias Decree.RequiredTagsFixtures.{Addressed, Digested, Malformed, Unlisted, Unopted}
 
   defmodule App do
     use Decree.Application, otp_app: :decree
@@ -36,6 +36,19 @@ defmodule Decree.Event.RequiredTagsTest do
     test "is nothing for an event without the export, whatever else it exports" do
       assert RequiredTags.required(%Unopted{}, %TagContext{}) == {:ok, []}
       assert RequiredTags.required(%Digested{}, %TagContext{}) == {:ok, []}
+    end
+
+    test "refuses an answer that is not a list" do
+      for answer <- [nil, :address, %{}] do
+        assert RequiredTags.required(%Unlisted{answer: answer}, %TagContext{}) ==
+                 {:error, :invalid_required_tag_kinds},
+               inspect(answer)
+      end
+    end
+
+    test "passes on an improper list, which is the store's to refuse" do
+      assert {:ok, ["command", "command_kind", :address | :improper]} =
+               RequiredTags.required(%Malformed{}, %TagContext{})
     end
 
     test "holds no stream kind and no correlation" do

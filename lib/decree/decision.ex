@@ -329,7 +329,8 @@ defmodule Decree.Decision do
   `:batch_lacks_scope_tag`, `:batch_lacks_fact`, `:invalid_scope_tags`,
   `:invalid_command_window`, `:digest_tag_mismatch` for an event whose digest is not the one
   the decision read, `:missing_required_tag` for an event lacking a kind it requires, and
-  `:invalid_required_tag_kinds` for an event answering what is not a list of kinds.
+  `:invalid_required_tag_kinds` for an event answering what is not a list, which preparing
+  answers, or a list that is not kinds, which the store answers.
 
   ## Bounds
 

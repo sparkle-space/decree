@@ -322,8 +322,11 @@ defmodule Decree.Store do
   `{:error, :link_by_id_with_conditional_prefixes}`, because which stream it came from can't be
   known without a statement. Pass the `%Decree.Store.RecordedEvent{}`, read from any stream: it
   names the stream it was appended to. Both are answered before any statement is sent, and
-  after the target's own refusals. A store that declares no prefix keeps what it did. A link
-  made before the prefix was declared, or by a store that declares none, is not found by this.
+  after the target's own refusals. That reads the struct, and the store's own rows decide
+  before anything is written, so an edited `stream_uuid` gains nothing: it answers
+  `{:error, :link_of_conditional_event}` from inside the link's transaction, which rolls back
+  as any failed link does, a caller's transaction with it. A store that declares no prefix keeps what it did, and sends no extra statement. A link made
+  before the prefix was declared, or by a store that declares none, is not found by this.
 
   **What the append wrote.** With `returning: :append_result`, an append answers
   `{:ok, %Decree.Store.AppendResult{}}` in place of `:ok`, with the last position it wrote and
@@ -1045,7 +1048,8 @@ defmodule Decree.Store do
     * `{:error, :invalid_required_tag_kinds}` when an event's `required_tag_kinds` are not
       kinds, and `{:error, :missing_required_tag}` when an event lacks a kind on that list.
       See `Decree.Store.EventData`. Each is answered as a tag that is too long is, after
-      one, at every expected version.
+      one, at every expected version. An event answering what is not a list never gets this
+      far: preparing it answers the first, and `Decree.Event.RequiredTags` says so.
     * `{:error, :undeclared_deletable_event_type}` when the stream starts with a
       declared deletable prefix and an event's type is not declared. See "Deletable
       streams" in `Decree.Store`. It is answered as a tag that is too long is, and after
@@ -1243,8 +1247,10 @@ defmodule Decree.Store do
       starting with a declared `conditional_appends` prefix, whatever the target and
       before any statement is sent, and `{:error, :link_by_id_with_conditional_prefixes}`
       when the store declares such a prefix and an event is given by its bare id, or as a
-      recorded event naming no stream. Both come after the two above. See "Conditional
-      appends" in `Decree.Store`.
+      recorded event naming no stream. Both come after the two above. The first goes by the
+      recorded event's `stream_uuid` there, and by the store's own rows before anything is
+      written, so an edited `stream_uuid` is refused too, with the link's transaction rolled
+      back. See "Conditional appends" in `Decree.Store`.
     * `{:error, :duplicate_event}` when an event is already linked to the
       stream, or is listed twice.
     * `{:error, :not_found}` when an event id does not exist, or when a hard

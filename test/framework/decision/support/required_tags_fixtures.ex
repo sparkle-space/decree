@@ -95,6 +95,16 @@ defmodule Decree.RequiredTagsFixtures.Malformed do
   def __required_tag_kinds__(%__MODULE__{}, _tag_context), do: [:address | :improper]
 end
 
+defmodule Decree.RequiredTagsFixtures.Unlisted do
+  @moduledoc false
+
+  # Answers what it is told to, for an answer that is no list at all.
+  @derive Jason.Encoder
+  defstruct [:answer]
+
+  def __required_tag_kinds__(%__MODULE__{answer: answer}, _tag_context), do: answer
+end
+
 defmodule Decree.RequiredTagsFixtures.Unopted do
   @moduledoc false
 
