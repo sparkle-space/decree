@@ -2,7 +2,8 @@ defmodule Decree.Event.BatchHandler do
   use Decree.Event.Handler,
     application: Decree.DefaultApp,
     name: __MODULE__,
-    batch_size: 5
+    batch_size: 5,
+    personal_fields: :opaque
 
   alias Decree.Event.ReplyEvent
   require Logger

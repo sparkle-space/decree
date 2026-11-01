@@ -2,7 +2,8 @@ defmodule Decree.Event.StatefulBatchedEventHandler do
   use Decree.Event.Handler,
     application: Decree.MockedApp,
     name: __MODULE__,
-    batch_size: 5
+    batch_size: 5,
+    personal_fields: :opaque
 
   def init(config) do
     config = Keyword.put_new(config, :state, 0)

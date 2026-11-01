@@ -14,7 +14,8 @@ defmodule Decree.Event.EventHandlerBatchSubscribeToStreamTest do
       application: DefaultApp,
       name: __MODULE__,
       subscribe_to: "stream2",
-      batch_size: 3
+      batch_size: 3,
+      personal_fields: :opaque
 
     # One reply per event: the Postgres store may deliver the three events in one batch.
     def handle_batch(events) do

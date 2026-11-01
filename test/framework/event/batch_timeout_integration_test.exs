@@ -28,7 +28,8 @@ defmodule Decree.Event.BatchTimeoutIntegrationTest do
       application: Decree.DefaultApp,
       name: __MODULE__,
       batch_size: 10,
-      batch_timeout: 100
+      batch_timeout: 100,
+      personal_fields: :opaque
 
     def handle_batch(events) do
       # Send count to test process

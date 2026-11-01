@@ -2,7 +2,8 @@ defmodule Decree.Event.Upcast.BatchEventHandler do
   use Decree.Event.Handler,
     application: Decree.DefaultApp,
     name: __MODULE__,
-    batch_size: 5
+    batch_size: 5,
+    personal_fields: :opaque
 
   def handle_batch([{_first, _metadata} | _rest] = events), do: send_reply(events)
 

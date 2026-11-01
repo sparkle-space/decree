@@ -3,7 +3,8 @@ defmodule Decree.Event.AppendingEventHandler do
 
   use Decree.Event.Handler,
     application: Decree.DefaultApp,
-    name: __MODULE__
+    name: __MODULE__,
+    personal_fields: :opaque
 
   def after_start(_state) do
     with {:ok, _pid} <- Agent.start_link(fn -> %{events: [], metadata: []} end, name: __MODULE__) do

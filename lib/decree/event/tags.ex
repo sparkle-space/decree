@@ -7,9 +7,10 @@ defprotocol Decree.Event.Tags do
   the aggregate, so it must be deterministic: the same event and context give the same
   tags. It must read no database, clock or process state a retry could see differently.
 
-  `Decree.Event.Append.prepare/2` calls it for every event a command appends, then adds
+  `Decree.Event.Append.prepare/4` calls it for every event a command appends, then adds
   the framework's tags: `command:`, `command_kind:`, `correlation:` and the stream's
-  entity tag. Those need nothing from this protocol.
+  entity tag. Those need nothing from this protocol. It calls it on the plaintext that will be
+  stored: a declared value erased at append is already gone, and none is encrypted yet.
 
   ## An event with no implementation
 
@@ -37,6 +38,12 @@ defprotocol Decree.Event.Tags do
   `{:error, reason}` fails the append and is the command's answer, as it stands. Nothing is
   appended and the aggregate's state is unchanged. A raise is answered the same way, as a
   raise from `execute/2` is.
+
+  An event declaring personal fields is in plaintext here, and what leaves an implementation
+  can carry its value. So on such an event the command's answer is `{:error, reduced}`, by
+  `Decree.PersonalFields.RedactedError.reduce/1`: an atom reason stands, and a tuple with an
+  atom head keeps that head. An exit or a throw is reduced the same way, and a raise becomes a
+  `Decree.PersonalFields.RedactedError`. An event with no declaration is not touched.
 
   Every event is prepared before the event store is called, so an implementation's error
   never reads as the store's: `:wrong_expected_version` is answered with no retry. `reason`

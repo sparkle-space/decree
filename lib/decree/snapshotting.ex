@@ -3,6 +3,7 @@ defmodule Decree.Snapshotting do
 
   alias Decree.EventStore
   alias Decree.EventStore.{SnapshotData, TypeProvider}
+  alias Decree.PersonalFields
   alias Decree.Snapshotting
 
   defstruct [
@@ -34,6 +35,9 @@ defmodule Decree.Snapshotting do
 
   @doc """
   Take a snapshot of the source state.
+
+  The state an aggregate lists with `Decree.PersonalFields.Aggregate` is encrypted on a copy.
+  Anything that stops that records no snapshot, and there is no plaintext fallback.
   """
   def take_snapshot(%Snapshotting{} = snapshotting, source_version, source_state)
       when is_number(source_version) do
@@ -43,17 +47,20 @@ defmodule Decree.Snapshotting do
       snapshot_module_version: snapshot_module_version
     } = snapshotting
 
-    snapshot = %SnapshotData{
-      source_uuid: source_uuid,
-      source_version: source_version,
-      source_type: TypeProvider.to_string(source_state),
-      data: source_state,
-      metadata: %{"snapshot_module_version" => snapshot_module_version}
-    }
+    with {:ok, protected_state} <-
+           PersonalFields.encrypt_state(application, source_uuid, source_state) do
+      snapshot = %SnapshotData{
+        source_uuid: source_uuid,
+        source_version: source_version,
+        source_type: TypeProvider.to_string(source_state),
+        data: protected_state,
+        metadata: %{"snapshot_module_version" => snapshot_module_version}
+      }
 
-    case EventStore.record_snapshot(application, snapshot) do
-      :ok -> {:ok, %Snapshotting{snapshotting | snapshot_version: source_version}}
-      {:error, error} -> {:error, error}
+      case EventStore.record_snapshot(application, snapshot) do
+        :ok -> {:ok, %Snapshotting{snapshotting | snapshot_version: source_version}}
+        {:error, error} -> {:error, error}
+      end
     end
   end
 

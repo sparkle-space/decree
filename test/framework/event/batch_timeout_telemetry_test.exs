@@ -36,7 +36,8 @@ defmodule Decree.Event.BatchTimeoutTelemetryTest do
       application: Decree.DefaultApp,
       name: __MODULE__,
       batch_size: 10,
-      batch_timeout: 100
+      batch_timeout: 100,
+      personal_fields: :opaque
 
     def handle_batch(_events) do
       :ok

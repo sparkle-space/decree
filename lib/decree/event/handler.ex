@@ -463,6 +463,60 @@ defmodule Decree.Event.Handler do
   The above example requires three named Decree applications to have already
   been started.
 
+  ## Personal fields
+
+  An event can declare personal fields (`Decree.PersonalFields`), which are stored encrypted. A
+  handler receives them in plaintext for each event it names in a head of `handle/2`, and
+  `Decree.Projections.Ecto`'s `project` names one. The set is derived from the heads at compile
+  time and there is no list to keep: `__personal_fields__/0` answers it. Every other event
+  reaches the handler's catch-all as it is stored, so one lost key does not stall a handler
+  over an event it ignores.
+
+  A head is read when its first argument is a struct, descending through `=`. A trailing
+  clause ignoring both arguments, with `_`-prefixed variables and no guard, is the one
+  catch-all. Any other head can't be read: a bound first argument, `%module{}`, a map, an ignored
+  event beside a bound or matched metadata argument, a guarded or non-trailing catch-all. So
+  can't `handle_batch/1`, which gets no decrypt.
+
+  A module with such a head names nothing and sees stored values. If it reads no personal
+  field it says so, and is then never decrypted for:
+
+      use Decree.Event.Handler,
+        application: ExampleApp,
+        name: __MODULE__,
+        personal_fields: :opaque
+
+  `:opaque` is the only value `:personal_fields` takes, and anything else is a `CompileError`.
+
+  With `config :decree, enforce_personal_fields: true` a head that can't be read and isn't
+  `:opaque` is a `CompileError` naming the module and the head's line. This flag is temporary:
+  it lets an application compile at this version before it has adopted, and once sparklespace
+  has, strict becomes the default and the flag is deleted.
+
+  ### When a key can't be read
+
+  `{:error, :key_unknown}`, from the decrypt or from `handle/2`, never reaches the handler's
+  own `c:error/3`, whose answer could skip the event. It goes to the application's
+  `on_event_handler_error`. `nil`, `:stop` and `:backoff` stop the handler, and a stop never
+  acks. A module's `error/3` decides, and a `:skip` from it is turned into a stop, so nothing
+  can skip an event at this seam. The event stays unacked until the key can be read.
+
+  ### What stays out of logs
+
+  A failure on an event decrypted for this handler is treated as carrying the value. A raise
+  from `handle/2` becomes a `Decree.PersonalFields.RedactedError` with a scrubbed stacktrace
+  before anything sees it, `c:error/3` included. Decree's own log lines, telemetry and stop
+  reasons show an `{:error, reason}` return reduced by
+  `Decree.PersonalFields.RedactedError.reduce/1`. A handler must not put a declared value in
+  an error reason, because decree reduces it in its own log and telemetry but hands it to
+  `c:error/3` as it stands. A handler must not keep a declared value in its state either,
+  because decree hides it in its own output and hands it to the handler as it stands: once a
+  decrypted event's `handle/2` answers `{:ok, state}`, telemetry and `format_status/1` show
+  `:redacted`, and every later failure of that handler is treated as carrying the value.
+
+  The `RecordedEvent` is never rewritten, so a failed event logged, passed to `c:error/3` or
+  carried by telemetry holds ciphertext, as does `partition_by/2`'s.
+
   ## Telemetry
 
   #{telemetry_docs()}
@@ -474,9 +528,12 @@ defmodule Decree.Event.Handler do
   alias Decree.Event.ErrorHandler
   alias Decree.Event.FailureContext
   alias Decree.Event.Handler
+  alias Decree.Event.PersonalFields, as: PersonalFieldsProtocol
   alias Decree.Event.Upcast
   alias Decree.EventStore.RecordedEvent
   alias Decree.EventStore.Subscription
+  alias Decree.PersonalFields
+  alias Decree.PersonalFields.RedactedError
   alias Decree.Subscriptions
   alias Decree.Telemetry
 
@@ -697,6 +754,10 @@ defmodule Decree.Event.Handler do
       @before_compile unquote(__MODULE__)
       @behaviour Handler
 
+      # Evaluated here, not in the macro: `Decree.Projections.Ecto` passes its options as an
+      # attribute of this module.
+      @personal_fields_option Keyword.get(unquote(using_opts), :personal_fields)
+
       @doc """
       Start an event handler `GenServer` process linked to the current process.
 
@@ -726,6 +787,9 @@ defmodule Decree.Event.Handler do
           in the handler buffer before flushing. Defaults to `:infinity` (no
           buffering; events processed immediately as delivered). Requires
           `:batch_size`.
+
+        - :personal_fields - `:opaque` declares that this handler reads no personal
+          field, so nothing is decrypted for it. Read at compile time, from `use` alone.
 
       The default options supported by `GenServer.start_link/3` are supported,
       including the `:hibernate_after` option which allows the process to go
@@ -818,7 +882,8 @@ defmodule Decree.Event.Handler do
     :subscription_opts,
     :state,
     :batch_size,
-    :batch_timeout
+    :batch_timeout,
+    :personal_fields
   ]
 
   @doc false
@@ -843,6 +908,9 @@ defmodule Decree.Event.Handler do
             inspect(module) <>
               " :batch_timeout requires :batch_size. Remove the timeout or configure batching."
     end
+
+    # Compile time only: `__personal_fields__/0` holds what it decided.
+    config = Keyword.delete(config, :personal_fields)
 
     {application, config} = Keyword.pop(config, :application)
 
@@ -915,8 +983,14 @@ defmodule Decree.Event.Handler do
         line: nil,
         description: "#{env.module} has both `handle/2` and `handle_batch/1` callbacks."
     else
+      # Read before the default handlers below are defined.
+      personal_fields = personal_fields!(env, has_batch)
+
       # Generate default handlers
       quote generated: true do
+        @doc false
+        def __personal_fields__, do: unquote(Macro.escape(personal_fields))
+
         @doc false
         def handle(_event, _metadata), do: :ok
 
@@ -925,6 +999,94 @@ defmodule Decree.Event.Handler do
       end
     end
   end
+
+  defp personal_fields!(env, has_batch) do
+    case Module.get_attribute(env.module, :personal_fields_option) do
+      :opaque ->
+        :opaque
+
+      nil ->
+        derive_personal_fields!(env, has_batch)
+
+      invalid ->
+        raise CompileError,
+          file: env.file,
+          line: env.line,
+          description:
+            "#{inspect(env.module)} sets `:personal_fields` to #{inspect(invalid)}, " <>
+              "the only value it takes is `:opaque`"
+    end
+  end
+
+  defp derive_personal_fields!(env, has_batch) do
+    {modules, unreadable} = read_heads(definition_clauses(env.module, {:handle, 2}))
+
+    unreadable =
+      if has_batch do
+        [{_meta, _args, _guards, _body} = clause | _rest] =
+          definition_clauses(env.module, {:handle_batch, 1})
+
+        [elem(clause, 0)[:line] | unreadable]
+      else
+        unreadable
+      end
+
+    if unreadable != [] and Application.compile_env(env, :decree, :enforce_personal_fields, false) do
+      line = Enum.min(unreadable)
+
+      raise CompileError,
+        file: env.file,
+        line: line,
+        description:
+          "#{inspect(env.module)} has a head at line #{line} that does not name its event, " <>
+            "so it can't be known whether a personal field reaches it. Name the event " <>
+            "in the head, or declare `personal_fields: :opaque` if it reads none"
+    end
+
+    Map.new(modules, &{&1, true})
+  end
+
+  defp definition_clauses(module, definition) do
+    case Module.get_definition(module, definition) do
+      nil -> []
+      {:v1, _kind, _meta, clauses} -> clauses
+    end
+  end
+
+  # Answers the struct modules the heads name, and the lines of the heads that can't be read.
+  defp read_heads(clauses) do
+    last = length(clauses) - 1
+
+    clauses
+    |> Enum.with_index()
+    |> Enum.reduce({[], []}, fn {{meta, [event, metadata], guards, _body}, index},
+                                {modules, unreadable} ->
+      case struct_modules(event) do
+        [_ | _] = named ->
+          {named ++ modules, unreadable}
+
+        [] ->
+          if index == last and guards == [] and ignored?(event) and ignored?(metadata) do
+            {modules, unreadable}
+          else
+            {modules, [meta[:line] | unreadable]}
+          end
+      end
+    end)
+  end
+
+  defp struct_modules({:=, _meta, [left, right]}) do
+    struct_modules(left) ++ struct_modules(right)
+  end
+
+  defp struct_modules({:%, _meta, [module, _map]}) when is_atom(module), do: [module]
+  defp struct_modules(_pattern), do: []
+
+  defp ignored?({name, _meta, context}) when is_atom(name) and is_atom(context) do
+    name |> Atom.to_string() |> String.starts_with?("_")
+  end
+
+  defp ignored?(_pattern), do: false
 
   @doc false
   defstruct [
@@ -945,7 +1107,10 @@ defmodule Decree.Event.Handler do
     :batch_size,
     :batch_timeout,
     :batch_timer_ref,
-    :batch_buffer
+    :batch_buffer,
+    # Set once a decrypted event's `handle/2` answers a state: from then on the state can hold
+    # a decrypted value, and `handler_state` stays out of decree's own output.
+    sensitive_state: false
   ]
 
   @doc false
@@ -1318,6 +1483,17 @@ defmodule Decree.Event.Handler do
     end
   end
 
+  # `:sys.get_status/1` and a crash report print this.
+  @doc false
+  @impl GenServer
+  def format_status(%{state: %Handler{sensitive_state: true} = state} = status) do
+    status
+    |> Map.put(:state, %Handler{state | handler_state: :redacted})
+    |> Map.replace(:log, [])
+  end
+
+  def format_status(status), do: status
+
   defp handle_event(event, context \\ %{}, handler)
 
   # Ignore already seen event, at `concurrency: 1` only.
@@ -1353,21 +1529,26 @@ defmodule Decree.Event.Handler do
   defp handle_event(%RecordedEvent{} = event, context, %Handler{} = state) do
     telemetry_metadata = telemetry_metadata(event, context, state)
     start_time = telemetry_start(telemetry_metadata, :handle)
+    decrypts? = decrypts?(event, state)
+    # `handle/2` gets the state in its metadata, so a failure on any event can hold it.
+    redacted? = decrypts? or state.sensitive_state
 
-    case delegate_event_to_handler(event, state) do
+    case delegate_event_to_handler(event, decrypts?, redacted?, state) do
       :ok ->
         telemetry_stop(start_time, telemetry_metadata, :handle)
 
         confirm_receipt(event, state)
 
       {:ok, handler_state} ->
+        state = %Handler{state | handler_state: handler_state, sensitive_state: redacted?}
+
         telemetry_stop(
           start_time,
-          Map.put(telemetry_metadata, :handler_state, handler_state),
+          Map.put(telemetry_metadata, :handler_state, shown_handler_state(state)),
           :handle
         )
 
-        confirm_receipt(event, %Handler{state | handler_state: handler_state})
+        confirm_receipt(event, state)
 
       {:error, :already_seen_event} ->
         telemetry_stop(
@@ -1379,12 +1560,14 @@ defmodule Decree.Event.Handler do
         confirm_receipt(event, state)
 
       {:error, reason} = error ->
-        log_event_error(error, event, state)
-        telemetry_stop(start_time, Map.put(telemetry_metadata, :error, reason), :handle)
+        shown_reason = shown_reason(reason, redacted?)
+
+        log_event_error({:error, shown_reason}, event, state)
+        telemetry_stop(start_time, Map.put(telemetry_metadata, :error, shown_reason), :handle)
 
         failure_context = build_failure_context(event, context, state)
         retry_fun = fn context, state -> handle_event(event, context, state) end
-        handle_event_error(error, event, failure_context, state, retry_fun)
+        handle_event_error(error, event, failure_context, state, retry_fun, redacted?)
 
       {:error, reason, stacktrace} ->
         log_event_error({:error, reason, stacktrace}, event, state)
@@ -1392,15 +1575,17 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(event, context, stacktrace, state)
         retry_fun = fn context, state -> handle_event(event, context, state) end
-        handle_event_error({:error, reason}, event, failure_context, state, retry_fun)
+        handle_event_error({:error, reason}, event, failure_context, state, retry_fun, redacted?)
 
       invalid ->
+        shown_value = if redacted?, do: ":redacted", else: inspect(invalid, pretty: true)
+
         Logger.error(
           describe(state) <>
             " failed to handle event " <>
             inspect(event, pretty: true) <>
             ", `handle/2` function returned an invalid value: " <>
-            inspect(invalid, pretty: true) <>
+            shown_value <>
             ", expected `:ok` or `{:error, term}`"
         )
 
@@ -1414,9 +1599,28 @@ defmodule Decree.Event.Handler do
         failure_context = build_failure_context(event, context, state)
 
         next = fn context, state -> handle_event(event, context, state) end
-        handle_event_error(error, event, failure_context, state, next)
+        handle_event_error(error, event, failure_context, state, next, redacted?)
     end
   end
+
+  # An event this handler is decrypted for: it declares something, and a head names it.
+  defp decrypts?(%RecordedEvent{data: data}, %Handler{handler_module: handler_module}) do
+    case PersonalFieldsProtocol.declaration(data) do
+      nil ->
+        false
+
+      _declaration ->
+        case handler_module.__personal_fields__() do
+          :opaque -> false
+          %{} = personal_fields -> is_map_key(personal_fields, data.__struct__)
+        end
+    end
+  end
+
+  # What decree's own log lines, telemetry and stop reasons may show. A handler's `error/3`
+  # still gets the reason as it stands: it classifies on it.
+  defp shown_reason(reason, true), do: RedactedError.reduce(reason)
+  defp shown_reason(reason, false), do: reason
 
   defp handle_batch(events, context, handler)
 
@@ -1506,7 +1710,7 @@ defmodule Decree.Event.Handler do
     end
   end
 
-  defp delegate_event_to_handler(%RecordedEvent{} = event, %Handler{} = state) do
+  defp delegate_event_to_handler(%RecordedEvent{} = event, false, false, %Handler{} = state) do
     %RecordedEvent{data: data} = event
     %Handler{handler_module: handler_module} = state
 
@@ -1520,6 +1724,32 @@ defmodule Decree.Event.Handler do
         {:error, error, stacktrace}
     end
   end
+
+  # The decrypted copy goes to `handle/2` and nowhere else: from here on, anything that leaves
+  # this function can hold what it failed on. A decrypt error is the delegate's result, and
+  # `handle/2` is not called.
+  defp delegate_event_to_handler(%RecordedEvent{} = event, decrypts?, true, %Handler{} = state) do
+    %Handler{application: application, handler_module: handler_module} = state
+
+    try do
+      with {:ok, %RecordedEvent{data: data} = readable} <-
+             readable_event(event, decrypts?, application) do
+        handler_module.handle(data, enrich_metadata(readable, state))
+      end
+    rescue
+      error ->
+        {:error, RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)}
+    catch
+      :exit, reason -> exit(RedactedError.reduce(reason))
+      :throw, value -> throw(RedactedError.reduce(value))
+    end
+  end
+
+  defp readable_event(event, true, application) do
+    PersonalFields.decrypt_recorded_event(application, event)
+  end
+
+  defp readable_event(event, false, _application), do: {:ok, event}
 
   defp build_failure_context(
          maybe_failed_event,
@@ -1564,7 +1794,8 @@ defmodule Decree.Event.Handler do
          maybe_failed_event,
          %FailureContext{} = failure_context,
          %Handler{} = state,
-         retry_fun
+         retry_fun,
+         redacted? \\ false
        ) do
     data =
       case maybe_failed_event do
@@ -1609,18 +1840,39 @@ defmodule Decree.Event.Handler do
         confirm_receipt(maybe_failed_event, state)
 
       {:stop, reason} ->
+        reason = shown_reason(reason, redacted?)
+
         Logger.warning(describe(state) <> " has requested to stop: #{inspect(reason)}")
 
         # Stop event handler with given reason
         throw({:error, reason})
 
       invalid ->
+        shown_response = shown_reason(invalid, redacted?)
+
         Logger.warning(
-          describe(state) <> " returned an invalid error response: #{inspect(invalid)}"
+          describe(state) <> " returned an invalid error response: #{inspect(shown_response)}"
         )
 
         # Stop event handler with original error
-        throw(error)
+        throw(if redacted?, do: {:error, shown_reason(elem(error, 1), true)}, else: error)
+    end
+  end
+
+  # Never the module's own `error/3`, which could skip the event and lose the value. The
+  # application's seam decides, and at this seam nothing skips: a stop never acks.
+  defp on_error(%Handler{} = state, {:error, :key_unknown} = error, data, failure_context) do
+    %Handler{application: application} = state
+
+    case Decree.Application.on_event_handler_error(application) do
+      default when default in [nil, :stop, :backoff] ->
+        ErrorHandler.stop_on_error(error, data, failure_context)
+
+      module when is_atom(module) ->
+        case module.error(error, data, failure_context) do
+          :skip -> {:stop, :key_unknown}
+          response -> response
+        end
     end
   end
 
@@ -1641,6 +1893,14 @@ defmodule Decree.Event.Handler do
           module.error(error, data, failure_context)
       end
     end
+  end
+
+  defp log_event_error({:error, :key_unknown}, %RecordedEvent{} = failed_event, state) do
+    %RecordedEvent{event_number: event_number} = failed_event
+
+    Logger.warning(
+      describe(state) <> " can't read a personal field of event ##{inspect(event_number)}"
+    )
   end
 
   defp log_event_error(error, %RecordedEvent{} = failed_event, %Handler{} = state) do
@@ -1791,19 +2051,21 @@ defmodule Decree.Event.Handler do
     %Handler{
       application: application,
       handler_name: handler_name,
-      handler_module: handler_module,
-      handler_state: handler_state
+      handler_module: handler_module
     } = state
 
     %{
       application: application,
       handler_name: handler_name,
       handler_module: handler_module,
-      handler_state: handler_state,
+      handler_state: shown_handler_state(state),
       context: context,
       recorded_event: recorded_event
     }
   end
+
+  defp shown_handler_state(%Handler{sensitive_state: true}), do: :redacted
+  defp shown_handler_state(%Handler{handler_state: handler_state}), do: handler_state
 
   defp consistency(opts) do
     case opts[:consistency] || Application.get_env(:decree, :default_consistency, :eventual) do

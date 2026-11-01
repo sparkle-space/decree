@@ -33,7 +33,8 @@ defmodule Decree.Event.BatchTimeoutTest do
       application: Decree.DefaultApp,
       name: __MODULE__,
       batch_size: 5,
-      batch_timeout: 100
+      batch_timeout: 100,
+      personal_fields: :opaque
 
     def handle_batch(events) do
       # Extract reply_to from first event's data

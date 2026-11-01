@@ -1,7 +1,8 @@
 defmodule Decree.Event.StatefulEventHandler do
   use Decree.Event.Handler,
     application: Decree.MockedApp,
-    name: __MODULE__
+    name: __MODULE__,
+    personal_fields: :opaque
 
   def init(config) do
     config = Keyword.put_new(config, :state, 0)
