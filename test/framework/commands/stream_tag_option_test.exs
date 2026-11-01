@@ -25,7 +25,11 @@ defmodule Decree.Commands.StreamTagOptionTest do
         {"nil", "nil"},
         {"a string", ~s("user")},
         {"a number", "1"},
-        {"a list", "[:user]"}
+        {"a list", "[:user]"},
+        {"an atom holding a colon", ~s(:"a:b")},
+        {"an empty atom", ~s(:"")},
+        {"a module", "Some.Module"},
+        {"an atom with a trailing newline", ~s(:"user\\n")}
       ] do
     test "refuses #{name} when the router compiles" do
       assert_raise ArgumentError, ~r/invalid `stream_tag` option/, fn ->

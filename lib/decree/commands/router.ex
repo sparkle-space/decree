@@ -381,7 +381,8 @@ defmodule Decree.Commands.Router do
 
   The kind is the identity field's name without a trailing `_id`, so `user_id` gives
   `user:` and `content_ref` gives `content_ref:`. A route names it with `stream_tag:`,
-  an atom other than `nil`, `true` or `false`, which `dispatch` refuses when the router
+  an atom other than `nil`, `true` or `false` whose name matches `^[a-z][a-z0-9_]*$`,
+  so that it fits the tag grammar. `dispatch` refuses anything else when the router
   compiles:
 
       dispatch [RequestExport], to: Export, identity: :requester_user_id, stream_tag: :user
@@ -663,7 +664,8 @@ defmodule Decree.Commands.Router do
   end
 
   # Checked on the evaluated value, here and not in `parse_opts/1`, which sees the option's
-  # AST. A boolean is an atom, and `stream_tag: false` must not store a `false:` kind. Not
+  # AST. A boolean is an atom, and `stream_tag: false` must not store a `false:` kind. A
+  # kind has no colon, and a module's name would store `Elixir.Some.Module:`. Not
   # naming a kind is the way to take the default: there is no opt-out value.
   @doc false
   def validate_stream_tag!(command_module, command_opts) do
@@ -671,16 +673,26 @@ defmodule Decree.Commands.Router do
       :error ->
         :ok
 
-      {:ok, stream_tag}
-      when is_atom(stream_tag) and stream_tag not in [nil, true, false] ->
-        :ok
+      {:ok, stream_tag} ->
+        unless stream_tag_kind?(stream_tag) do
+          raise ArgumentError,
+                "#{inspect(command_module)} has an invalid `stream_tag` option: " <>
+                  "#{inspect(stream_tag)}, expected an atom other than nil, true or false " <>
+                  "whose name matches ^[a-z][a-z0-9_]*$"
+        end
 
-      {:ok, invalid} ->
-        raise ArgumentError,
-              "#{inspect(command_module)} has an invalid `stream_tag` option: " <>
-                "#{inspect(invalid)}, expected an atom other than nil, true or false"
+        :ok
     end
   end
+
+  defp stream_tag_kind?(kind) when kind in [nil, true, false], do: false
+
+  # `\A` and `\z`, because `$` also matches before a trailing newline.
+  defp stream_tag_kind?(kind) when is_atom(kind) do
+    Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, Atom.to_string(kind))
+  end
+
+  defp stream_tag_kind?(_kind), do: false
 
   @doc false
   def get_opt(opts, name, default \\ nil) do
