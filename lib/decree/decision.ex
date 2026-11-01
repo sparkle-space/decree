@@ -457,7 +457,8 @@ defmodule Decree.Decision do
 
   @doc """
   What each tag kind this decision indexes holds, for example `%{"email" => :digest}`. See
-  "Digest tags". Defaults to `%{}`.
+  "Digest tags". Defaults to `%{}`. A static map: the build calls this as the module closes,
+  so it can lean on nothing compiled later.
   """
   @callback index_families() :: %{String.t() => :digest | :plain}
 
