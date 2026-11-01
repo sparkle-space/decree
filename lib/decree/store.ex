@@ -268,7 +268,8 @@ defmodule Decree.Store do
   A condition that cannot run is refused before any statement is sent, so a caller's
   transaction stays usable: `{:error, :invalid_condition}` for a malformed condition,
   whose `after` must be an integer and never `nil`, `{:error, :invalid_query}` and
-  `{:error, :tag_too_long}` for its `items`, and
+  `{:error, :tag_too_long}` for its `items`, `{:error, :query_names_deletable}` for items
+  naming something deletable (see "Deletable streams"), and
   `{:error, :undeclared_conditional_target}` for an append the store does not declare
   (see `c:append_to_stream/4`). An `expected_version` is checked first, so a stale append
   answers `{:error, :wrong_expected_version}` whatever its condition says.
@@ -335,6 +336,62 @@ defmodule Decree.Store do
   **The declared rule.** A condition here needs what `c:append_to_stream/4` needs: every
   member's name starts with a declared prefix, or the condition's `target` is declared.
   One undeclared member refuses the batch.
+
+  ## Deletable streams
+
+  A hard delete removes events, so no decision may rest on one that can vanish. A store
+  declares what can, and refuses any query over it:
+
+      defmodule MyApp.EventStore do
+        use Decree.Store,
+          otp_app: :my_app,
+          enable_hard_deletes: true,
+          deletable: [
+            stream_prefixes: ["XPost-"],
+            event_types: ["Elixir.MyApp.XPostCaptured"],
+            tag_kinds: ["content_ref"]
+          ]
+      end
+
+  Each key is optional and each is a list of non-empty strings. A tag is `<kind>:<value>`:
+  the kind has no colon, the value may, and a tag with no colon is its own kind. A malformed
+  declaration, such as a misspelt key or a module where its name belongs, raises an
+  `ArgumentError` when the config is parsed, because it would refuse nothing. Only the config
+  declares: `deletable` is no option of any call. A store that declares nothing behaves as
+  if none of this existed. Declaring does not change what `enable_hard_deletes` allows: a
+  hard delete can still delete a stream outside the prefixes.
+
+  **The refusal.** A `c:read_query/2`, a `c:stream_query/2` or a condition with a query naming
+  a declared type, or a tag of a declared kind, answers `{:error, :query_names_deletable}`
+  before any statement is sent, so a caller's transaction stays usable. A condition's refusal
+  comes before `{:error, :undeclared_conditional_target}`.
+
+  **The `command:` exception.** A `command:` item over a deletable stream's events passes,
+  because a decision has to find its own earlier command, and `command` cannot be declared.
+  The refusal is per name, so an item naming a declared type or kind beside its `command:` tag
+  is refused. What this costs: a deleted stream's command tags vanish with it, which ends
+  their deduplication early. A condition on such a tag fails before the delete and passes
+  after it, and a read agrees with it both times.
+
+  **Completeness.** An append to a stream starting with a declared prefix, of an event whose
+  type is not in `event_types`, answers `{:error, :undeclared_deletable_event_type}` before
+  any statement is sent. Without this a forgotten type would stay queryable and vanish under
+  a decision. A link is not an append and is not checked.
+
+  **The limit.** The refusal is by name. An item of tags alone, naming a kind that is not
+  declared, can still match a deletable event. So the declaration must list every kind a
+  deletable event carries.
+
+  **The race.** A hard delete takes no `$all`, so it can land while a condition runs. That is
+  harmless because of the refusal: no condition but a `command:` item can see the change, and
+  that one is the cost above.
+
+  **Erasing a tag.** `c:delete_stream_tags/3` removes one stream's own tag rows of the given
+  kinds and leaves its events standing, which is how an erased subject's value tags go. It
+  does so while holding `$all`, so it changes the tag index only under the append lock.
+  Afterwards a query matches as if those tags had never been written: an item naming one
+  matches nothing there, and an item of the event's type alone still matches, in a read and
+  in a condition alike.
 
   """
 
@@ -593,6 +650,17 @@ defmodule Decree.Store do
         {conn, opts} = parse_opts(opts)
 
         Stream.delete(conn, stream_uuid, expected_version, type, opts)
+      end
+
+      def delete_stream_tags(stream_uuid, tag_kinds, opts \\ [])
+
+      def delete_stream_tags(@all_stream, _tag_kinds, _opts),
+        do: {:error, :cannot_delete_all_stream}
+
+      def delete_stream_tags(stream_uuid, tag_kinds, opts) do
+        {conn, opts} = parse_opts(opts)
+
+        Stream.delete_tags(conn, stream_uuid, tag_kinds, opts)
       end
 
       def paginate_streams(opts \\ []) do
@@ -890,10 +958,15 @@ defmodule Decree.Store do
     * `{:error, :tag_too_long}` when a tag of an event is over 512 bytes. It is
       answered before any statement is sent, so it wins over every answer above
       that reads the stream, and a caller's transaction stays usable.
-    * `{:error, :invalid_condition}`, `{:error, :invalid_query}` and
-      `{:error, :undeclared_conditional_target}` when the `condition` is malformed,
-      when its `items` are, and when the store does not declare it. Each is answered
-      after a tag that is too long and before any statement is sent, as that one is.
+    * `{:error, :undeclared_deletable_event_type}` when the stream starts with a
+      declared deletable prefix and an event's type is not declared. See "Deletable
+      streams" in `Decree.Store`. It is answered as a tag that is too long is, and after
+      one.
+    * `{:error, :invalid_condition}`, `{:error, :invalid_query}`,
+      `{:error, :query_names_deletable}` and `{:error, :undeclared_conditional_target}`
+      when the `condition` is malformed, when its `items` are, when they name something
+      deletable, and when the store does not declare it. Each is answered after a tag that
+      is too long and before any statement is sent, as that one is.
     * `{:error, :duplicate_stream_uuid}` when the append lost the race to create a
       new stream inside a caller's transaction. That aborts the transaction, so it
       is answered and not retried.
@@ -928,6 +1001,8 @@ defmodule Decree.Store do
               | {:error, :not_found}
               | {:error, :append_condition_failed}
               | {:error, :tag_too_long}
+              | {:error, :query_names_deletable}
+              | {:error, :undeclared_deletable_event_type}
               | {:error, :invalid_condition}
               | {:error, :invalid_query}
               | {:error, :undeclared_conditional_target}
@@ -992,6 +1067,8 @@ defmodule Decree.Store do
               | {:error, :not_found}
               | {:error, :append_condition_failed}
               | {:error, :tag_too_long}
+              | {:error, :query_names_deletable}
+              | {:error, :undeclared_deletable_event_type}
               | {:error, :invalid_condition}
               | {:error, :invalid_query}
               | {:error, :undeclared_conditional_target}
@@ -1272,14 +1349,17 @@ defmodule Decree.Store do
         Defaults to 15,000ms.
 
   Returns `{:ok, %Decree.Store.ReadResult{}}`. A query `Decree.Store.Query.compile/1`
-  refuses answers its error, and a `command_tag` no item names answers
-  `{:error, :invalid_query}`: neither sends anything to the database. An invalid
+  refuses answers its error, a query naming something deletable answers
+  `{:error, :query_names_deletable}` (see "Deletable streams" in `Decree.Store`), and a
+  `command_tag` no item names answers `{:error, :invalid_query}`: none of these sends
+  anything to the database. An invalid
   `direction`, `from` or `count` raises an `ArgumentError`.
   """
   @callback read_query(items :: [Decree.Store.Query.item()], opts :: [read_query_option]) ::
               {:ok, Decree.Store.ReadResult.t()}
               | {:error, :invalid_query}
               | {:error, :tag_too_long}
+              | {:error, :query_names_deletable}
               | {:error, reason :: term}
 
   @doc """
@@ -1305,8 +1385,10 @@ defmodule Decree.Store do
 
   `count` and `command_tag` do not apply to a stream and are ignored.
 
-  Returns an `Enumerable` of `Decree.Store.RecordedEvent`, or the error
-  `Decree.Store.Query.compile/1` answers. An invalid `direction`, `from` or
+  Returns an `Enumerable` of `Decree.Store.RecordedEvent`, the error
+  `Decree.Store.Query.compile/1` answers, or `{:error, :query_names_deletable}` for a query
+  naming something deletable (see "Deletable streams" in `Decree.Store`). An invalid
+  `direction`, `from` or
   `read_batch_size` raises an `ArgumentError`. A page that fails to read raises while
   the stream is being consumed.
   """
@@ -1314,6 +1396,7 @@ defmodule Decree.Store do
               Enumerable.t(Decree.Store.RecordedEvent.t())
               | {:error, :invalid_query}
               | {:error, :tag_too_long}
+              | {:error, :query_names_deletable}
 
   @doc """
   Delete an existing stream.
@@ -1357,6 +1440,20 @@ defmodule Decree.Store do
   Will permanently delete the stream and its events. **This is irreversible and
   will remove data**. Events will be removed from the globally ordered all
   events stream and any linked streams.
+
+  The events' tag and type rows go in the same statement, so a query finds nothing of
+  them. A hard delete of a stream holding links deletes those events everywhere, as it
+  always has: from the streams they were appended to as well, tags included. Hard deletes
+  take no `$all`: see "Deletable streams" in `Decree.Store`.
+
+  The expected version is checked again under the stream's row lock, so an append that
+  lands after the first read answers `{:error, :wrong_expected_version}` to an integer
+  expected version, and is deleted with the rest under `:any_version` or `:stream_exists`.
+  An append waiting on that lock answers `{:error, :not_found}`. A link to one of the
+  events, in flight as the delete runs, can fail the delete with a `foreign_key_violation`.
+  A link of several of the stream's events can deadlock with a hard delete, because they
+  lock event rows in different orders: the delete then answers the raw `deadlock_detected`
+  error, rolls back whole and can be retried.
 
   After being hard deleted, a stream can later be appended to and read as if it
   had never existed.
@@ -1409,6 +1506,51 @@ defmodule Decree.Store do
               :ok
               | {:error, :stream_not_found}
               | {:error, :stream_deleted}
+              | {:error, :wrong_expected_version}
+              | {:error, term}
+
+  @doc """
+  Delete a stream's own tag rows of the given kinds, leaving its events standing. For
+  erasing a subject's value tags: see "Deletable streams" in `Decree.Store`.
+
+    - `stream_uuid` identity of the stream. A soft-deleted stream is not refused, because
+      erasure must still reach it.
+
+    - `tag_kinds` a non-empty list of tag kinds. A tag's kind is what precedes its first
+      `:`, so `email` does not match `email_verified:x`, and it does match `email:a:b`.
+
+    - `opts` an optional keyword list containing:
+      - `name` the name of the event store if provided to `start_link/1`.
+      - `conn` an existing Postgrex connection or transaction to delete through.
+      - `timeout` an optional timeout for the database transaction, in milliseconds.
+        Defaults to 15,000ms.
+
+  Only rows of events appended to this stream go. Rows of another stream holding the same
+  tag, an event this stream merely links to, and an event appended to it later all stay.
+  The events keep their `event_types` rows.
+
+  It needs `enable_hard_deletes`. It takes the stream's row and then `$all`, so appends wait
+  for it, and it broadcasts nothing.
+
+  Returns `{:ok, deleted_row_count}`, which a second call makes `{:ok, 0}`, or:
+
+    * `{:error, :invalid_tag_kinds}` when `tag_kinds` is not a non-empty list of non-empty
+      strings without a `:`, before any statement is sent.
+    * `{:error, :not_supported}` when hard deletes are not enabled, also before any
+      statement is sent.
+    * `{:error, :cannot_delete_all_stream}` for the `$all` stream.
+    * `{:error, :stream_not_found}` when the stream does not exist.
+  """
+  @callback delete_stream_tags(
+              stream_uuid :: String.t(),
+              tag_kinds :: [String.t()],
+              opts :: options()
+            ) ::
+              {:ok, non_neg_integer()}
+              | {:error, :invalid_tag_kinds}
+              | {:error, :not_supported}
+              | {:error, :cannot_delete_all_stream}
+              | {:error, :stream_not_found}
               | {:error, term}
 
   @doc """

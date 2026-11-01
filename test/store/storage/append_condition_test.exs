@@ -10,7 +10,8 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     LockSession,
     Query,
     ReadResult,
-    RecordedEvent
+    RecordedEvent,
+    StoreRows
   }
 
   alias Decree.Store.Sql.Statements
@@ -753,21 +754,13 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     end
   end
 
-  describe "an orphan of a hard-deleted event" do
+  describe "a tag row with no `$all` row" do
     test "past `after` does not fail a condition", context do
       %{postgrex_config: postgrex_config, schema: schema} = context
 
       :ok = EventStore.append_to_stream("gone", 0, [event("typed", ["tag"])])
 
-      assert :ok =
-               Stream.delete(
-                 LockSession.connect(postgrex_config),
-                 "gone",
-                 :any_version,
-                 :hard,
-                 schema: schema,
-                 enable_hard_deletes: true
-               )
+      :ok = StoreRows.orphan_stream(LockSession.connect(postgrex_config), schema, "gone")
 
       # Its rows are still there, and only the live-event check keeps them out.
       assert count(context, "event_tags") == 1

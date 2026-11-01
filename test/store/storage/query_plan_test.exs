@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.QueryPlanTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{EventData, LockSession, Query, ReadResult, Storage}
+  alias Decree.Store.{EventData, LockSession, Query, ReadResult, Storage, StoreRows}
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Reader
   alias TestEventStore, as: EventStore
@@ -117,20 +117,12 @@ defmodule Decree.Store.Storage.QueryPlanTest do
       refute conflicts?(session, compile([[tags: ["first", "absent"]]]), 0, context)
     end
 
-    test "is not tripped by a hard-deleted event's rows", context do
+    test "is not tripped by rows with no `$all` row", context do
       %{postgrex_config: postgrex_config, schema: schema, session: session} = context
 
       :ok = EventStore.append_to_stream("gone", 0, [event("typed", ["tag"])])
 
-      assert :ok =
-               Decree.Store.Streams.Stream.delete(
-                 LockSession.connect(postgrex_config),
-                 "gone",
-                 :any_version,
-                 :hard,
-                 schema: schema,
-                 enable_hard_deletes: true
-               )
+      :ok = StoreRows.orphan_stream(LockSession.connect(postgrex_config), schema, "gone")
 
       refute conflicts?(session, compile([[tags: ["tag"]]]), 0, context)
       refute conflicts?(session, compile([[types: ["typed"]]]), 0, context)

@@ -24,6 +24,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
          {:ok, new_opts} <- compile_condition([stream_uuid], new_opts),
          {:ok, stream} <- stream_info(conn, stream_uuid, expected_version, new_opts),
          :ok <- do_append_to_storage(conn, stream, events, expected_version, serializer, new_opts) do
@@ -36,6 +37,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
          {:ok, new_opts} <- compile_condition([stream_uuid], new_opts) do
       transaction(
         conn,
@@ -68,6 +70,7 @@ defmodule Decree.Store.Streams.Stream do
     with :ok <- validate_appends(appends),
          :ok <-
            validate_tags(Enum.flat_map(appends, fn {_stream, _version, events} -> events end)),
+         :ok <- validate_deletable_types(appends, new_opts),
          {:ok, new_opts} <- compile_condition(stream_uuids(appends), new_opts),
          {:ok, streams} <- streams_info(conn, appends, new_opts) do
       appends
@@ -128,6 +131,7 @@ defmodule Decree.Store.Streams.Stream do
     count = validate_count(count)
 
     with {:ok, query} <- Query.compile(items),
+         :ok <- validate_deletable(query, opts),
          :ok <- validate_command_tag(query, command_tag) do
       read_query_storage(conn, query, direction, bound, count, command_tag, opts)
     end
@@ -136,7 +140,8 @@ defmodule Decree.Store.Streams.Stream do
   def stream_query(conn, items, opts) do
     {direction, bound, opts} = pop_direction_and_bound(opts)
 
-    with {:ok, query} <- Query.compile(items) do
+    with {:ok, query} <- Query.compile(items),
+         :ok <- validate_deletable(query, opts) do
       stream_query_storage(conn, query, direction, bound, opts)
     end
   end
@@ -168,7 +173,35 @@ defmodule Decree.Store.Streams.Stream do
 
   def delete(conn, stream_uuid, expected_version, :hard, opts) do
     with {:ok, %StreamInfo{} = stream} <- stream_info(conn, stream_uuid, expected_version, opts) do
-      hard_delete_stream(conn, stream, opts)
+      hard_delete_stream(conn, stream, expected_version, opts)
+    end
+  end
+
+  # Read through `Storage.stream_info/3` and not `stream_info/4`, because erasure must still
+  # reach a soft-deleted stream. A stream with no row sends `nil` down, whose lock finds
+  # nothing, and that answers `:stream_not_found` as a stream gone since this read does.
+  def delete_tags(conn, stream_uuid, tag_kinds, opts) do
+    with :ok <- validate_tag_kinds(tag_kinds),
+         :ok <- validate_hard_deletes(opts),
+         opts = query_opts(opts),
+         {:ok, %StreamInfo{stream_id: stream_id}} <- Storage.stream_info(conn, stream_uuid, opts) do
+      Postgrex.transaction(
+        conn,
+        fn transaction ->
+          with :ok <- set_enable_hard_deletes(transaction),
+               {:ok, _count} = reply <-
+                 Storage.delete_stream_tags(transaction, stream_id, tag_kinds, opts) do
+            reply
+          else
+            {:error, error} -> Postgrex.rollback(transaction, error)
+          end
+        end,
+        opts
+      )
+      |> case do
+        {:ok, {:ok, count}} -> {:ok, count}
+        {:error, _error} = reply -> reply
+      end
     end
   end
 
@@ -294,6 +327,7 @@ defmodule Decree.Store.Streams.Stream do
 
       [condition] ->
         with {:ok, %AppendCondition{} = compiled} <- AppendCondition.compile(condition),
+             :ok <- validate_deletable(compiled.query, opts),
              :ok <- validate_declared(stream_uuids, compiled, opts) do
           {:ok, Keyword.put(opts, :condition, compiled)}
         end
@@ -320,6 +354,42 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  # The one check a read and a condition share, so that nothing can decide on what a hard
+  # delete may remove. Declared by the store's config, as `validate_declared/3` is, and it
+  # sends no statement.
+  defp validate_deletable(%Query{} = query, opts) do
+    if Query.names_deletable?(query, Keyword.get(opts, :deletable, [])) do
+      {:error, :query_names_deletable}
+    else
+      :ok
+    end
+  end
+
+  # What gives a declared prefix its meaning: without this a forgotten event type stays
+  # queryable, and vanishes under a decision. Runs where `validate_tags/1` does, for the
+  # same reason: a refusal sends no statement.
+  defp validate_deletable_types(appends, opts) do
+    case Keyword.get(opts, :deletable) do
+      nil ->
+        :ok
+
+      deletable ->
+        prefixes = Keyword.get(deletable, :stream_prefixes, [])
+        types = Keyword.get(deletable, :event_types, [])
+
+        undeclared? = fn {stream_uuid, _expected_version, events} ->
+          String.starts_with?(stream_uuid, prefixes) and
+            Enum.any?(events, &(event_type(&1) not in types))
+        end
+
+        if Enum.any?(appends, undeclared?) do
+          {:error, :undeclared_deletable_event_type}
+        else
+          :ok
+        end
+    end
+  end
+
   defp prepare_events(events, %StreamInfo{} = stream, serializer, opts) do
     %StreamInfo{stream_uuid: stream_uuid, stream_version: stream_version} = stream
 
@@ -335,21 +405,17 @@ defmodule Decree.Store.Streams.Stream do
     end)
   end
 
-  defp map_to_recorded_event(
-         %EventData{data: %{__struct__: event_type}, event_type: nil} = event,
-         created_at,
-         serializer
-       ) do
-    %{event | event_type: Atom.to_string(event_type)}
-    |> map_to_recorded_event(created_at, serializer)
-  end
+  # The type an event is stored under.
+  defp event_type(%EventData{data: %{__struct__: event_type}, event_type: nil}),
+    do: Atom.to_string(event_type)
+
+  defp event_type(%EventData{event_type: event_type}), do: event_type
 
   defp map_to_recorded_event(%EventData{} = event_data, created_at, serializer) do
     %EventData{
       event_id: event_id,
       causation_id: causation_id,
       correlation_id: correlation_id,
-      event_type: event_type,
       data: data,
       metadata: metadata
     } = event_data
@@ -358,7 +424,7 @@ defmodule Decree.Store.Streams.Stream do
       event_id: event_id || UUID.uuid4(),
       causation_id: causation_id,
       correlation_id: correlation_id,
-      event_type: event_type,
+      event_type: event_type(event_data),
       data: serializer.serialize(data),
       metadata: serializer.serialize(metadata),
       created_at: created_at
@@ -551,6 +617,16 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  defp validate_tag_kinds([_kind | _kinds] = tag_kinds) do
+    if Query.tag_kinds?(tag_kinds), do: :ok, else: {:error, :invalid_tag_kinds}
+  end
+
+  defp validate_tag_kinds(_tag_kinds), do: {:error, :invalid_tag_kinds}
+
+  defp validate_hard_deletes(opts) do
+    if Keyword.fetch!(opts, :enable_hard_deletes), do: :ok, else: {:error, :not_supported}
+  end
+
   defp deserialize_recorded_events(recorded_events, serializer),
     do: Enum.map(recorded_events, &RecordedEvent.deserialize(&1, serializer))
 
@@ -562,17 +638,18 @@ defmodule Decree.Store.Streams.Stream do
     Storage.soft_delete_stream(conn, stream_id, opts)
   end
 
-  defp hard_delete_stream(conn, stream, opts) do
+  defp hard_delete_stream(conn, stream, expected_version, opts) do
     %StreamInfo{stream_id: stream_id} = stream
 
-    if Keyword.fetch!(opts, :enable_hard_deletes) do
+    with :ok <- validate_hard_deletes(opts) do
       opts = query_opts(opts)
+      delete_opts = Keyword.put(opts, :expected_version, expected_version)
 
       transaction(
         conn,
         fn transaction ->
           with :ok <- set_enable_hard_deletes(transaction),
-               :ok <- Storage.hard_delete_stream(transaction, stream_id, opts) do
+               :ok <- Storage.hard_delete_stream(transaction, stream_id, delete_opts) do
             :ok
           else
             {:error, error} -> Postgrex.rollback(transaction, error)
@@ -580,13 +657,13 @@ defmodule Decree.Store.Streams.Stream do
         end,
         opts
       )
-    else
-      {:error, :not_supported}
     end
   end
 
+  # LOCAL, so the fence closes when the transaction ends: a SET SESSION would outlive the
+  # commit and leave this pooled connection able to delete anything.
   defp set_enable_hard_deletes(conn) do
-    query = "SET SESSION eventstore.enable_hard_deletes TO 'on';"
+    query = "SET LOCAL eventstore.enable_hard_deletes TO 'on';"
 
     with {:ok, %Postgrex.Result{}} <- Postgrex.query(conn, query, []) do
       :ok

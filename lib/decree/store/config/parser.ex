@@ -1,6 +1,8 @@
 defmodule Decree.Store.Config.Parser do
   @moduledoc false
 
+  alias Decree.Store.Query
+
   @config_defaults [
     column_data_type: "bytea",
     correlation_id_type: "uuid",
@@ -9,6 +11,8 @@ defmodule Decree.Store.Config.Parser do
     schema: "public",
     timeout: 15_000
   ]
+
+  @deletable_keys [:stream_prefixes, :event_types, :tag_kinds]
 
   def parse(config) do
     config
@@ -29,11 +33,53 @@ defmodule Decree.Store.Config.Parser do
 
         Keyword.merge(config, parsed_value)
 
+      {:deletable, value}, config ->
+        Keyword.put(config, :deletable, validate_deletable!(value))
+
       {key, value}, config ->
         Keyword.put(config, key, get_config_value(value))
     end)
     |> Keyword.put(:pool, Decree.Store.Config.get_pool())
   end
+
+  # Raises, because a declaration that misses its mark refuses nothing and fails open: a
+  # misspelt key, a repeated one of which only the first counts, or a module atom where its
+  # string belongs. `command` cannot be declared, because the `command:` item is the one
+  # exception to the refusal, so declaring it could not take effect.
+  defp validate_deletable!(declared) do
+    if not well_formed_deletable?(declared) do
+      raise ArgumentError,
+        message:
+          "expected `:deletable` to be a keyword list of `:stream_prefixes`, `:event_types` " <>
+            "and `:tag_kinds`, each once, each a list of non-empty strings, with no `:` in " <>
+            "a tag kind, got: " <> inspect(declared)
+    end
+
+    if "command" in Keyword.get(declared, :tag_kinds, []) do
+      raise ArgumentError,
+        message:
+          "`:deletable` cannot declare the tag kind `command`: a query's `command:` item " <>
+            "is the one exception to the refusal"
+    end
+
+    declared
+  end
+
+  defp well_formed_deletable?(declared) do
+    Keyword.keyword?(declared) and
+      Keyword.keys(declared) -- @deletable_keys == [] and
+      Keyword.keys(declared) == Enum.uniq(Keyword.keys(declared)) and
+      non_empty_strings?(Keyword.get(declared, :stream_prefixes, [])) and
+      non_empty_strings?(Keyword.get(declared, :event_types, [])) and
+      Query.tag_kinds?(Keyword.get(declared, :tag_kinds, []))
+  end
+
+  defp non_empty_strings?([]), do: true
+
+  defp non_empty_strings?([string | strings]) when is_binary(string) and string != "",
+    do: non_empty_strings?(strings)
+
+  defp non_empty_strings?(_strings), do: false
 
   # Converts a database url into a Keyword list
   defp parse_url(url)

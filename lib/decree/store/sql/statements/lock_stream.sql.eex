@@ -1,0 +1,4 @@
+SELECT stream_version, deleted_at
+FROM "<%= schema %>".streams
+WHERE stream_id = $1
+FOR NO KEY UPDATE;

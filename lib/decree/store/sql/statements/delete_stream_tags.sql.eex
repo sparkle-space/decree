@@ -1,0 +1,15 @@
+<%!--
+  A subject's tag rows, by kind. `own.original_stream_id = $1` is load-bearing: a stream can
+  hold links to another subject's events, and those rows are not this subject's. The rows are
+  found through the stream's own events and their `$all` links, never by tag value, so a later
+  holder of the same value keeps theirs. `stream_id = 0 AND original_stream_id = $1` has no
+  index, which is why this goes through the stream's own rows.
+--%>
+DELETE FROM "<%= schema %>".event_tags t
+USING "<%= schema %>".stream_events own
+JOIN "<%= schema %>".stream_events link
+  ON link.event_id = own.event_id AND link.stream_id = 0
+WHERE own.stream_id = $1
+  AND own.original_stream_id = $1
+  AND t.position = link.stream_version
+  AND split_part(t.tag, ':', 1) = ANY($2::text[]);

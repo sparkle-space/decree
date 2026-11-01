@@ -19,7 +19,9 @@ defmodule Decree.Store.Query do
       ]
 
   Tags and types are strings. An item's repeats count once. An item naming neither
-  types nor tags cannot be served by an index, so it is refused.
+  types nor tags cannot be served by an index, so it is refused. A store that declares
+  `deletable` also refuses a query naming what it declares, with
+  `{:error, :query_names_deletable}`: see "Deletable streams" in `Decree.Store`.
 
   ## The first tag
 
@@ -70,6 +72,36 @@ defmodule Decree.Store.Query do
   def names_tag?(%__MODULE__{} = query, tag) do
     tag in query.probe_tags or tag in query.rest_tags
   end
+
+  # Whether a query names a declared event type or a tag of a declared kind. The refusal is
+  # per name, so a `command:` tag beside either does not save an item. `nil` marks a probe
+  # with no type, or no tag.
+  @doc false
+  def names_deletable?(%__MODULE__{} = query, deletable) do
+    types = Keyword.get(deletable, :event_types, [])
+    kinds = Keyword.get(deletable, :tag_kinds, [])
+
+    Enum.any?(query.probe_types, &(&1 in types)) or
+      Enum.any?(query.probe_tags, &tag_of_kind?(&1, kinds)) or
+      Enum.any?(query.rest_tags, &tag_of_kind?(&1, kinds))
+  end
+
+  # A list of what a tag's kind can be: not empty, no colon, and a string Postgres can hold.
+  @doc false
+  def tag_kinds?([]), do: true
+
+  def tag_kinds?([kind | kinds]) when is_binary(kind) and kind != "" do
+    strings?([kind]) and not String.contains?(kind, ":") and tag_kinds?(kinds)
+  end
+
+  def tag_kinds?(_kinds), do: false
+
+  defp tag_of_kind?(nil, _kinds), do: false
+  defp tag_of_kind?(tag, kinds), do: tag_kind(tag) in kinds
+
+  # `<kind>:<value>`, where the kind has no colon and the value may. A tag with no colon is
+  # its own kind. The same split as `split_part(tag, ':', 1)` in `delete_stream_tags`.
+  defp tag_kind(tag), do: tag |> String.split(":", parts: 2) |> hd()
 
   defp compile_parsed(parsed) do
     cond do

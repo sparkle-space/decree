@@ -78,6 +78,47 @@ defmodule Decree.Store.StoreRows do
     |> Enum.map(&hd/1)
   end
 
+  # Removes a stream and leaves its tag and type rows behind, with the statement a pod from
+  # before store migration 1.8.0 still sends during a rollout. These rows have no `$all` row,
+  # which is what the query template's live-event check is for.
+  def orphan_stream(conn, schema, stream_uuid) do
+    prefix = ~s("#{schema}".)
+
+    {:ok, :ok} =
+      Postgrex.transaction(conn, fn tx ->
+        Postgrex.query!(tx, "SET LOCAL eventstore.enable_hard_deletes TO 'on'", [])
+
+        Postgrex.query!(
+          tx,
+          """
+          WITH stream AS (
+            SELECT stream_id FROM #{prefix}streams WHERE stream_uuid = $1
+          ),
+          deleted_stream_events AS (
+            DELETE FROM #{prefix}stream_events
+            WHERE stream_id = (SELECT stream_id FROM stream)
+            RETURNING event_id
+          ),
+          linked_events AS (
+            DELETE FROM #{prefix}stream_events
+            WHERE event_id IN (SELECT event_id FROM deleted_stream_events)
+          ),
+          events AS (
+            DELETE FROM #{prefix}events
+            WHERE event_id IN (SELECT event_id FROM deleted_stream_events)
+          )
+          DELETE FROM #{prefix}streams
+          WHERE stream_id = (SELECT stream_id FROM stream)
+          """,
+          [stream_uuid]
+        )
+
+        :ok
+      end)
+
+    :ok
+  end
+
   def assert_row_locked(context, stream_id) do
     assert {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}} =
              try_row_lock(context, stream_id)
