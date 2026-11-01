@@ -120,6 +120,9 @@ defmodule Decree.EventStore.Adapter do
 
   @doc """
   The stream prefixes the event store declares as deletable, or `[]` if it declares none.
+
+  A store without `enable_hard_deletes` answers `[]`, whatever it declares: no delete can reach
+  a stream there.
   """
   @callback deletable_stream_prefixes(adapter_meta) :: [String.t()]
 

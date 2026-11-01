@@ -26,7 +26,13 @@ defmodule Decree.PersonalFields.KeyStream do
 
   `mint/5` and `rewrap/4` refuse a prefix the store does not declare, with
   `{:error, :undeclared_key_stream}`, because a stream outside the declaration gets none of
-  its refusals: a query, a link or a stray event type would all be let in.
+  its refusals: a query, a link or a stray event type would all be let in. A store without
+  `enable_hard_deletes` answers `:undeclared_key_stream` for every prefix, whatever it declares,
+  because it could never erase the key.
+
+  A `use` line resolves `event_types/0` when the store compiles, so `:type_provider` belongs in
+  compile-time config: a provider set only at runtime makes every key write answer
+  `:undeclared_deletable_event_type`, with nothing written.
 
   ## What this layer can't tell
 
@@ -70,6 +76,10 @@ defmodule Decree.PersonalFields.KeyStream do
   `Decree.PersonalFields.RedactedError.reduce/1`'s reduction, and a raise, an exit or a throw
   is caught and reduced the same way. Every argument is checked inside the function, so a bad
   one answers a refusal, and no failed clause puts it in a stacktrace.
+
+  A key append goes through `Decree.EventStore.append_without_span/4`, and a read through
+  `Decree.EventStore.read_stream_head/2`, because a span's exception event would publish a
+  raised term and its stacktrace before the catch here reduces anything.
   """
 
   alias Decree.Event.Mapper
@@ -114,7 +124,8 @@ defmodule Decree.PersonalFields.KeyStream do
   Refuses, with nothing written, a prefix the store does not declare
   (`:undeclared_key_stream`), a subject that is not a canonical UUID (`:invalid_subject`), an
   empty or non-binary wrap (`:invalid_wrapped_key`) and a master tag that is not non-empty
-  text (`:invalid_master_tag`).
+  text (`:invalid_master_tag`). A store without `enable_hard_deletes` answers
+  `:undeclared_key_stream` for every prefix, because it could never erase the key.
 
   A failed append answers `{:error, {:append_failed, class}}`, with the class of
   `Decree.Store.AppendError`. An `:unavailable` one may have landed.
@@ -180,6 +191,9 @@ defmodule Decree.PersonalFields.KeyStream do
   `{:error, :wrong_expected_version}`. `{:error, :not_found}` is a stream hard deleted after
   this append had read it.
 
+  It trusts `head`'s `key_id` and version, so pass a `%Head{}` that `head/3` answered on the
+  same application.
+
   Refuses, with nothing written, what `mint/5` refuses, and `:invalid_head` for anything that
   is not a `%Head{}` as `head/3` answers one. See "What this layer can't tell" for what an
   exact version does not catch.
@@ -230,8 +244,10 @@ defmodule Decree.PersonalFields.KeyStream do
 
   # Through the framework's own mapping, so a stored type is what `event_types/0` says, and
   # straight to the store: `Decree.Event.Append.prepare/4` would add tags a query could reach.
+  # With no span, whose exception event would hold what `mint/5`'s catch has not yet reduced: a
+  # failed clause under the adapter lists the `EventData`, and the wrap's base64 with it.
   defp append(application, stream_uuid, expected_version, event) do
-    EventStore.append_to_stream(
+    EventStore.append_without_span(
       application,
       stream_uuid,
       expected_version,
@@ -254,7 +270,7 @@ defmodule Decree.PersonalFields.KeyStream do
   defp check_wrap(wrapped_key, _master_tag) when not is_binary(wrapped_key) or wrapped_key == "",
     do: {:error, :invalid_wrapped_key}
 
-  # A tag JSON can't hold would raise inside `append_to_stream/5`'s span.
+  # A tag JSON can't hold would raise in the store's serializer, and answer no refusal.
   defp check_wrap(_wrapped_key, master_tag) do
     if text?(master_tag), do: :ok, else: {:error, :invalid_master_tag}
   end

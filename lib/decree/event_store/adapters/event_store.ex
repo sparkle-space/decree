@@ -99,9 +99,15 @@ defmodule Decree.EventStore.Adapters.EventStore do
   def deletable_stream_prefixes(adapter_meta) do
     {_event_store, name} = extract_adapter_meta(adapter_meta)
 
-    case Config.lookup(name, :deletable) do
-      nil -> []
-      deletable -> Keyword.get(deletable, :stream_prefixes, [])
+    # `delete_stream/4` refuses a hard delete without this setting, so what a store declares
+    # could never be deleted.
+    if Config.lookup(name, :enable_hard_deletes) == true do
+      case Config.lookup(name, :deletable) do
+        nil -> []
+        deletable -> Keyword.get(deletable, :stream_prefixes, [])
+      end
+    else
+      []
     end
   end
 

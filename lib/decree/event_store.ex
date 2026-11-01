@@ -45,19 +45,36 @@ defmodule Decree.EventStore do
     }
 
     span(:append_to_stream, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
-
-      if function_exported?(adapter, :append_to_stream, 5) do
-        adapter.append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts)
-      else
-        adapter.append_to_stream(
-          adapter_meta,
-          stream_uuid,
-          expected_version,
-          events
-        )
-      end
+      adapter_append(application, stream_uuid, expected_version, events, opts)
     end)
+  end
+
+  @doc """
+  Appends one or more events to a stream atomically, as `append_to_stream/5` does, with no
+  telemetry event.
+
+  It answers what `append_to_stream/5` answers, and a raise, an exit or a throw reaches the
+  caller as it would there.
+  """
+  # No `span/3`: a span's exception event holds the raised term and its stacktrace, and a
+  # stacktrace's first frame can hold a call's arguments.
+  def append_without_span(application, stream_uuid, expected_version, events) do
+    adapter_append(application, stream_uuid, expected_version, events, [])
+  end
+
+  defp adapter_append(application, stream_uuid, expected_version, events, opts) do
+    {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+    if function_exported?(adapter, :append_to_stream, 5) do
+      adapter.append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts)
+    else
+      adapter.append_to_stream(
+        adapter_meta,
+        stream_uuid,
+        expected_version,
+        events
+      )
+    end
   end
 
   @doc """
@@ -164,6 +181,9 @@ defmodule Decree.EventStore do
 
   @doc """
   The stream prefixes the application's event store declares as deletable.
+
+  A store without `enable_hard_deletes` answers `[]`, whatever it declares: no delete can reach
+  a stream there.
   """
   def deletable_stream_prefixes(application) do
     {adapter, adapter_meta} = Application.event_store_adapter(application)

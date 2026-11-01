@@ -456,7 +456,31 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       assert event_count(conn) == 0
     end
 
+    test "on a store that declares it all, and can't hard delete", context do
+      %{conn: conn, subject: subject} = context
+
+      start_supervised!({LedgerApp, name: :undeletable_ledger, event_store: undeletable_store()})
+
+      mint!(subject)
+      head = head!(subject)
+
+      assert KeyStream.mint(:undeletable_ledger, @prefix, UUID.uuid4(), @wrap, @tag_v1) ==
+               {:error, :undeclared_key_stream}
+
+      assert KeyStream.rewrap(:undeletable_ledger, head, @second_wrap, @tag_v2) ==
+               {:error, :undeclared_key_stream}
+
+      assert event_count(conn) == 1
+    end
+
     defp undeclared_store, do: FrameworkStorage.event_store_config(adapter: FailingAdapter)
+
+    defp undeletable_store do
+      FrameworkStorage.event_store_config(
+        adapter: FailingAdapter,
+        deletable: [stream_prefixes: [@prefix], event_types: KeyStream.event_types()]
+      )
+    end
   end
 
   describe "a mint on an existing stream" do
@@ -1240,6 +1264,13 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       refute_leak(log)
     end
 
+    # The leak is refuted first, so a span that comes back fails on what it published.
+    defp refute_append_telemetry(telemetry) do
+      refute_leak_in_term(telemetry)
+
+      assert for({:telemetry, event, _measurements, _metadata} <- telemetry, do: event) == []
+    end
+
     test "telemetry, on success", %{subject: subject} do
       attach_telemetry(@telemetry ++ @head_spans)
 
@@ -1247,35 +1278,38 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       head = head!(subject)
       :ok = KeyStream.rewrap(@app, head, @second_wrap, @tag_v2)
 
-      telemetry = flush_telemetry()
-
-      events = telemetry |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> Enum.sort()
-
-      assert events == [
-               [:decree, :event_store, :append_to_stream, :start],
-               [:decree, :event_store, :append_to_stream, :stop]
-             ]
-
-      refute_leak_in_term(telemetry)
+      refute_append_telemetry(flush_telemetry())
     end
 
     test "telemetry, when the append raises", %{subject: subject} do
       FailingAdapter.pretend_declared([@prefix])
       attach_telemetry(@telemetry)
 
-      # The application stays up, and its store has gone, so the raise is the store's own, from
-      # inside `append_to_stream/5`'s span.
+      # The application stays up, and its store has gone, so the raise is the store's own.
       :ok = Supervisor.terminate_child(LedgerApp, @store)
 
       assert {:error, _reason} = KeyStream.mint(@app, @prefix, subject, @wrap, @tag_v1)
 
-      telemetry = flush_telemetry()
+      refute_append_telemetry(flush_telemetry())
+    end
 
-      assert Enum.any?(telemetry, fn {:telemetry, event, _measurements, _metadata} ->
-               event == [:decree, :event_store, :append_to_stream, :exception]
-             end)
+    # What a serializer raising on the `EventData` does: the first frame lists the wrap's base64.
+    test "telemetry, when a failed function clause holds the wrap", context do
+      %{subject: subject, key_stream: stream} = context
 
-      refute_leak_in_term(telemetry)
+      mint!(subject)
+      head = head!(subject)
+
+      attach_telemetry(@telemetry)
+
+      FailingAdapter.flag_append(stream, fn -> needs_a_map!({Base.encode64(@wrap), @wrap}) end)
+
+      assert KeyStream.mint(@app, @prefix, subject, @wrap, @tag_v1) ==
+               {:error, :function_clause}
+
+      assert KeyStream.rewrap(@app, head, @second_wrap, @tag_v2) == {:error, :function_clause}
+
+      refute_append_telemetry(flush_telemetry())
     end
 
     test "a head read's telemetry: it has none", %{subject: subject} do
