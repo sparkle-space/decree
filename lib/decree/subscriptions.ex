@@ -319,7 +319,8 @@ defmodule Decree.Subscriptions do
     Application.get_env(:decree, :subscriptions_ttl, @default_ttl)
   end
 
-  defp default_consistency_timeout do
+  @doc false
+  def default_consistency_timeout do
     Application.get_env(:decree, :dispatch_consistency_timeout, @default_consistency_timeout)
   end
 end

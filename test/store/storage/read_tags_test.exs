@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.ReadTagsTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{EventData, LockSession}
+  alias Decree.Store.{EventData, LockSession, ReadResult, RecordedEvent}
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -137,6 +137,59 @@ defmodule Decree.Store.Storage.ReadTagsTest do
     end
   end
 
+  describe "a deletable event type" do
+    @tags ["command:c1", "tenant:t1"]
+
+    test "is left out whole, so its position is absent" do
+      :ok = EventStore.append_to_stream("stream", 0, [event("captured", @tags)])
+
+      assert EventStore.read_tags([1]) == {:ok, %{}}
+    end
+
+    test "is left out of a position a `command:` item reached" do
+      :ok = EventStore.append_to_stream("XPost-1", 0, [event("captured", @tags)])
+
+      assert {:ok, %ReadResult{events: [%RecordedEvent{event_number: position}]}} =
+               EventStore.read_query([[tags: ["command:c1"]]], command_tag: "command:c1")
+
+      assert EventStore.read_tags([position]) == {:ok, %{}}
+    end
+
+    test "leaves another type with the same tags" do
+      :ok =
+        EventStore.append_to_stream("stream", 0, [
+          event("captured", @tags),
+          event("typed", @tags)
+        ])
+
+      assert EventStore.read_tags([1, 2]) == {:ok, %{2 => @tags}}
+    end
+
+    test "leaves out a deletable kind on another type beside it" do
+      :ok =
+        EventStore.append_to_stream("stream", 0, [
+          event("captured", @tags),
+          event("typed", ["content_ref:abc", "tenant:t1"])
+        ])
+
+      assert EventStore.read_tags([1, 2]) == {:ok, %{2 => ["tenant:t1"]}}
+    end
+
+    test "is answered on a store that declares no type and no kind" do
+      :ok =
+        EventStore.append_to_stream("stream", 0, [
+          event("captured", ["content_ref:abc" | @tags])
+        ])
+
+      start_supervised!(
+        {TestEventStore, name: :undeclared_store, serializer: PassThroughSerializer}
+      )
+
+      assert EventStore.read_tags([1], name: :undeclared_store) ==
+               {:ok, %{1 => ["command:c1", "content_ref:abc", "tenant:t1"]}}
+    end
+  end
+
   describe "what a read sends" do
     test "`[]` sends no statement" do
       assert EventStore.read_tags([], conn: @no_conn) == {:ok, %{}}
@@ -214,7 +267,7 @@ defmodule Decree.Store.Storage.ReadTagsTest do
     ]
   end
 
-  defp event(tags) do
-    %EventData{event_type: "typed", data: "{}", metadata: "{}", tags: tags}
+  defp event(type \\ "typed", tags) do
+    %EventData{event_type: type, data: "{}", metadata: "{}", tags: tags}
   end
 end

@@ -92,8 +92,8 @@ defmodule Decree.Store.Storage.HardDeletePlanTest do
 
       positions = Enum.to_list(1..@stream_events)
 
-      for tag_kinds <- [[], ["content_ref"]] do
-        plan = explain(conn, Statements.read_tags(schema), [positions, tag_kinds])
+      for tag_kinds <- [[], ["content_ref"]], event_types <- [[], ["captured"]] do
+        plan = explain(conn, Statements.read_tags(schema), [positions, tag_kinds, event_types])
 
         assert plan =~ "ix_event_tags_position", plan
         refute plan =~ ~r/Seq Scan on \S*event_tags\b/, plan

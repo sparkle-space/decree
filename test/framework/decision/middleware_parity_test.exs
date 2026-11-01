@@ -3,7 +3,7 @@ defmodule Decree.Decision.MiddlewareParityTest do
 
   alias Decree.DecisionFixtures.{ParityAggregateCommand, ParityCommand, StrongHandler}
   alias Decree.Helpers.Wait
-  alias Decree.Middleware.Pipeline
+  alias Decree.Middleware.{ConsistencyGuarantee, Pipeline}
 
   @shared_assigns [
     :aggregate_identity,
@@ -245,6 +245,60 @@ defmodule Decree.Decision.MiddlewareParityTest do
 
       assert {:error, :consistency_timeout} =
                App.dispatch(scripted(decide: decide), consistency: :strong)
+    end
+
+    # The first wait ends at 0.92 T, so a timeout per member answers at 1.92 T at the soonest.
+    # One deadline answers at T, which leaves a loaded host 0.9 T of the bound.
+    test "`:strong` answers a batch within one timeout" do
+      timeout = 2_000
+
+      with_consistency_timeout(timeout)
+
+      # In the order the wait walks them, so the late member is the one waited for first.
+      [late, held] = Map.keys(%{UUID.uuid4() => 1, UUID.uuid4() => 1})
+
+      decide = fn _state, _command ->
+        {:streams,
+         [
+           {:user, late, %Claimed{scope: "late", note: div(timeout * 92, 100)}},
+           {:order, held, %Claimed{scope: "held"}}
+         ]}
+      end
+
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :consistency_timeout} =
+               App.dispatch(scripted(decide: decide), consistency: :strong)
+
+      assert System.monotonic_time(:millisecond) - started < timeout * 1.9
+    end
+
+    test "a batch takes an infinite timeout" do
+      with_consistency_timeout(:infinity)
+
+      decide = fn _state, _command ->
+        {:streams,
+         [
+           {:user, UUID.uuid4(), %Claimed{scope: "a"}},
+           {:order, UUID.uuid4(), %Claimed{scope: "b"}}
+         ]}
+      end
+
+      assert :ok = App.dispatch(scripted(decide: decide), consistency: :strong, timeout: 30_000)
+    end
+
+    # No `Subscriptions` runs for this application, so a wait would exit.
+    test "a member with no time left answers the timeout, with no wait" do
+      with_consistency_timeout(0)
+
+      pipeline = %Pipeline{
+        application: NoSubscriptionsApp,
+        consistency: :strong,
+        assigns: %{dispatcher_pid: self(), events: [%Claimed{}], stream_versions: %{"s" => 1}}
+      }
+
+      assert %Pipeline{response: {:error, :consistency_timeout}} =
+               ConsistencyGuarantee.after_dispatch(pipeline)
     end
   end
 end

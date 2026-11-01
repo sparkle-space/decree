@@ -53,11 +53,11 @@ defmodule Decree.Store.Storage.Reader do
   end
 
   @doc """
-  Read the tags at the given positions, leaving out the given kinds, as
-  `%{position => [tag]}`. A position with no such row is absent.
+  Read the tags at the given positions, leaving out the given kinds and every tag of an event
+  of the given types, as `%{position => [tag]}`. A position with no such row is absent.
   """
-  def read_tags(conn, positions, tag_kinds, opts) do
-    case Reader.Query.read_tags(conn, positions, tag_kinds, opts) do
+  def read_tags(conn, positions, tag_kinds, event_types, opts) do
+    case Reader.Query.read_tags(conn, positions, tag_kinds, event_types, opts) do
       {:ok, rows} -> {:ok, Map.new(rows, fn [position, tags] -> {position, tags} end)}
       {:error, reason} -> failed_to_read(@all_stream_id, reason)
     end
@@ -232,10 +232,10 @@ defmodule Decree.Store.Storage.Reader do
       Statements.read_query(schema, positions, order)
     end
 
-    def read_tags(conn, positions, tag_kinds, opts) do
+    def read_tags(conn, positions, tag_kinds, event_types, opts) do
       {schema, opts} = Keyword.pop(opts, :schema)
 
-      do_query(conn, Statements.read_tags(schema), [positions, tag_kinds], opts)
+      do_query(conn, Statements.read_tags(schema), [positions, tag_kinds, event_types], opts)
     end
 
     defp bound_and_order(:forward), do: {">=", "ASC"}

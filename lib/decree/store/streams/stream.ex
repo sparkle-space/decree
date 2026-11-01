@@ -162,9 +162,11 @@ defmodule Decree.Store.Streams.Stream do
 
   def read_tags(conn, positions, opts) do
     with :ok <- validate_positions(positions) do
-      tag_kinds = opts |> Keyword.get(:deletable, []) |> Keyword.get(:tag_kinds, [])
+      deletable = Keyword.get(opts, :deletable, [])
+      tag_kinds = Keyword.get(deletable, :tag_kinds, [])
+      event_types = Keyword.get(deletable, :event_types, [])
 
-      Storage.read_tags(conn, positions, tag_kinds, opts)
+      Storage.read_tags(conn, positions, tag_kinds, event_types, opts)
     end
   end
 

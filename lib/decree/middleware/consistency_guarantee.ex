@@ -26,10 +26,13 @@ defmodule Decree.Middleware.ConsistencyGuarantee do
   def after_dispatch(%Pipeline{assigns: %{events: []}} = pipeline),
     do: pipeline
 
-  # A decision's batch spans several streams, so every one of them is waited for.
+  # A decision's batch spans several streams, so every one of them is waited for, and the one
+  # timeout is the batch's: a dispatch waits no longer for having written to more streams.
   def after_dispatch(%Pipeline{assigns: %{stream_versions: stream_versions}} = pipeline) do
+    deadline = deadline(Subscriptions.default_consistency_timeout())
+
     Enum.reduce_while(stream_versions, pipeline, fn {stream_uuid, version}, pipeline ->
-      case wait_for(pipeline, stream_uuid, version) do
+      case wait_until(pipeline, stream_uuid, version, deadline) do
         {:ok, pipeline} -> {:cont, pipeline}
         {:timeout, pipeline} -> {:halt, pipeline}
       end
@@ -41,14 +44,30 @@ defmodule Decree.Middleware.ConsistencyGuarantee do
       assigns: %{aggregate_uuid: aggregate_uuid, aggregate_version: aggregate_version}
     } = pipeline
 
-    {_outcome, pipeline} = wait_for(pipeline, aggregate_uuid, aggregate_version)
+    timeout = Subscriptions.default_consistency_timeout()
+
+    {_outcome, pipeline} = wait_for(pipeline, aggregate_uuid, aggregate_version, timeout)
 
     pipeline
   end
 
   def after_failure(%Pipeline{} = pipeline), do: pipeline
 
-  defp wait_for(%Pipeline{} = pipeline, stream_uuid, version) do
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp wait_until(%Pipeline{} = pipeline, stream_uuid, version, :infinity) do
+    wait_for(pipeline, stream_uuid, version, :infinity)
+  end
+
+  defp wait_until(%Pipeline{} = pipeline, stream_uuid, version, deadline) do
+    case deadline - System.monotonic_time(:millisecond) do
+      remaining when remaining > 0 -> wait_for(pipeline, stream_uuid, version, remaining)
+      _no_time_left -> timed_out(pipeline, stream_uuid, version)
+    end
+  end
+
+  defp wait_for(%Pipeline{} = pipeline, stream_uuid, version, timeout) do
     %Pipeline{
       application: application,
       consistency: consistency,
@@ -57,16 +76,17 @@ defmodule Decree.Middleware.ConsistencyGuarantee do
 
     opts = [consistency: consistency, exclude: dispatcher_pid]
 
-    case Subscriptions.wait_for(application, stream_uuid, version, opts) do
-      :ok ->
-        {:ok, pipeline}
-
-      {:error, :timeout} ->
-        Logger.warning(fn ->
-          "Consistency timeout waiting for aggregate #{inspect(stream_uuid)} at version #{inspect(version)}"
-        end)
-
-        {:timeout, respond(pipeline, {:error, :consistency_timeout})}
+    case Subscriptions.wait_for(application, stream_uuid, version, opts, timeout) do
+      :ok -> {:ok, pipeline}
+      {:error, :timeout} -> timed_out(pipeline, stream_uuid, version)
     end
+  end
+
+  defp timed_out(%Pipeline{} = pipeline, stream_uuid, version) do
+    Logger.warning(fn ->
+      "Consistency timeout waiting for aggregate #{inspect(stream_uuid)} at version #{inspect(version)}"
+    end)
+
+    {:timeout, respond(pipeline, {:error, :consistency_timeout})}
   end
 end

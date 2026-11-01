@@ -255,10 +255,13 @@ defmodule Decree.Store do
 
   A position with no row is absent, as position 40 is here, and a caller reads that as an
   event that does not carry the tag. Tags of a kind the store declares deletable are left out
-  in the statement, so this is no way round `{:error, :query_names_deletable}` (see "Deletable
-  streams"). It is a read of its own, in its own snapshot. That is sound for what a tag row
-  can do: a row takes no update, so a read after another read can see one go and never see
-  one change.
+  in the statement, and so is every tag of an event of a type it declares, the `command:` tag
+  included, so this is no way round `{:error, :query_names_deletable}` (see "Deletable
+  streams"), even at a position a `command:` item reached. A position whose every tag is left
+  out is absent too and reads the same way, which fails closed: no tag of it reaches a caller,
+  and a decision still refuses that command match, by the item that matched and not by the
+  tag. It is a read of its own, in its own snapshot. That is sound for what a tag row can do:
+  a row takes no update, so a read after another read can see one go and never see one change.
 
   ## Conditional appends
 
@@ -420,7 +423,8 @@ defmodule Decree.Store do
   The refusal is per name, so an item naming a declared type or kind beside its `command:` tag
   is refused. What this costs: a deleted stream's command tags vanish with it, which ends
   their deduplication early. A condition on such a tag fails before the delete and passes
-  after it, and a read agrees with it both times.
+  after it, and a read agrees with it both times. The item finds an event and not its tags:
+  `c:read_tags/2` answers none of the tags of an event of a declared type.
 
   **Completeness.** An append to a stream starting with a declared prefix, of an event whose
   type is not in `event_types`, answers `{:error, :undeclared_deletable_event_type}` before
@@ -1496,8 +1500,9 @@ defmodule Decree.Store do
         Defaults to 15,000ms.
 
   Returns `{:ok, %{position => tags}}`, with each position's tags sorted bytewise. A position
-  with no row is absent, and so is one whose every tag is of a kind the store declares
-  deletable. `[]` answers `{:ok, %{}}` and sends nothing to the database.
+  with no row is absent, and so is one whose every tag is left out: tags of a kind the store
+  declares deletable, and every tag of an event of a type it declares. `[]` answers
+  `{:ok, %{}}` and sends nothing to the database.
   `{:error, :invalid_positions}` answers anything but a list of non-negative bigints, and
   sends nothing either, so a caller's transaction stays usable.
   """

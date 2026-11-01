@@ -85,7 +85,8 @@ defmodule Decree.EventStore.Adapter do
   Reads the tags of the events at the given `$all` positions, in one statement.
 
   Answers as `c:Decree.Store.read_tags/2` does: a position with no row is absent, and so
-  are tags of a kind the store declares deletable.
+  are tags of a kind the store declares deletable and every tag of an event of a type it
+  declares.
   """
   @callback read_tags(adapter_meta, positions :: [non_neg_integer()], opts :: Keyword.t()) ::
               {:ok, %{non_neg_integer() => [String.t()]}} | {:error, error}
