@@ -219,9 +219,7 @@ defmodule Decree.Decision.Dispatch do
 
       items ->
         with {:ok, parsed} <- Read.parse(items) do
-          read = Read.layout(parsed, framework_items(dispatch))
-
-          with :ok <- within_items(dispatch, [read]), do: {:ok, read}
+          bounded(dispatch, [], Read.layout(parsed, framework_items(dispatch)))
         end
     end
   end
@@ -244,12 +242,12 @@ defmodule Decree.Decision.Dispatch do
         error
 
       items ->
-        with {:ok, parsed} <- Read.parse(items) do
-          read = Read.layout(parsed, framework_items(dispatch))
+        with {:ok, parsed} <- Read.parse(items),
+             read = Read.layout(parsed, framework_items(dispatch)),
+             {:ok, read} <- bounded(dispatch, [first], read) do
           reads = [first, read]
 
-          with :ok <- within_items(dispatch, reads),
-               {:ok, result} <- read_query(dispatch, read),
+          with {:ok, result} <- read_query(dispatch, read),
                :ok <- no_new_command_match(merged, read, result) do
             merged = Read.merge(merged, read, result)
 
@@ -410,8 +408,27 @@ defmodule Decree.Decision.Dispatch do
   defp answer({:error, _reason} = error, _context), do: error
   defp answer({:error, _error, _stacktrace} = error, _context), do: error
 
+  # Steps 1 and 2: what the condition holds so far, with this read not yet sent. One count per
+  # step, which the read keeps for `telemetry_read/5`.
+  defp bounded(%__MODULE__{} = dispatch, earlier_reads, %Read{} = read) do
+    reads = earlier_reads ++ [read]
+
+    with :ok <- within_items(dispatch, reads),
+         read = %Read{read | probes: Read.count_probes(reads)},
+         :ok <- within_probes(dispatch, read) do
+      {:ok, read}
+    end
+  end
+
   defp within_items(%__MODULE__{bounds: %{max_items: limit}} = dispatch, reads) do
     within(dispatch, :items, Read.condition_count(reads), limit)
+  end
+
+  # The read answers what would not compile, as it would with no bound here.
+  defp within_probes(%__MODULE__{}, %Read{probes: nil}), do: :ok
+
+  defp within_probes(%__MODULE__{bounds: %{max_probes: limit}} = dispatch, %Read{probes: probes}) do
+    within(dispatch, :probes, probes, limit)
   end
 
   defp within_events(%__MODULE__{bounds: %{max_events: limit}} = dispatch, merged, reads, started) do
@@ -450,6 +467,7 @@ defmodule Decree.Decision.Dispatch do
   defp telemetry_read(%__MODULE__{} = dispatch, %Merged{} = merged, reads, read_time, fold_time) do
     measurements = %{
       items: Read.condition_count(reads),
+      probes: Read.condition_probes(reads),
       matched_events: Read.matched_count(merged),
       read_time: read_time,
       fold_time: fold_time

@@ -143,8 +143,13 @@ defmodule Decree.Decision.TelemetryTest do
       assert :ok = App.dispatch(scripted(scope: scope))
 
       assert_received {:telemetry, @read,
-                       %{items: 2, matched_events: 2, read_time: read_time, fold_time: fold_time},
-                       %{application: App, decision: ScriptedDecision, attempt: 1}}
+                       %{
+                         items: 2,
+                         probes: 2,
+                         matched_events: 2,
+                         read_time: read_time,
+                         fold_time: fold_time
+                       }, %{application: App, decision: ScriptedDecision, attempt: 1}}
 
       assert is_integer(read_time) and read_time > 0
       assert is_integer(fold_time) and fold_time >= 0
@@ -160,7 +165,22 @@ defmodule Decree.Decision.TelemetryTest do
 
       assert :ok = App.dispatch(scripted(scope: scope, followup: fn _c, _t, _e -> [released] end))
 
-      assert_received {:telemetry, @read, %{items: 3, matched_events: 1}, _metadata}
+      assert_received {:telemetry, @read, %{items: 3, probes: 3, matched_events: 1}, _metadata}
+    end
+
+    test "counts an item's types as probes, the command item's included" do
+      scope = scope()
+      types = [Atom.to_string(Claimed), Atom.to_string(Released), "Elixir.Other"]
+
+      first = fn _c, _t -> [[types: types, tags: ["scope:" <> scope]]] end
+      released = [types: tl(types), tags: ["scope:" <> scope, "scope:further"]]
+
+      assert :ok =
+               App.dispatch(
+                 scripted(scope: scope, query: first, followup: fn _, _, _ -> [released] end)
+               )
+
+      assert_received {:telemetry, @read, %{items: 3, probes: 6}, _metadata}
     end
 
     test "numbers the attempt" do
@@ -193,6 +213,24 @@ defmodule Decree.Decision.TelemetryTest do
 
       assert_received {:telemetry, @refused, %{value: 4, limit: 3},
                        %{application: App, decision: TightDecision, bound: :items}}
+    end
+
+    test "names the probes bound, as an alarm" do
+      types = Enum.map(1..48, &"Elixir.Type#{&1}")
+      command = scripted(query: fn _c, _t -> [[types: types]] end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :decision_query_too_large} = App.dispatch(command)
+        end)
+
+      assert log =~ "refused on the probes bound"
+      assert log =~ "49 over 48"
+
+      assert_received {:telemetry, @refused, %{value: 49, limit: 48},
+                       %{application: App, decision: ScriptedDecision, bound: :probes}}
+
+      refute_received {:telemetry, @read, _, _}
     end
   end
 end

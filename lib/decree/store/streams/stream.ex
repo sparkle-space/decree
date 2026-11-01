@@ -203,7 +203,8 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   def delete(conn, stream_uuid, expected_version, :hard, opts) do
-    with {:ok, %StreamInfo{} = stream} <- stream_info(conn, stream_uuid, expected_version, opts) do
+    with :ok <- validate_hard_delete_target(stream_uuid, opts),
+         {:ok, %StreamInfo{} = stream} <- stream_info(conn, stream_uuid, expected_version, opts) do
       hard_delete_stream(conn, stream, expected_version, opts)
     end
   end
@@ -455,11 +456,8 @@ defmodule Decree.Store.Streams.Stream do
   # statement. A link into a decision's stream would put there an event no decision saw, as
   # `validate_plain_append/2` says of an append.
   defp validate_link_target(stream_uuid, opts) do
-    deletable_prefixes =
-      opts |> Keyword.get(:deletable, []) |> Keyword.get(:stream_prefixes, [])
-
     cond do
-      String.starts_with?(stream_uuid, deletable_prefixes) ->
+      String.starts_with?(stream_uuid, deletable_prefixes(opts)) ->
         {:error, :link_into_deletable_stream}
 
       String.starts_with?(stream_uuid, conditional_prefixes(opts)) ->
@@ -468,6 +466,25 @@ defmodule Decree.Store.Streams.Stream do
       true ->
         :ok
     end
+  end
+
+  # A stream under a declared prefix is what later decisions rest on, its `command:` tags
+  # included. One a `deletable` prefix also covers has been declared as both, and "Deletable
+  # streams" states that cost. Runs where `validate_tags/1` does, for the same reason: a
+  # refusal sends no statement. A store with no hard deletes is passed on, to answer as it
+  # does in `hard_delete_stream/4`.
+  defp validate_hard_delete_target(stream_uuid, opts) do
+    if validate_hard_deletes(opts) == :ok and
+         String.starts_with?(stream_uuid, conditional_prefixes(opts)) and
+         not String.starts_with?(stream_uuid, deletable_prefixes(opts)) do
+      {:error, :hard_delete_of_conditional_prefix}
+    else
+      :ok
+    end
+  end
+
+  defp deletable_prefixes(opts) do
+    opts |> Keyword.get(:deletable, []) |> Keyword.get(:stream_prefixes, [])
   end
 
   defp prepare_events(events, %StreamInfo{} = stream, serializer, opts) do
@@ -714,8 +731,14 @@ defmodule Decree.Store.Streams.Stream do
 
   defp validate_positions(_positions), do: {:error, :invalid_positions}
 
+  # `command` rows are what a decision reads to refuse a resend, so erasing them would let one
+  # `command_id` commit twice.
   defp validate_tag_kinds([_kind | _kinds] = tag_kinds) do
-    if Query.tag_kinds?(tag_kinds), do: :ok, else: {:error, :invalid_tag_kinds}
+    if Query.tag_kinds?(tag_kinds) and "command" not in tag_kinds do
+      :ok
+    else
+      {:error, :invalid_tag_kinds}
+    end
   end
 
   defp validate_tag_kinds(_tag_kinds), do: {:error, :invalid_tag_kinds}

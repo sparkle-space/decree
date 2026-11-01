@@ -24,16 +24,17 @@ defmodule Decree.Decision.UseTest do
 
   describe "bounds" do
     test "default to what was measured" do
-      assert %{max_items: 16, max_events: 1_000, max_batch_events: 100} =
+      assert %{max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100} =
                ClaimDecision.__decision__()
     end
 
     test "may be lowered with no reason" do
-      assert %{max_items: 3, max_events: 3, max_batch_events: 2} = TightDecision.__decision__()
+      assert %{max_items: 3, max_probes: 4, max_events: 3, max_batch_events: 2} =
+               TightDecision.__decision__()
     end
 
     test "must be positive integers" do
-      for bound <- [:max_items, :max_events, :max_batch_events],
+      for bound <- [:max_items, :max_probes, :max_events, :max_batch_events],
           value <- ["0", "-1", "1.5", ~s("1"), "nil", ":many"] do
         assert_raise ArgumentError, ~r/invalid `#{bound}`/, fn ->
           compile(", #{bound}: #{value}")
@@ -42,7 +43,12 @@ defmodule Decree.Decision.UseTest do
     end
 
     test "may not be raised past a default without a reason" do
-      for {bound, value} <- [max_items: 17, max_events: 1_001, max_batch_events: 101] do
+      for {bound, value} <- [
+            max_items: 17,
+            max_probes: 49,
+            max_events: 1_001,
+            max_batch_events: 101
+          ] do
         assert_raise ArgumentError, ~r/`#{bound}` past its default/, fn ->
           compile(", #{bound}: #{value}")
         end
@@ -60,7 +66,7 @@ defmodule Decree.Decision.UseTest do
     end
 
     test "a value at its default needs no reason" do
-      assert compile(", max_items: 16, max_events: 1000, max_batch_events: 100")
+      assert compile(", max_items: 16, max_probes: 48, max_events: 1000, max_batch_events: 100")
     end
 
     test "refuse an unknown option" do

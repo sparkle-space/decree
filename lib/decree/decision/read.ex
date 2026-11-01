@@ -9,8 +9,10 @@ defmodule Decree.Decision.Read do
   # The struct is one read's layout. `Merged` is what the reads answered, together.
 
   alias Decree.EventStore.RecordedEvent
-  alias Decree.Store.ReadResult
+  alias Decree.Store.{Query, ReadResult}
 
+  # `probes` is the condition's probes as of this read: `nil` until they are counted, and for
+  # items the store will refuse.
   defstruct [
     :items,
     :own,
@@ -18,7 +20,8 @@ defmodule Decree.Decision.Read do
     :decision_indexes,
     :framework_indexes,
     :command_index,
-    :replay_indexes
+    :replay_indexes,
+    :probes
   ]
 
   defmodule Merged do
@@ -131,6 +134,24 @@ defmodule Decree.Decision.Read do
   """
   @spec condition_count([%__MODULE__{}]) :: non_neg_integer()
   def condition_count(reads), do: reads |> condition_items() |> length()
+
+  @doc """
+  What `max_probes` counts: the probes the store compiles the condition's items to. `nil` for
+  items it refuses to compile, because the read answers those.
+  """
+  @spec count_probes([%__MODULE__{}]) :: non_neg_integer() | nil
+  def count_probes(reads) do
+    case reads |> condition_items() |> Query.compile() do
+      {:ok, %Query{probe_items: probe_items}} -> length(probe_items)
+      {:error, _reason} -> nil
+    end
+  end
+
+  @doc """
+  The condition's probes, which the last read holds.
+  """
+  @spec condition_probes([%__MODULE__{}]) :: non_neg_integer()
+  def condition_probes(reads), do: List.last(reads).probes
 
   @doc """
   The first read's answer, as the merged read so far.

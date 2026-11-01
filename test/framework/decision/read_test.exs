@@ -100,6 +100,26 @@ defmodule Decree.Decision.ReadTest do
       assert Read.condition_items(reads) == [item("a"), item("b"), @command]
       assert Read.condition_count(reads) == 3
     end
+
+    test "counts one probe per item and type, the command item once" do
+      reads = [
+        layout([[types: ["T", "U", "T"], tags: ["a", "b"]]]),
+        layout([[types: ["V", "W"]]], [[types: ["narrow"]]])
+      ]
+
+      assert Read.condition_count(reads) == 3
+      assert Read.count_probes(reads) == 5
+    end
+
+    test "counts nothing for items the store will refuse" do
+      assert Read.count_probes([layout([[types: [:not_a_string]]])]) == nil
+    end
+
+    test "holds its count on the last read" do
+      reads = [layout([item("a")]), %Read{layout([item("b")]) | probes: 3}]
+
+      assert Read.condition_probes(reads) == 3
+    end
   end
 
   describe "merge/3" do

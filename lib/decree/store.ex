@@ -305,6 +305,15 @@ defmodule Decree.Store do
   makes an append conditional, so one passing on a declared `target` is allowed on such a
   stream.
 
+  Those events are what later decisions rest on, their `command:` tags included, so a hard
+  delete of a stream starting with such a prefix answers
+  `{:error, :hard_delete_of_conditional_prefix}`, before any statement is sent and at every
+  expected version, unless the stream also starts with a prefix of `deletable`: a store that
+  declares both has said so, and "Deletable streams" states that cost. A store without
+  `enable_hard_deletes` keeps its own answer, and a soft delete is unchanged. The refusal goes
+  by the stream's name, so it does not reach a hard delete of another stream holding a link
+  to such an event, which removes that event as "Deletable streams" says.
+
   **What the append wrote.** With `returning: :append_result`, an append answers
   `{:ok, %Decree.Store.AppendResult{}}` in place of `:ok`, with the last position it wrote and
   each stream's version after it:
@@ -396,8 +405,10 @@ defmodule Decree.Store do
   declaration, such as a misspelt key or a module where its name belongs, raises an
   `ArgumentError` when the config is parsed, because it would refuse nothing. Only the config
   declares: `deletable` is no option of any call. A store that declares nothing behaves as
-  if none of this existed. Declaring does not change what `enable_hard_deletes` allows: a
-  hard delete can still delete a stream outside the prefixes.
+  if none of this existed. Declaring does not narrow what `enable_hard_deletes` allows: a
+  hard delete can still delete a stream outside the prefixes. The one stream a hard delete
+  refuses starts with a `conditional_appends` prefix and with no prefix declared here: see
+  "Conditional appends".
 
   **The refusal.** A `c:read_query/2`, a `c:stream_query/2` or a condition with a query naming
   a declared type, or a tag of a declared kind, answers `{:error, :query_names_deletable}`
@@ -1630,6 +1641,11 @@ defmodule Decree.Store do
 
       :ok = MyApp.EventStore.delete_stream("stream2", :stream_exists, :hard)
 
+  A hard delete of a stream starting with a declared `conditional_appends` prefix, and with
+  no declared `deletable` prefix, answers `{:error, :hard_delete_of_conditional_prefix}`
+  before any statement is sent, at every expected version. See "Conditional appends" in
+  `Decree.Store`.
+
   """
   @callback delete_stream(
               stream_uuid :: String.t(),
@@ -1641,6 +1657,7 @@ defmodule Decree.Store do
               | {:error, :stream_not_found}
               | {:error, :stream_deleted}
               | {:error, :wrong_expected_version}
+              | {:error, :hard_delete_of_conditional_prefix}
               | {:error, term}
 
   @doc """
@@ -1652,6 +1669,8 @@ defmodule Decree.Store do
 
     - `tag_kinds` a non-empty list of tag kinds. A tag's kind is what precedes its first
       `:`, so `email` does not match `email_verified:x`, and it does match `email:a:b`.
+      `command` is refused, alone or among others: those rows are what a decision reads to
+      refuse a resend, so erasing them would let one `command_id` commit twice.
 
     - `opts` an optional keyword list containing:
       - `name` the name of the event store if provided to `start_link/1`.
@@ -1669,7 +1688,7 @@ defmodule Decree.Store do
   Returns `{:ok, deleted_row_count}`, which a second call makes `{:ok, 0}`, or:
 
     * `{:error, :invalid_tag_kinds}` when `tag_kinds` is not a non-empty list of non-empty
-      strings without a `:`, before any statement is sent.
+      strings without a `:`, or holds `command`, before any statement is sent.
     * `{:error, :not_supported}` when hard deletes are not enabled, also before any
       statement is sent.
     * `{:error, :cannot_delete_all_stream}` for the `$all` stream.

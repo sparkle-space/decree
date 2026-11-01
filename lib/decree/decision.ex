@@ -56,7 +56,7 @@ defmodule Decree.Decision do
   `Decree.Store.Query`, which has the rest of what they mean. An item naming no types
   answers `{:error, :invalid_query}`, and so does `c:query/2` answering `[]`: a decision
   that reads nothing has nothing to decide on. `replay: true` marks an item as finding this
-  command's own earlier work.
+  command's own earlier work. Nothing reads it yet: any command match refuses at step 7.
 
   **Lead with the narrowest tag.** An item's first tag is the one the index searches, and
   what a condition costs under the `$all` lock is that tag's hits after `after`. So a broad
@@ -75,9 +75,10 @@ defmodule Decree.Decision do
        route identity that is not a canonical UUID, `{:error, :invalid_decision_identity}`.
        Neither sends a statement.
     1. Call `c:query/2`. Its error is the answer. Refuse an item naming no types. Refuse
-       more condition items than `max_items`. Read the items and the command item.
+       more condition items than `max_items` and more probes than `max_probes`. Read the
+       items and the command item.
     2. Call `c:followup_query/3` if it is defined, with the events the first read's own
-       items matched. Check the items again across both reads, and read them and the
+       items matched. Check both bounds again across both reads, and read the items and the
        command item. A command match the first read did not have starts over from step 1,
        using a retry. Merge by position. The first read's `after` stands for both. More
        matched events than `max_events`, both reads together, refuses.
@@ -121,23 +122,24 @@ defmodule Decree.Decision do
   the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An error from a
   `Decree.Event.Tags` implementation is the answer as it stands.
 
-  Only the store's `{:error, :append_condition_failed}` retries. It runs the dispatch again
-  from step 1 while `retry_attempts` lasts, and spent answers
-  `{:error, :too_many_attempts}`, never a duplicate. A dispatch that overruns its timeout
+  Two things retry: the store's `{:error, :append_condition_failed}`, and a command match
+  only the second read has (step 2). Each runs the dispatch again from step 1 while
+  `retry_attempts` lasts, and spent answers `{:error, :too_many_attempts}`, never a
+  duplicate. A dispatch that overruns its timeout
   answers `{:error, :decision_execution_timeout}`, whether or not its append landed, and
   one whose task died answers `{:error, :decision_execution_failed}`.
 
   Four refusals are named arms for an event handler, because a handler that dispatches a
   decision must stop or park on them rather than retry:
 
-    - `:decision_query_too_large` - more condition items than `max_items`, or more matched
-      events than `max_events`.
+    - `:decision_query_too_large` - more condition items than `max_items`, more probes than
+      `max_probes`, or more matched events than `max_events`.
     - `:decision_batch_too_large` - more new events than `max_batch_events`.
     - `:too_many_attempts` - retries are spent.
     - `:unclassified_command_match` - this command already left events in the store.
 
-  `:reused_command_id` and `:tag_index_not_enabled` join them with the steps that answer
-  them: step 7's classification and step 3's tag index check.
+  `:reused_command_id` and `:tag_index_not_enabled` are reserved. Nothing answers them yet,
+  and a handler that names them now has an arm that never runs.
 
   The other refusals are a bug in a command or a decision: `:missing_command_id`,
   `:invalid_decision_identity`, `:invalid_query`, `:decision_returned_no_events` for `[]`,
@@ -148,6 +150,7 @@ defmodule Decree.Decision do
 
       use Decree.Decision,
         max_items: 16,
+        max_probes: 48,
         max_events: 1_000,
         max_batch_events: 100,
         bound_reason: "..."
@@ -158,6 +161,12 @@ defmodule Decree.Decision do
 
     - `max_items` counts condition items, the framework's included: 15 of a decision's own
       plus the command item is 16. A condition's items run under the `$all` lock.
+    - `max_probes` counts the probes `Decree.Store.Query` compiles the condition's items to,
+      the framework's included, across both reads. An item is one probe per type, so one
+      item of 30 types is one condition item and 30 probes. 48 is the size measured: about
+      7% more hold than 16 single-type items at 16 writers, 1,139 µs against 1,067 µs. An
+      item's further tags are checked per first-tag hit after `after`, so they are not
+      counted.
     - `max_events` counts matched rows, both reads together, an event in both counted
       once, command matches included, because a read returning `count` rows cannot be told
       from one that was cut.
@@ -180,14 +189,15 @@ defmodule Decree.Decision do
       `application`, `decision`, `stream_uuid` and `execution_context`, and on stop `attempts`
       and `events` or `error`.
     - `[:decree, :decision, :read]`, once per completed read cycle, one refused on
-      `max_events` included. Measurements `items`, `matched_events`, `read_time` and
-      `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata
+      `max_events` included. Measurements `items`, `probes`, `matched_events`, `read_time`
+      and `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata
       `application`, `decision` and `attempt`.
     - `[:decree, :decision, :retry]`, measurement `attempt`, the one that failed. Metadata
       `application`, `decision` and `reason`, `:append_condition_failed` or
       `:new_command_match`.
     - `[:decree, :decision, :refused]`, measurements `value` and `limit`. Metadata
-      `application`, `decision` and `bound`, one of `:items`, `:events` and `:batch_events`.
+      `application`, `decision` and `bound`, one of `:items`, `:probes`, `:events` and
+      `:batch_events`.
 
   ## Testing
 
@@ -244,7 +254,7 @@ defmodule Decree.Decision do
 
   @optional_callbacks followup_query: 3, admit: 2
 
-  @bounds [max_items: 16, max_events: 1_000, max_batch_events: 100]
+  @bounds [max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100]
   @options [:bound_reason | Keyword.keys(@bounds)]
 
   @doc false

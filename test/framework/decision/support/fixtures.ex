@@ -182,7 +182,11 @@ end
 
 defmodule Decree.DecisionFixtures.TightDecision do
   @moduledoc false
-  use Decree.DecisionFixtures.Scripting, max_items: 3, max_events: 3, max_batch_events: 2
+  use Decree.DecisionFixtures.Scripting,
+    max_items: 3,
+    max_probes: 4,
+    max_events: 3,
+    max_batch_events: 2
 end
 
 defmodule Decree.DecisionFixtures.RecordingDecision do
@@ -455,6 +459,25 @@ defmodule Decree.DecisionFixtures.DeletableApp do
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [tag_kinds: ["secret"]]
+    ],
+    pubsub: :local,
+    registry: :local
+
+  router Decree.DecisionFixtures.Router
+
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
+defmodule Decree.DecisionFixtures.HardDeletesApp do
+  @moduledoc false
+
+  use Decree.Application,
+    otp_app: :decree,
+    event_store: [
+      adapter: Decree.EventStore.Adapters.EventStore,
+      event_store: Decree.FrameworkEventStore,
+      conditional_appends: [stream_prefixes: ["scripted-"]],
+      enable_hard_deletes: true
     ],
     pubsub: :local,
     registry: :local

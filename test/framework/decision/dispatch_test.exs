@@ -7,6 +7,7 @@ defmodule Decree.Decision.DispatchTest do
   alias Decree.DecisionFixtures.{
     Burning,
     DeletableApp,
+    HardDeletesApp,
     ParityAggregateCommand,
     RecordingDecision,
     StrayRouter,
@@ -841,6 +842,117 @@ defmodule Decree.Decision.DispatchTest do
     end
   end
 
+  describe "`max_probes`" do
+    setup do
+      attach_telemetry([@read_query, [:decree, :decision, :refused]])
+      :ok
+    end
+
+    defp types(count, from \\ 1) do
+      Enum.map(from..(from + count - 1), &"Elixir.Type#{&1}")
+    end
+
+    test "one item of 47 types and the command item pass" do
+      command = scripted(query: fn _c, _t -> [[types: types(47)]] end)
+
+      assert :ok = App.dispatch(command)
+    end
+
+    test "one item of 48 types and the command item refuse with no statement" do
+      command = scripted(query: fn _c, _t -> [[types: types(48)]] end)
+
+      assert {:error, :decision_query_too_large} = App.dispatch(command)
+
+      refute_received {:telemetry, @read_query, _, _}
+
+      assert_received {:telemetry, [:decree, :decision, :refused], %{value: 49, limit: 48},
+                       %{bound: :probes}}
+    end
+
+    test "one item of 100,000 types counts as what it costs, not as one item" do
+      command = scripted(query: fn _c, _t -> [[types: types(100_000)]] end)
+
+      assert {:error, :decision_query_too_large} = App.dispatch(command)
+
+      refute_received {:telemetry, @read_query, _, _}
+
+      assert_received {:telemetry, [:decree, :decision, :refused], %{value: 100_001, limit: 48},
+                       %{bound: :probes}}
+    end
+
+    test "counts across both reads, the command item once" do
+      command =
+        scripted(
+          query: fn _c, _t -> [[types: types(24)]] end,
+          followup: fn _c, _t, _e -> [[types: types(23, 25)]] end
+        )
+
+      assert :ok = App.dispatch(command)
+    end
+
+    test "over it across both reads, sends no second read" do
+      command =
+        scripted(
+          query: fn _c, _t -> [[types: types(24)]] end,
+          followup: fn _c, _t, _e -> [[types: types(24, 25)]] end
+        )
+
+      assert {:error, :decision_query_too_large} = App.dispatch(command)
+
+      assert_received {:telemetry, @read_query, _, _}
+      refute_received {:telemetry, @read_query, _, _}
+
+      assert_received {:telemetry, [:decree, :decision, :refused], %{value: 49, limit: 48},
+                       %{bound: :probes}}
+    end
+
+    test "counts a repeated type once, as the store does" do
+      repeated = List.duplicate("Elixir.Type1", 100)
+
+      assert :ok = App.dispatch(scripted(query: fn _c, _t -> [[types: repeated]] end))
+    end
+
+    test "does not count an item's further tags" do
+      tags = Enum.map(1..100, &"scope:#{&1}")
+
+      assert :ok = App.dispatch(scripted(query: fn _c, _t -> [[types: types(1), tags: tags]] end))
+    end
+
+    test "a query the store refuses goes on to the read, and answers as it did" do
+      long = String.duplicate("a", 513)
+
+      for {item, answer} <- [
+            {[types: [:not_a_string | types(100)]], :invalid_query},
+            {[types: types(100), tags: [long]], :tag_too_long}
+          ] do
+        assert {:error, ^answer} = App.dispatch(scripted(query: fn _c, _t -> [item] end))
+
+        assert_received {:telemetry, @read_query, _, _}
+      end
+
+      refute_received {:telemetry, [:decree, :decision, :refused], _, _}
+    end
+
+    test "a second read the store refuses answers as it did" do
+      command =
+        scripted(
+          query: fn _c, _t -> [[types: types(1)]] end,
+          followup: fn _c, _t, _e -> [[types: [:not_a_string | types(100)]]] end
+        )
+
+      assert {:error, :invalid_query} = App.dispatch(command)
+
+      refute_received {:telemetry, [:decree, :decision, :refused], _, _}
+    end
+
+    test "a lowered bound counts the same way" do
+      assert :ok = App.dispatch(scripted([query: fn _c, _t -> [[types: types(3)]] end], Tight))
+
+      assert {:error, :decision_query_too_large} =
+               App.dispatch(scripted([query: fn _c, _t -> [[types: types(4)]] end], Tight))
+    end
+  end
+
   describe "F11, `max_events`" do
     setup do
       attach_telemetry([[:decree, :decision, :read], [:decree, :decision, :refused]])
@@ -1046,6 +1158,31 @@ defmodule Decree.Decision.DispatchTest do
     end
 
     defp store, do: Module.concat([App, "FrameworkEventStore"])
+  end
+
+  describe "a resend, on a store that can erase tags" do
+    setup do
+      start_supervised!({HardDeletesApp, []})
+
+      :ok
+    end
+
+    test "is still refused: `command` tags cannot be erased" do
+      command = scripted()
+      stream_uuid = "scripted-" <> command.claim_id
+      store = Module.concat([HardDeletesApp, "FrameworkEventStore"])
+
+      assert :ok = HardDeletesApp.dispatch(command)
+
+      assert {:error, :invalid_tag_kinds} =
+               Decree.FrameworkEventStore.delete_stream_tags(stream_uuid, ["command"],
+                 name: store
+               )
+
+      assert {:error, :unclassified_command_match} = HardDeletesApp.dispatch(command)
+
+      assert [_only_one] = stored(stream_uuid, HardDeletesApp)
+    end
   end
 
   describe "a store declaring deletable tags" do

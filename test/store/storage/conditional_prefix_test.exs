@@ -208,6 +208,127 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
     end
   end
 
+  describe "a hard delete" do
+    setup do
+      start_supervised!(
+        {TestEventStore,
+         name: :hard_store,
+         enable_hard_deletes: true,
+         conditional_appends: @declared,
+         serializer: PassThroughSerializer}
+      )
+
+      :ok
+    end
+
+    test "of a declared prefix sends no statement, at every expected version" do
+      for stream_uuid <- ["decision-1", "ruling-1"],
+          expected_version <- [:any_version, :stream_exists, 0, 3] do
+        assert EventStore.delete_stream(stream_uuid, expected_version, :hard,
+                 conn: @no_conn,
+                 name: :hard_store
+               ) == {:error, :hard_delete_of_conditional_prefix},
+               inspect({stream_uuid, expected_version})
+      end
+    end
+
+    test "takes nothing, and a soft delete still goes through", context do
+      :ok = decided("decision-1", :hard_store)
+
+      assert EventStore.delete_stream("decision-1", :any_version, :hard, name: :hard_store) ==
+               {:error, :hard_delete_of_conditional_prefix}
+
+      assert stream_versions(context, "decision-1") == [1]
+      assert all_version(context) == 1
+
+      assert :ok = EventStore.delete_stream("decision-1", :any_version, :soft, name: :hard_store)
+      assert stream_versions(context, "decision-1") == [1]
+    end
+
+    test "leaves a caller's transaction alive", context do
+      :ok = decided("decision-1", :hard_store)
+
+      session = LockSession.start(context.postgrex_config)
+
+      LockSession.run(session, fn tx ->
+        assert EventStore.delete_stream("decision-1", :any_version, :hard,
+                 conn: tx,
+                 name: :hard_store
+               ) == {:error, :hard_delete_of_conditional_prefix}
+
+        assert %Postgrex.Result{rows: [[1]]} = Postgrex.query!(tx, "SELECT 1", [])
+      end)
+
+      assert {:ok, :ok} = LockSession.commit(session)
+      assert stream_versions(context, "decision-1") == [1]
+    end
+
+    test "of a stream outside the prefixes goes on, for a name that only resembles one",
+         context do
+      for stream_uuid <- ["plain", "decision", "no-decision-1"] do
+        :ok = EventStore.append_to_stream(stream_uuid, 0, events(1), name: :hard_store)
+
+        assert :ok = EventStore.delete_stream(stream_uuid, :any_version, :hard, name: :hard_store)
+        assert stream_id(context, stream_uuid) == nil
+      end
+    end
+
+    test "of a stream both declare goes through", context do
+      start_supervised!(
+        {TestEventStore,
+         name: :both_hard_store,
+         enable_hard_deletes: true,
+         conditional_appends: [stream_prefixes: ["decision-"]],
+         deletable: [stream_prefixes: ["decision-"], event_types: ["typed"]],
+         serializer: PassThroughSerializer}
+      )
+
+      :ok = decided("decision-1", :both_hard_store)
+
+      assert :ok =
+               EventStore.delete_stream("decision-1", :any_version, :hard, name: :both_hard_store)
+
+      assert stream_id(context, "decision-1") == nil
+    end
+
+    test "goes by the stream's own name when the prefixes overlap", context do
+      start_supervised!(
+        {TestEventStore,
+         name: :overlap_store,
+         enable_hard_deletes: true,
+         conditional_appends: [stream_prefixes: ["decision-"]],
+         deletable: [stream_prefixes: ["decision-secret-"], event_types: ["typed"]],
+         serializer: PassThroughSerializer}
+      )
+
+      :ok = decided("decision-secret-1", :overlap_store)
+
+      assert :ok =
+               EventStore.delete_stream("decision-secret-1", :any_version, :hard,
+                 name: :overlap_store
+               )
+
+      assert stream_id(context, "decision-secret-1") == nil
+
+      assert EventStore.delete_stream("decision-1", :any_version, :hard,
+               conn: @no_conn,
+               name: :overlap_store
+             ) == {:error, :hard_delete_of_conditional_prefix}
+    end
+
+    test "on a store without hard deletes keeps that store's answers", context do
+      :ok = decided("decision-1", TestEventStore)
+
+      assert EventStore.delete_stream("decision-1", :any_version, :hard) ==
+               {:error, :not_supported}
+
+      assert EventStore.delete_stream("decision-2", :stream_exists, :hard) ==
+               {:error, :stream_not_found}
+
+      assert stream_versions(context, "decision-1") == [1]
+    end
+  end
+
   describe "the store's declaration" do
     test "with no prefix refuses nothing", context do
       start_supervised!(
@@ -344,6 +465,10 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
       assert stream_versions(context, "written") == [1]
       assert all_version(context) == 2
     end
+  end
+
+  defp decided(stream_uuid, store) do
+    EventStore.append_to_stream(stream_uuid, 0, events(1), condition: condition(), name: store)
   end
 
   defp condition(overrides \\ []) do
