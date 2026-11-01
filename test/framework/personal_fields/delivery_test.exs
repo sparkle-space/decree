@@ -218,10 +218,13 @@ defmodule Decree.PersonalFields.DeliveryTest do
     end
     """
 
+    # Compiled at runtime by these tests, so the compiler can't see these calls.
     defp compiled, do: Decree.PersonalFields.DeliveryTest.Compiled
 
+    defp personal_fields, do: apply(compiled(), :__personal_fields__, [])
+
     defp deliver(name) do
-      {:ok, handler} = compiled().start_link(name: name, start_from: :origin)
+      {:ok, handler} = apply(compiled(), :start_link, [[name: name, start_from: :origin]])
 
       handler
     end
@@ -233,14 +236,14 @@ defmodule Decree.PersonalFields.DeliveryTest do
 
       Code.compile_string(@with_clause)
 
-      assert compiled().__personal_fields__() == %{Plain => true, Registered => true}
+      assert personal_fields() == %{Plain => true, Registered => true}
 
       deliver("with-clause")
       assert_receive {:compiled, %Registered{email: "alice@secret.example"}}
       Wait.until(fn -> assert acked(conn, "with-clause") == 1 end)
 
       Code.compile_string(@without_clause)
-      assert compiled().__personal_fields__() == %{Plain => true}
+      assert personal_fields() == %{Plain => true}
 
       before = Keys.lookups(subject)
 

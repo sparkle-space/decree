@@ -98,7 +98,9 @@ defmodule Decree.PersonalFields.ReadTest do
       other = Keys.mint(UUID.uuid4())
 
       # Stored for `subject`, and read as an event naming `other`.
-      [%{data: data}] = prepare!(stream, %Registered{user_id: subject, email: email()})
+      [%{data: %Registered{} = data}] =
+        prepare!(stream, %Registered{user_id: subject, email: email()})
+
       store_raw!(stream, %Registered{data | user_id: other})
 
       assert {:ok, %RecordedEvent{data: %Registered{email: "alice@secret.example"}}} =
@@ -485,7 +487,7 @@ defmodule Decree.PersonalFields.ReadTest do
 
       dispatch!(stream, %Linked{user_id: subject, provider_uid: "uid-at-provider"})
 
-      Wait.until(fn -> assert [row] = rows(conn, "snapshots", "data") end)
+      Wait.until(fn -> assert [_row] = rows(conn, "snapshots", "data") end)
 
       assert [row] = rows(conn, "snapshots", "data")
       assert row =~ "$pf"
