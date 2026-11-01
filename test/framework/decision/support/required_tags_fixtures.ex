@@ -173,6 +173,34 @@ defmodule Decree.RequiredTagsFixtures.UnindexedDecision do
   use Decree.DecisionFixtures.Scripting
 end
 
+defmodule Decree.RequiredTagsFixtures.Injected do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
+defmodule Decree.RequiredTagsFixtures.InjectingFamilies do
+  @moduledoc false
+
+  # A `use` after `use Decree.Decision`, so this hook runs after that one's.
+  defmacro __using__(_opts) do
+    quote do
+      @before_compile Decree.RequiredTagsFixtures.InjectingFamilies
+    end
+  end
+
+  defmacro __before_compile__(_env) do
+    quote do
+      def index_families, do: %{"email" => :digest}
+    end
+  end
+end
+
+defmodule Decree.RequiredTagsFixtures.InjectedDecision do
+  @moduledoc false
+  use Decree.DecisionFixtures.Scripting
+  use Decree.RequiredTagsFixtures.InjectingFamilies
+end
+
 defmodule Decree.RequiredTagsFixtures.Router do
   @moduledoc false
   use Decree.Commands.Router
@@ -186,9 +214,17 @@ defmodule Decree.RequiredTagsFixtures.DecisionRouter do
   @moduledoc false
   use Decree.Commands.Router
 
-  alias Decree.RequiredTagsFixtures.{Indexed, IndexedDecision, Unindexed, UnindexedDecision}
+  alias Decree.RequiredTagsFixtures.{
+    Indexed,
+    IndexedDecision,
+    Injected,
+    InjectedDecision,
+    Unindexed,
+    UnindexedDecision
+  }
 
   decide(Indexed, to: IndexedDecision, identity: :claim_id, identity_prefix: "indexed-")
+  decide(Injected, to: InjectedDecision, identity: :claim_id, identity_prefix: "injected-")
   decide(Unindexed, to: UnindexedDecision, identity: :claim_id, identity_prefix: "unindexed-")
 end
 
@@ -215,7 +251,7 @@ defmodule Decree.RequiredTagsFixtures.DecisionApp do
     key_source: Decree.PersonalFields.Fixtures.Keys,
     event_store:
       Decree.FrameworkStorage.event_store_config(
-        conditional_appends: [stream_prefixes: ["indexed-", "unindexed-"]]
+        conditional_appends: [stream_prefixes: ["indexed-", "injected-", "unindexed-"]]
       ),
     pubsub: :local,
     registry: :local
@@ -223,4 +259,17 @@ defmodule Decree.RequiredTagsFixtures.DecisionApp do
   router Decree.RequiredTagsFixtures.DecisionRouter
 
   def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
+defmodule Decree.RequiredTagsFixtures.MockedDecisionApp do
+  @moduledoc false
+
+  # The same decisions on a mocked store, to see what a store is asked for.
+  use Decree.Application,
+    otp_app: :decree,
+    event_store: [adapter: Decree.EventStore.Adapters.Mock],
+    pubsub: :local,
+    registry: :local
+
+  router Decree.RequiredTagsFixtures.DecisionRouter
 end

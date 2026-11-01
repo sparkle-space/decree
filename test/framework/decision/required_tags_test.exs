@@ -4,9 +4,11 @@ defmodule Decree.Decision.RequiredTagsTest do
   import Decree.PersonalFields.Fixtures, only: [email: 1]
   import Decree.RequiredTagsFixtures, only: [digest: 1]
   import ExUnit.CaptureLog
+  import Mox
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.Append
+  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
   alias Decree.EventStore.{EventData, RecordedEvent}
   alias Decree.PersonalFields.Envelope
   alias Decree.PersonalFields.Fixtures.Keys
@@ -19,7 +21,9 @@ defmodule Decree.Decision.RequiredTagsTest do
     Digested,
     Emit,
     Indexed,
+    Injected,
     Malformed,
+    MockedDecisionApp,
     PlainRaising,
     Unindexed,
     Unlisted,
@@ -27,6 +31,7 @@ defmodule Decree.Decision.RequiredTagsTest do
   }
 
   alias Decree.RequiredTagsFixtures.App, as: PlainApp
+  alias Decree.Store.{AppendResult, ReadResult}
 
   @addressed Atom.to_string(Addressed)
   @contact Atom.to_string(Contact)
@@ -229,6 +234,50 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
   end
 
+  describe "a decision route, as the store is asked" do
+    setup [:set_mox_global, :stub_event_store]
+
+    defp stub_event_store(context) do
+      Decree.MockEventStoreCase.stub_event_store(context)
+
+      test = self()
+
+      stub(MockEventStore, :read_query, fn _meta, _items, _opts ->
+        {:ok,
+         %ReadResult{
+           events: [],
+           after: 0,
+           read_at: DateTime.utc_now(),
+           command_stamps: %{},
+           matched_items: %{}
+         }}
+      end)
+
+      stub(MockEventStore, :read_tags, fn _meta, _positions, _opts -> {:ok, %{}} end)
+
+      stub(MockEventStore, :append_to_streams, fn _meta, appends, _opts ->
+        send(test, {:appended, appends})
+
+        versions = Map.new(appends, fn {stream, _version, events} -> {stream, length(events)} end)
+
+        {:ok, %AppendResult{position: 1, stream_versions: versions}}
+      end)
+
+      start_supervised!(MockedDecisionApp)
+
+      :ok
+    end
+
+    test "an event with no exports has `always/0` required of it" do
+      command = deciding(Unindexed, read_nothing(), %Unopted{})
+
+      assert :ok = MockedDecisionApp.dispatch(command)
+      assert_received {:appended, [{_stream, :any_version, [%EventData{} = data]}]}
+      assert data.required_tag_kinds == Decree.Event.RequiredTags.always()
+      assert data.required_tag_kinds == ["command", "command_kind"]
+    end
+  end
+
   describe "an erased subject" do
     setup %{user: user} do
       Keys.set(user, :erased)
@@ -415,6 +464,20 @@ defmodule Decree.Decision.RequiredTagsTest do
       command = deciding(Unindexed, [item(@digested, ["email:a"])], digested(["email:b"]))
 
       assert :ok = DecisionApp.dispatch(command)
+    end
+
+    test "a decision whose `index_families/0` a later `use` injects compares it" do
+      items = [item(@digested, ["email:a"])]
+
+      command = deciding(Injected, items, digested(["email:b"]))
+
+      assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+      assert stored("injected-" <> command.claim_id, DecisionApp) == []
+
+      command = deciding(Injected, items, digested(["email:a"]))
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{}] = stored("injected-" <> command.claim_id, DecisionApp)
     end
 
     test "a tag that is no string is the store's to refuse" do

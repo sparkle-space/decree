@@ -29,6 +29,50 @@ defmodule Decree.Decision.UseTest do
     Module.concat([name])
   end
 
+  # `Code.eval_string/1` is not what a build runs. `compile_to_path/3` is what `mix compile`
+  # calls, and under it the module is not loaded when the check runs, which is where an export
+  # test would pass every bad declaration.
+  defp build(name, source) do
+    dir = Path.join(System.tmp_dir!(), name)
+    path = Path.join(dir, "decision.ex")
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    File.write!(path, source)
+
+    {dir, Kernel.ParallelCompiler.compile_to_path([path], dir, return_diagnostics: true)}
+  end
+
+  # A `use` after `use Decree.Decision`, so its `@before_compile` runs after that one's.
+  defp injecting(name, families) do
+    """
+    defmodule #{name}.Families do
+      defmacro __using__(_opts) do
+        quote do
+          @before_compile #{name}.Families
+        end
+      end
+
+      defmacro __before_compile__(_env) do
+        quote do
+          def index_families, do: #{families}
+        end
+      end
+    end
+
+    defmodule #{name} do
+      use Decree.Decision
+      use #{name}.Families
+
+      def query(_command, _context), do: []
+      def initial_state, do: nil
+      def evolve(state, _event), do: state
+      def decide(_state, _command), do: nil
+    end
+    """
+  end
+
   describe "bounds" do
     test "default to what was measured" do
       assert %{max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100} =
@@ -163,6 +207,23 @@ defmodule Decree.Decision.UseTest do
       assert %{index_families: %{"email" => :digest}} =
                compile("", ~s(def index_families, do: %{"email" => :digest})).__decision__()
     end
+
+    test "`index_families/0` a later `use` injects is read" do
+      name = "Decree.Decision.UseTest.Injected#{System.unique_integer([:positive])}"
+      decision = Module.concat([name])
+
+      assert {dir, {:ok, _modules, _warnings}} =
+               build(name, injecting(name, ~s(%{"email" => :digest})))
+
+      assert {:module, ^decision} = :code.load_abs(~c"#{Path.join(dir, "Elixir." <> name)}")
+
+      on_exit(fn ->
+        :code.purge(decision)
+        :code.delete(decision)
+      end)
+
+      assert %{index_families: %{"email" => :digest}} = decision.__decision__()
+    end
   end
 
   describe "a bad `index_families/0`" do
@@ -190,18 +251,10 @@ defmodule Decree.Decision.UseTest do
       end
     end
 
-    # `Code.eval_string/1` is not what a build runs. `compile_to_path/3` is what `mix compile`
-    # calls, and under it the module is not loaded when the check runs, which is where an
-    # export test would pass every bad declaration.
     test "fails under the compiler too, where the module is not loaded yet" do
       name = "Decree.Decision.UseTest.Compiled#{System.unique_integer([:positive])}"
-      dir = Path.join(System.tmp_dir!(), name)
-      path = Path.join(dir, "decision.ex")
 
-      File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf(dir) end)
-
-      File.write!(path, """
+      source = """
       defmodule #{name} do
         use Decree.Decision
 
@@ -211,11 +264,21 @@ defmodule Decree.Decision.UseTest do
         def decide(_state, _command), do: nil
         def index_families, do: %{email: :digest}
       end
-      """)
+      """
 
       capture_io(:stderr, fn ->
-        assert {:error, [%{message: message}], _warnings} =
-                 Kernel.ParallelCompiler.compile_to_path([path], dir, return_diagnostics: true)
+        assert {_dir, {:error, [%{message: message}], _warnings}} = build(name, source)
+
+        assert message =~ "#{name} has an invalid `index_families/0`"
+      end)
+    end
+
+    test "fails the build when a later `use` injects it" do
+      name = "Decree.Decision.UseTest.Injected#{System.unique_integer([:positive])}"
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} =
+                 build(name, injecting(name, "%{email: :digest}"))
 
         assert message =~ "#{name} has an invalid `index_families/0`"
       end)

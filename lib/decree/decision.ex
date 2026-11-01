@@ -111,11 +111,11 @@ defmodule Decree.Decision do
        lacking a scope tag, `{:error, :batch_lacks_scope_tag}`, and on a create a batch with
        no event of a declared type on the stream tag, `{:error, :batch_lacks_fact}`. Compare
        the digest kinds with the condition's items (see "Digest tags"), and refuse on a
-       mismatch. Require of each event what `Decree.Event.RequiredTags` says, and the kinds
-       of the tags on the condition's items naming its type, less those its module lists in
-       `__conditional_tag_kinds__/0`, whether or not it opted in. Append them at
-       `:any_version` under the condition, and the store refuses an event lacking a kind on
-       its list.
+       mismatch. Require of each event, whether or not it opted in,
+       `Decree.Event.RequiredTags.always/0` and the kinds of the tags on the condition's
+       items naming its type, less those its module lists in `__conditional_tag_kinds__/0`,
+       and of an event that opted in its own answer as well. Append them at `:any_version`
+       under the condition, and the store refuses an event lacking a kind on its list.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
@@ -457,7 +457,7 @@ defmodule Decree.Decision do
 
   @doc """
   What each tag kind this decision indexes holds, for example `%{"email" => :digest}`. See
-  "Digest tags".
+  "Digest tags". Defaults to `%{}`.
   """
   @callback index_families() :: %{String.t() => :digest | :plain}
 
@@ -471,6 +471,7 @@ defmodule Decree.Decision do
     quote bind_quoted: [opts: opts] do
       @behaviour Decree.Decision
       @before_compile Decree.Decision
+      @after_compile Decree.Decision
 
       @decree_decision_bounds Decree.Decision.__bounds__!(__MODULE__, opts)
       @decree_decision_create Decree.Decision.__create__!(__MODULE__, opts)
@@ -503,26 +504,28 @@ defmodule Decree.Decision do
 
     followup_query? = Module.defines?(module, {:followup_query, 3}, :def)
 
+    # Here and not in `__using__/1`: a default from the module body is final before any
+    # `@before_compile` runs, so a later hook's `def` would be a second clause that never
+    # matches. One made overridable here gives way to it.
     index_families =
-      if Module.defines?(module, {:index_families, 0}, :def) do
-        quote(do: index_families())
-      else
-        quote(do: %{})
+      if not Module.defines?(module, {:index_families, 0}, :def) do
+        quote do
+          @doc false
+          def index_families, do: %{}
+
+          defoverridable index_families: 0
+        end
       end
 
-    # Asked here, because under the compiler `__after_compile__/2` finds the module not loaded,
-    # so `function_exported?/3` would answer no and let every bad declaration through.
-    if Module.defines?(module, {:index_families, 0}, :def) do
-      Module.put_attribute(module, :after_compile, Decree.Decision)
-    end
-
     quote do
+      unquote(index_families)
+
       @doc false
       def __decision__ do
         Map.merge(@decree_decision_bounds, %{
           create: @decree_decision_create,
           followup_query?: unquote(followup_query?),
-          index_families: unquote(index_families)
+          index_families: index_families()
         })
       end
     end
@@ -530,7 +533,9 @@ defmodule Decree.Decision do
 
   # A key no tag can have, or a family no comparison reads, compares nothing and says so
   # nowhere: a digest check that passes because it never ran. A raise from the callback
-  # leaves through here and fails the build too.
+  # leaves through here and fails the build too. Called with no export test, because under the
+  # compiler the module is not loaded here, so `function_exported?/3` would answer no and let
+  # every bad declaration through.
   @doc false
   def __after_compile__(%Macro.Env{module: module}, _bytecode) do
     families = module.index_families()

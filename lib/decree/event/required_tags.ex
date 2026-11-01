@@ -34,7 +34,8 @@ defmodule Decree.Event.RequiredTags do
   An event is opted in by exporting `__required_tag_kinds__/2`, and its list is `always/0`
   followed by its answer. So a command with no usable `command_id` cannot append one, on any
   route. The stream's entity tag is not among them: a stream whose id is not a UUID gets
-  none. An event without the export has an empty list, and the store checks nothing for it.
+  none. Off a decision route, an event without the export has an empty list, and the store
+  checks nothing for it.
 
   The store refuses, before any statement: `{:error, :missing_required_tag}` for an event
   lacking a kind on its list, and `{:error, :invalid_required_tag_kinds}` for a list that is
@@ -43,11 +44,11 @@ defmodule Decree.Event.RequiredTags do
 
   ## On a decision
 
-  A decision's own append requires more, of every event it appends, opted in or not: the
-  kinds of the tags on the condition's items naming the event's type, less the module's
-  `__conditional_tag_kinds__/0`. That takes kinds from what the items ask and from nothing
-  else, so a conditional kind `__required_tag_kinds__/2` answers stays required. See step 8 of
-  `Decree.Decision`.
+  A decision's own append requires more, of every event it appends, opted in or not:
+  `always/0`, and the kinds of the tags on the condition's items naming the event's type, less
+  the module's `__conditional_tag_kinds__/0`. That takes kinds from what the items ask and from
+  nothing else, so a conditional kind `__required_tag_kinds__/2` answers stays required. See
+  step 8 of `Decree.Decision`.
 
   That holds on a decision's own append and nowhere else. A plain aggregate appending a type
   a decision queries has no condition to take kinds from, so it gets only what the event
@@ -60,14 +61,14 @@ defmodule Decree.Event.RequiredTags do
   @framework ["command", "command_kind", "correlation"]
 
   @doc """
-  The kinds every opted-in event requires.
+  The kinds every opted-in event requires, and every event a decision appends.
   """
   @spec always() :: [String.t(), ...]
   def always, do: @always
 
   @doc """
-  The kinds this event requires: `always/0` and its answer, or none for an event without the
-  export. An answer that is not a list is `{:error, :invalid_required_tag_kinds}`, here. What
+  The kinds this event asks for itself: `always/0` and its answer, or none for an event without
+  the export. A decision's append adds to that, opted in or not. An answer that is not a list is `{:error, :invalid_required_tag_kinds}`, here. What
   a list holds is the store's to check.
   """
   @spec required(struct(), TagContext.t()) :: {:ok, list()} | {:error, term()}
