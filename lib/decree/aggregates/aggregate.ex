@@ -104,7 +104,9 @@ defmodule Decree.Aggregates.Aggregate do
   state is still good.
 
   `format_status/1` keeps the state, and the dispatch metadata a command carries, out of crash
-  reports and `:sys.get_status/1`.
+  reports and `:sys.get_status/1`. An aggregate that uses `Decree.PersonalFields.Aggregate` can
+  hold decrypted state, so what leaves `apply/2`, `execute/2` or `before_execute` on one is
+  redacted, as that module says.
 
   ## Telemetry
 
@@ -619,6 +621,8 @@ defmodule Decree.Aggregates.Aggregate do
       Logger.error(Exception.format(:error, error, stacktrace))
 
       {{:error, error, stacktrace}, state}
+  catch
+    kind, value -> leave_with(kind, value, __STACKTRACE__, state)
   end
 
   # An aggregate holding decrypted state passes it to `execute/2` and `apply/2`, and a raise
@@ -628,6 +632,16 @@ defmodule Decree.Aggregates.Aggregate do
       {RedactedError.redact(error), RedactedError.scrub_stacktrace(stacktrace)}
     else
       {error, stacktrace}
+    end
+  end
+
+  # An exit or a throw from the same code, and nothing rescues those. A `throw` from here reaches
+  # `gen_server`, which reads it as a return value and crashes printing it.
+  defp leave_with(kind, value, stacktrace, %Aggregate{aggregate_module: aggregate_module}) do
+    if PersonalFields.adopted?(aggregate_module) do
+      :erlang.raise(kind, RedactedError.reduce(value), RedactedError.scrub_stacktrace(stacktrace))
+    else
+      :erlang.raise(kind, value, stacktrace)
     end
   end
 

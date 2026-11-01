@@ -385,6 +385,185 @@ defmodule Decree.PersonalFields.DeliveryTest do
     end
   end
 
+  describe "a handler that keeps a decrypted value as its state" do
+    alias Decree.PersonalFields.Fixtures.{StatefulHandler, StatefulReporting}
+
+    @handle_events [
+      [:decree, :event, :handle, :start],
+      [:decree, :event, :handle, :stop],
+      [:decree, :event, :handle, :exception]
+    ]
+
+    setup %{stream: stream, subject: subject} do
+      start_supervised!(App)
+      attach_telemetry(@handle_events)
+
+      dispatch!(stream, %Registered{user_id: subject, email: email()})
+
+      :ok
+    end
+
+    defp status(pid),
+      do: inspect(:sys.get_status(pid), limit: :infinity, printable_limit: :infinity)
+
+    test "the telemetry shows `:redacted`, and the handler still gets the state", context do
+      %{conn: conn, stream: stream} = context
+
+      dispatch!(stream, [%Plain{note: "ok"}, %Plain{note: "keep"}, %Plain{note: "ok"}])
+
+      pid = start_supervised!({StatefulHandler, start_from: :origin})
+
+      assert_receive {:state_given, "alice@secret.example"}
+      assert_receive {:state_given, "alice@secret.example"}
+      Wait.until(fn -> assert acked(conn, inspect(StatefulHandler)) == 4 end)
+
+      telemetry = flush_telemetry()
+
+      refute inspect(telemetry, limit: :infinity) =~ "secret.example"
+
+      assert [{:telemetry, [:decree, :event, :handle, :stop], _, first} | _rest] =
+               Enum.reverse(Enum.filter(telemetry, &(elem(&1, 1) == Enum.at(@handle_events, 1))))
+
+      assert first.handler_state == :redacted
+
+      assert status(pid) =~ "handler_state: :redacted"
+      refute status(pid) =~ "secret.example"
+    end
+
+    for {mode, type} <- [
+          {"match", "MatchError"},
+          {"clause", "FunctionClauseError"},
+          {"database", "UniqueViolation"}
+        ] do
+      test "a later raise (#{mode}) on an undeclared event shows nothing", %{stream: stream} do
+        dispatch!(stream, %Plain{note: unquote(mode)})
+        Process.flag(:trap_exit, true)
+
+        log =
+          capture_log([level: :info], fn ->
+            {:ok, pid} = StatefulHandler.start_link(start_from: :origin)
+
+            assert_receive {:EXIT, ^pid, reason}
+            refute inspect(reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        assert log =~ unquote(type)
+        refute log =~ "secret.example"
+        refute inspect(flush_telemetry(), limit: :infinity) =~ "secret.example"
+      end
+    end
+
+    for mode <- ["error", "invalid", "exit", "throw"] do
+      test "a later #{mode} on an undeclared event shows nothing", %{stream: stream} do
+        dispatch!(stream, %Plain{note: unquote(mode)})
+        Process.flag(:trap_exit, true)
+
+        log =
+          capture_log([level: :info], fn ->
+            {:ok, pid} = StatefulHandler.start_link(start_from: :origin)
+
+            assert_receive {:EXIT, ^pid, reason}
+            refute inspect(reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+        refute inspect(flush_telemetry(), limit: :infinity) =~ "secret.example"
+      end
+    end
+
+    test "a crash report holds neither the state nor anything else", %{stream: stream} do
+      dispatch!(stream, %Plain{note: "ok"})
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} = StatefulHandler.start_link(start_from: :origin)
+      assert_receive {:state_given, "alice@secret.example"}
+
+      log =
+        capture_log(fn ->
+          ref = Process.monitor(pid)
+          dispatch!(UUID.uuid4(), %Plain{note: "clause"})
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+
+          Process.sleep(50)
+        end)
+
+      assert log =~ "terminating"
+      assert log =~ "handler_state: :redacted"
+      refute log =~ "secret.example"
+    end
+
+    test "format_status/1 clears the log" do
+      state = %Decree.Event.Handler{handler_state: email(), sensitive_state: true}
+
+      assert %{state: %Decree.Event.Handler{handler_state: :redacted}, log: []} =
+               Decree.Event.Handler.format_status(%{state: state, log: [{:in, email()}]})
+    end
+
+    test "`error/3` gets the state as it stands", %{stream: stream} do
+      dispatch!(stream, %Plain{note: "error"})
+      Process.flag(:trap_exit, true)
+
+      log =
+        capture_log([level: :info], fn ->
+          {:ok, pid} = StatefulReporting.start_link(start_from: :origin)
+
+          assert_receive {:EXIT, ^pid, :handed}
+        end)
+
+      assert_received {:error_state, "alice@secret.example"}
+      refute log =~ "secret.example"
+    end
+  end
+
+  describe "a handler keeping state from an event not decrypted for it" do
+    alias Decree.PersonalFields.Fixtures.PlainStateHandler
+
+    setup do
+      start_supervised!(App)
+      attach_telemetry([[:decree, :event, :handle, :stop]])
+
+      :ok
+    end
+
+    test "shows it everywhere, as before", %{conn: conn, stream: stream} do
+      dispatch!(stream, %Plain{note: "ok"})
+
+      pid = start_supervised!({PlainStateHandler, start_from: :origin})
+
+      Wait.until(fn -> assert acked(conn, inspect(PlainStateHandler)) == 1 end)
+
+      assert [{:telemetry, _event, _measurements, %{handler_state: "kept-state"}}] =
+               flush_telemetry()
+
+      assert inspect(:sys.get_status(pid), limit: :infinity) =~ ~s(handler_state: "kept-state")
+    end
+
+    test "format_status/1 answers what it was given" do
+      status = %{state: %Decree.Event.Handler{handler_state: "kept"}, log: [:kept]}
+
+      assert Decree.Event.Handler.format_status(status) == status
+    end
+
+    test "a later failure shows its reason as before", %{stream: stream} do
+      dispatch!(stream, [%Plain{note: "ok"}, %Plain{note: "error"}])
+      Process.flag(:trap_exit, true)
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = PlainStateHandler.start_link(start_from: :origin)
+
+          assert_receive {:EXIT, ^pid, {:bad, "kept-state"}}
+        end)
+
+      assert log =~ ~s({:bad, "kept-state"})
+    end
+  end
+
   describe "a failure on an event that was not decrypted" do
     defmodule Failing do
       use Decree.Event.Handler,

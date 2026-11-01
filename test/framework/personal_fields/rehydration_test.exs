@@ -14,8 +14,11 @@ defmodule Decree.PersonalFields.RehydrationTest do
     DetailOnState,
     Emit,
     ExitNow,
+    FailBefore,
+    FailExecute,
     Hold,
     MatchState,
+    PlainFail,
     RaiseNow
   }
 
@@ -26,10 +29,11 @@ defmodule Decree.PersonalFields.RehydrationTest do
     PlainPoison,
     Poison,
     Registered,
+    StateFails,
     Unfolded
   }
 
-  alias Decree.PersonalFields.Fixtures.UniqueViolation
+  alias Decree.PersonalFields.Fixtures.{PlainLedger, StateOnly, UniqueViolation}
   alias Decree.PersonalFields.RedactedError
   alias Decree.Registration
   alias Decree.Snapshotting
@@ -482,23 +486,6 @@ defmodule Decree.PersonalFields.RehydrationTest do
       refute log =~ "secret.example"
     end
 
-    test "on an event it did not decrypt stays exactly as it is", %{stream: stream} do
-      store_raw!(stream, %PlainPoison{mode: "exit", note: "shown"})
-
-      log =
-        capture_log(fn ->
-          {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, Account, stream)
-          pid = resident(stream)
-          ref = Process.monitor(pid)
-
-          assert_receive {:DOWN, ^ref, :process, ^pid, {:gave_up, "shown"}}
-
-          Process.sleep(50)
-        end)
-
-      assert log =~ "shown"
-    end
-
     test "on its own stream is redacted" do
       fresh = UUID.uuid4()
       subject = Keys.mint(UUID.uuid4())
@@ -518,6 +505,248 @@ defmodule Decree.PersonalFields.RehydrationTest do
         end)
 
       refute log =~ "secret.example"
+    end
+  end
+
+  describe "on an aggregate holding decrypted state, an event off its list" do
+    @failures [
+      {"match", {%RedactedError{type: MatchError}, :stack}},
+      {"clause", {%RedactedError{type: FunctionClauseError}, :stack}},
+      {"database", {%RedactedError{type: UniqueViolation}, :stack}},
+      {"exit", {:gave_up, :redacted}},
+      {"throw", {:bad_return_value, {:error, :redacted}}}
+    ]
+
+    defp assert_shown_as(reason, {%RedactedError{type: type}, :stack}) do
+      assert {%RedactedError{type: ^type}, stacktrace} = reason
+      assert is_list(stacktrace)
+      refute inspect(reason, limit: :infinity) =~ "secret.example"
+    end
+
+    defp assert_shown_as(reason, expected), do: assert(reason == expected)
+
+    for {mode, expected} <- @failures do
+      test "(#{mode}) on the dispatch path carries nothing", context do
+        %{stream: stream, subject: subject} = context
+
+        registered(stream, subject)
+        stop_resident(stream)
+        store_raw!(stream, %StateFails{mode: unquote(mode)})
+
+        log =
+          capture_log([level: :info], fn ->
+            {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, Account, stream)
+            pid = resident(stream)
+            ref = Process.monitor(pid)
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            assert_shown_as(reason, unquote(Macro.escape(expected)))
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+
+      test "(#{mode}) on the cold path carries nothing", context do
+        %{stream: stream, subject: subject} = context
+
+        registered(stream, subject)
+        stop_resident(stream)
+        store_raw!(stream, %StateFails{mode: unquote(mode)})
+
+        log =
+          capture_log([level: :info], fn ->
+            {pid, ref} = spawn_monitor(fn -> Aggregate.aggregate_state(App, Account, stream) end)
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            refute inspect(reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+
+      test "(#{mode}) on its own stream carries nothing", context do
+        %{stream: stream, subject: subject} = context
+
+        registered(stream, subject)
+        {pid, ref} = monitor_resident(stream)
+
+        log =
+          capture_log([level: :info], fn ->
+            store_raw!(stream, %StateFails{mode: unquote(mode)})
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            refute inspect(reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+
+      test "(#{mode}) as a pending event carries nothing", context do
+        %{stream: stream, subject: subject} = context
+
+        registered(stream, subject)
+        command = %Emit{account_id: stream, events: [%StateFails{mode: unquote(mode)}]}
+
+        log =
+          capture_log([level: :info], fn ->
+            assert {:error, reason} = App.dispatch(command)
+            refute inspect(reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+    end
+
+    test "an aggregate listing state and no event is covered", context do
+      %{stream: stream, subject: subject} = context
+
+      assert PersonalFields.fold_events(StateOnly) == []
+
+      snapshotting = Snapshotting.new(App, stream, snapshot_every: 1, snapshot_version: 1)
+
+      assert {:ok, _snapshotting} =
+               Snapshotting.take_snapshot(snapshotting, 1, %StateOnly{id: subject, email: email()})
+
+      store_raw!(stream, %Plain{})
+      store_raw!(stream, %StateFails{mode: "match"})
+
+      aggregate = %Aggregate{
+        application: App,
+        aggregate_module: StateOnly,
+        aggregate_uuid: stream,
+        snapshotting: snapshotting
+      }
+
+      error =
+        assert_raise RedactedError, fn -> AggregateStateBuilder.populate(aggregate) end
+
+      assert error.type == MatchError
+    end
+
+    test "the fold's list says which aggregates adopted, once" do
+      assert PersonalFields.fold_events(PlainLedger) == nil
+      assert PersonalFields.fold_events(Account) != nil
+    end
+  end
+
+  describe "an aggregate that uses no personal fields stays exactly as it is" do
+    test "on a raise, an exit and a throw from a fold", %{stream: stream} do
+      store_raw!(stream, %PlainPoison{mode: "exit", note: "shown"})
+
+      log =
+        capture_log(fn ->
+          {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, PlainLedger, stream)
+          pid = Registration.whereis_name(App, {App, PlainLedger, stream})
+          ref = Process.monitor(pid)
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, {:gave_up, "shown"}}
+
+          Process.sleep(50)
+        end)
+
+      assert log =~ "shown"
+
+      other = UUID.uuid4()
+      store_raw!(other, %PlainPoison{mode: "match", note: "shown"})
+
+      capture_log(fn ->
+        {:ok, ^other} = AggregateSupervisor.open_aggregate(App, PlainLedger, other)
+        pid = Registration.whereis_name(App, {App, PlainLedger, other})
+        ref = Process.monitor(pid)
+
+        assert_receive {:DOWN, ^ref, :process, ^pid, {{:badmatch, "shown"}, _stacktrace}}
+      end)
+    end
+
+    for {mode, reason} <- [
+          {"exit", {:gave_up, "shown"}},
+          {"throw", {:bad_return_value, {:error, {:thrown, "shown"}}}}
+        ] do
+      test "on an #{mode} from `execute/2`", %{stream: stream} do
+        :ok = open_plain(stream)
+        pid = Registration.whereis_name(App, {App, PlainLedger, stream})
+        ref = Process.monitor(pid)
+
+        capture_log(fn ->
+          assert {:error, :aggregate_execution_failed} =
+                   App.dispatch(%PlainFail{
+                     account_id: stream,
+                     mode: unquote(mode),
+                     note: "shown"
+                   })
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+          assert reason == unquote(Macro.escape(reason))
+        end)
+      end
+    end
+
+    test "on a raise from `execute/2`", %{stream: stream} do
+      assert {:error, %MatchError{term: "shown"}} =
+               App.dispatch(%PlainFail{account_id: stream, mode: "match", note: "shown"})
+    end
+
+    defp open_plain(stream) do
+      {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, PlainLedger, stream)
+
+      :ok
+    end
+  end
+
+  describe "an exit or a throw while executing, in an aggregate holding decrypted state" do
+    for {name, command} <- [{"`execute/2`", FailExecute}, {"`before_execute`", FailBefore}],
+        {mode, reason} <- [
+          {"exit", {:gave_up, :redacted}},
+          {"throw", {:bad_return_value, {:error, :redacted}}}
+        ] do
+      test "an #{mode} from #{name} carries nothing", %{stream: stream, subject: subject} do
+        registered(stream, subject)
+        {pid, ref} = monitor_resident(stream)
+
+        log =
+          capture_log([level: :info], fn ->
+            assert {:error, :aggregate_execution_failed} =
+                     App.dispatch(
+                       struct(unquote(command), account_id: stream, mode: unquote(mode))
+                     )
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            assert reason == unquote(Macro.escape(reason))
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+    end
+
+    for {name, command} <- [{"`execute/2`", FailExecute}, {"`before_execute`", FailBefore}],
+        {mode, type} <- [
+          {"match", MatchError},
+          {"clause", FunctionClauseError},
+          {"database", UniqueViolation}
+        ] do
+      test "a #{mode} raise from #{name} is redacted", %{stream: stream, subject: subject} do
+        registered(stream, subject)
+
+        log =
+          capture_log([level: :info], fn ->
+            assert {:error, %RedactedError{type: unquote(type)}} =
+                     App.dispatch(
+                       struct(unquote(command), account_id: stream, mode: unquote(mode))
+                     )
+          end)
+
+        refute log =~ "secret.example"
+      end
     end
   end
 

@@ -129,33 +129,47 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   end
 
   @doc false
-  # Applies one recorded event: the fold's one step, for every path that folds. `fold` is
-  # `PersonalFields.fold_events/1`'s list, and `answers` the fold's own lookups, which end
-  # with it. An event in the list is decrypted first, and a raise, an exit or a throw from
-  # `apply/2` on it can hold the value, so each leaves here redacted.
-  def apply_event(%RecordedEvent{} = event, %Aggregate{} = state, fold, answers) do
+  # Applies one recorded event: the fold's one step, for every path that folds. `answers` is the
+  # fold's own lookups, which end with it. `fold` is `PersonalFields.fold_events/1`'s answer, read
+  # once per fold: `nil` for an aggregate that doesn't use `Decree.PersonalFields.Aggregate`,
+  # whose `apply/2` runs bare, and otherwise the events to decrypt first. On such an aggregate
+  # any `apply/2` can hold decrypted state, from an earlier event or from a snapshot, listed
+  # event or not, so a raise, an exit or a throw leaves here redacted.
+  @spec apply_event(RecordedEvent.t(), Aggregate.t(), [module] | nil, PersonalFields.answers()) ::
+          {:ok, Aggregate.t(), PersonalFields.answers()} | {:error, :key_unknown}
+  def apply_event(%RecordedEvent{} = event, %Aggregate{} = state, nil, answers) do
     %RecordedEvent{data: data, stream_version: stream_version} = event
-    %Aggregate{application: application, aggregate_state: aggregate_state} = state
-    %Aggregate{aggregate_module: aggregate_module} = state
+    %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state
 
-    if in_fold?(data, fold) do
-      with {:ok, data, answers} <-
-             PersonalFields.decrypt_fold_event(application, event, answers) do
-        aggregate_state = apply_decrypted(aggregate_module, aggregate_state, data)
+    aggregate_state = aggregate_module.apply(aggregate_state, data)
 
-        {:ok, advance(state, stream_version, aggregate_state), answers}
-      end
-    else
-      aggregate_state = aggregate_module.apply(aggregate_state, data)
+    {:ok, advance(state, stream_version, aggregate_state), answers}
+  end
+
+  def apply_event(%RecordedEvent{} = event, %Aggregate{} = state, fold, answers)
+      when is_list(fold) do
+    %RecordedEvent{stream_version: stream_version} = event
+    %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state
+
+    with {:ok, data, answers} <- readable_data(event, state, fold, answers) do
+      aggregate_state = apply_redacted(aggregate_module, aggregate_state, data)
 
       {:ok, advance(state, stream_version, aggregate_state), answers}
+    end
+  end
+
+  defp readable_data(%RecordedEvent{data: data} = event, %Aggregate{} = state, fold, answers) do
+    if in_fold?(data, fold) do
+      PersonalFields.decrypt_fold_event(state.application, event, answers)
+    else
+      {:ok, data, answers}
     end
   end
 
   defp in_fold?(%module{}, fold), do: module in fold
   defp in_fold?(_data, _fold), do: false
 
-  defp apply_decrypted(aggregate_module, aggregate_state, data) do
+  defp apply_redacted(aggregate_module, aggregate_state, data) do
     aggregate_module.apply(aggregate_state, data)
   rescue
     error ->

@@ -509,7 +509,10 @@ defmodule Decree.Event.Handler do
   reasons show an `{:error, reason}` return reduced by
   `Decree.PersonalFields.RedactedError.reduce/1`. A handler must not put a declared value in
   an error reason, because decree reduces it in its own log and telemetry but hands it to
-  `c:error/3` as it stands.
+  `c:error/3` as it stands. A handler must not keep a declared value in its state either,
+  because decree hides it in its own output and hands it to the handler as it stands: once a
+  decrypted event's `handle/2` answers `{:ok, state}`, telemetry and `format_status/1` show
+  `:redacted`, and every later failure of that handler is treated as carrying the value.
 
   The `RecordedEvent` is never rewritten, so a failed event logged, passed to `c:error/3` or
   carried by telemetry holds ciphertext, as does `partition_by/2`'s.
@@ -1104,7 +1107,10 @@ defmodule Decree.Event.Handler do
     :batch_size,
     :batch_timeout,
     :batch_timer_ref,
-    :batch_buffer
+    :batch_buffer,
+    # Set once a decrypted event's `handle/2` answers a state: from then on the state can hold
+    # a decrypted value, and `handler_state` stays out of decree's own output.
+    sensitive_state: false
   ]
 
   @doc false
@@ -1477,6 +1483,17 @@ defmodule Decree.Event.Handler do
     end
   end
 
+  # `:sys.get_status/1` and a crash report print this.
+  @doc false
+  @impl GenServer
+  def format_status(%{state: %Handler{sensitive_state: true} = state} = status) do
+    status
+    |> Map.put(:state, %Handler{state | handler_state: :redacted})
+    |> Map.replace(:log, [])
+  end
+
+  def format_status(status), do: status
+
   defp handle_event(event, context \\ %{}, handler)
 
   # Ignore already seen event, at `concurrency: 1` only.
@@ -1513,21 +1530,25 @@ defmodule Decree.Event.Handler do
     telemetry_metadata = telemetry_metadata(event, context, state)
     start_time = telemetry_start(telemetry_metadata, :handle)
     decrypts? = decrypts?(event, state)
+    # `handle/2` gets the state in its metadata, so a failure on any event can hold it.
+    redacted? = decrypts? or state.sensitive_state
 
-    case delegate_event_to_handler(event, decrypts?, state) do
+    case delegate_event_to_handler(event, decrypts?, redacted?, state) do
       :ok ->
         telemetry_stop(start_time, telemetry_metadata, :handle)
 
         confirm_receipt(event, state)
 
       {:ok, handler_state} ->
+        state = %Handler{state | handler_state: handler_state, sensitive_state: redacted?}
+
         telemetry_stop(
           start_time,
-          Map.put(telemetry_metadata, :handler_state, handler_state),
+          Map.put(telemetry_metadata, :handler_state, shown_handler_state(state)),
           :handle
         )
 
-        confirm_receipt(event, %Handler{state | handler_state: handler_state})
+        confirm_receipt(event, state)
 
       {:error, :already_seen_event} ->
         telemetry_stop(
@@ -1539,14 +1560,14 @@ defmodule Decree.Event.Handler do
         confirm_receipt(event, state)
 
       {:error, reason} = error ->
-        shown_reason = shown_reason(reason, decrypts?)
+        shown_reason = shown_reason(reason, redacted?)
 
         log_event_error({:error, shown_reason}, event, state)
         telemetry_stop(start_time, Map.put(telemetry_metadata, :error, shown_reason), :handle)
 
         failure_context = build_failure_context(event, context, state)
         retry_fun = fn context, state -> handle_event(event, context, state) end
-        handle_event_error(error, event, failure_context, state, retry_fun, decrypts?)
+        handle_event_error(error, event, failure_context, state, retry_fun, redacted?)
 
       {:error, reason, stacktrace} ->
         log_event_error({:error, reason, stacktrace}, event, state)
@@ -1554,10 +1575,10 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(event, context, stacktrace, state)
         retry_fun = fn context, state -> handle_event(event, context, state) end
-        handle_event_error({:error, reason}, event, failure_context, state, retry_fun, decrypts?)
+        handle_event_error({:error, reason}, event, failure_context, state, retry_fun, redacted?)
 
       invalid ->
-        shown_value = if decrypts?, do: ":redacted", else: inspect(invalid, pretty: true)
+        shown_value = if redacted?, do: ":redacted", else: inspect(invalid, pretty: true)
 
         Logger.error(
           describe(state) <>
@@ -1578,7 +1599,7 @@ defmodule Decree.Event.Handler do
         failure_context = build_failure_context(event, context, state)
 
         next = fn context, state -> handle_event(event, context, state) end
-        handle_event_error(error, event, failure_context, state, next, decrypts?)
+        handle_event_error(error, event, failure_context, state, next, redacted?)
     end
   end
 
@@ -1689,7 +1710,7 @@ defmodule Decree.Event.Handler do
     end
   end
 
-  defp delegate_event_to_handler(%RecordedEvent{} = event, false, %Handler{} = state) do
+  defp delegate_event_to_handler(%RecordedEvent{} = event, false, false, %Handler{} = state) do
     %RecordedEvent{data: data} = event
     %Handler{handler_module: handler_module} = state
 
@@ -1707,13 +1728,13 @@ defmodule Decree.Event.Handler do
   # The decrypted copy goes to `handle/2` and nowhere else: from here on, anything that leaves
   # this function can hold what it failed on. A decrypt error is the delegate's result, and
   # `handle/2` is not called.
-  defp delegate_event_to_handler(%RecordedEvent{} = event, true, %Handler{} = state) do
+  defp delegate_event_to_handler(%RecordedEvent{} = event, decrypts?, true, %Handler{} = state) do
     %Handler{application: application, handler_module: handler_module} = state
 
     try do
-      with {:ok, %RecordedEvent{data: data} = decrypted} <-
-             PersonalFields.decrypt_recorded_event(application, event) do
-        handler_module.handle(data, enrich_metadata(decrypted, state))
+      with {:ok, %RecordedEvent{data: data} = readable} <-
+             readable_event(event, decrypts?, application) do
+        handler_module.handle(data, enrich_metadata(readable, state))
       end
     rescue
       error ->
@@ -1723,6 +1744,12 @@ defmodule Decree.Event.Handler do
       :throw, value -> throw(RedactedError.reduce(value))
     end
   end
+
+  defp readable_event(event, true, application) do
+    PersonalFields.decrypt_recorded_event(application, event)
+  end
+
+  defp readable_event(event, false, _application), do: {:ok, event}
 
   defp build_failure_context(
          maybe_failed_event,
@@ -1768,7 +1795,7 @@ defmodule Decree.Event.Handler do
          %FailureContext{} = failure_context,
          %Handler{} = state,
          retry_fun,
-         decrypted? \\ false
+         redacted? \\ false
        ) do
     data =
       case maybe_failed_event do
@@ -1813,7 +1840,7 @@ defmodule Decree.Event.Handler do
         confirm_receipt(maybe_failed_event, state)
 
       {:stop, reason} ->
-        reason = shown_reason(reason, decrypted?)
+        reason = shown_reason(reason, redacted?)
 
         Logger.warning(describe(state) <> " has requested to stop: #{inspect(reason)}")
 
@@ -1821,14 +1848,14 @@ defmodule Decree.Event.Handler do
         throw({:error, reason})
 
       invalid ->
-        shown_response = shown_reason(invalid, decrypted?)
+        shown_response = shown_reason(invalid, redacted?)
 
         Logger.warning(
           describe(state) <> " returned an invalid error response: #{inspect(shown_response)}"
         )
 
         # Stop event handler with original error
-        throw(if decrypted?, do: {:error, shown_reason(elem(error, 1), true)}, else: error)
+        throw(if redacted?, do: {:error, shown_reason(elem(error, 1), true)}, else: error)
     end
   end
 
@@ -2024,19 +2051,21 @@ defmodule Decree.Event.Handler do
     %Handler{
       application: application,
       handler_name: handler_name,
-      handler_module: handler_module,
-      handler_state: handler_state
+      handler_module: handler_module
     } = state
 
     %{
       application: application,
       handler_name: handler_name,
       handler_module: handler_module,
-      handler_state: handler_state,
+      handler_state: shown_handler_state(state),
       context: context,
       recorded_event: recorded_event
     }
   end
+
+  defp shown_handler_state(%Handler{sensitive_state: true}), do: :redacted
+  defp shown_handler_state(%Handler{handler_state: handler_state}), do: handler_state
 
   defp consistency(opts) do
     case opts[:consistency] || Application.get_env(:decree, :default_consistency, :eventual) do

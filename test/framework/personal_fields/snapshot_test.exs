@@ -155,6 +155,21 @@ defmodule Decree.PersonalFields.SnapshotTest do
       assert [%{"secret" => %{"$pf" => 1}, "other" => 1}] = protected.entries
     end
 
+    test "an entry holding both key forms records no snapshot", context do
+      %{conn: conn, stream: stream, subject: subject} = context
+
+      links = [%{:provider_uid => "atom-form", "provider_uid" => "string-form"}]
+
+      assert take(stream, account(subject, links)) == {:error, :invalid_personal_state}
+      assert stored_snapshot(stream) == {:error, :snapshot_not_found}
+      assert rows(conn, "snapshots", "data") == []
+      assert Keys.lookups(subject) == 0
+
+      links = [%{:provider_uid => nil, "provider_uid" => "string-form"}]
+
+      assert take(stream, account(subject, links)) == {:error, :invalid_personal_state}
+    end
+
     test "an aggregate with no personal state is untouched", %{stream: stream} do
       state = %Unlisted{id: "1", email: "listed-nowhere"}
 

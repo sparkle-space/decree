@@ -12,7 +12,10 @@ defmodule Decree.PersonalFields do
   ## What each path does
 
     - **Append.** `Decree.Event.Append.prepare/4` looks up each subject of each event, drops
-      erased values, takes the tags from the plaintext that will be stored, then encrypts.
+      erased values, takes the tags from the plaintext that will be stored, then encrypts. An
+      aggregate's append runs it. `Decree.EventStore.append_to_stream/5` and `Decree.Store` do
+      not: an application's own direct append of a declared event stores what it is given, so
+      a build check of its own must fence that.
 
     - **Delivery.** `Decree.Event.Handler` decrypts an event for a handler whose `handle/2`
       names it in a clause head, and for no other. The `RecordedEvent` is never rewritten.
@@ -268,14 +271,12 @@ defmodule Decree.PersonalFields do
   ## Fold
 
   @doc false
-  # The events an aggregate's state reads. An aggregate that lists none pays this one check.
-  @spec fold_events(module) :: [module]
+  # The events an aggregate's state reads, or `nil` for an aggregate that doesn't use
+  # `Decree.PersonalFields.Aggregate`. Read once per fold, because an aggregate that uses it can
+  # hold decrypted state whatever it lists, and one that doesn't pays this one check.
+  @spec fold_events(module) :: [module] | nil
   def fold_events(aggregate_module) do
-    if exports?(aggregate_module, :__personal_fold__) do
-      aggregate_module.__personal_fold__()
-    else
-      []
-    end
+    if adopted?(aggregate_module), do: aggregate_module.__personal_fold__()
   end
 
   @doc false
@@ -360,8 +361,18 @@ defmodule Decree.PersonalFields do
   end
 
   defp encrypt_entry(entry, entry_key, context, answers) when is_map(entry) do
-    form = entry_form(entry, entry_key)
+    case key_forms(entry, entry_key) do
+      [form] -> encrypt_entry_form(entry, form, context, answers)
+      # One value would go in the clear beside the other's envelope.
+      [_atom, _string] -> {:error, :invalid_personal_state}
+    end
+  end
 
+  defp encrypt_entry(_entry, _entry_key, _context, _answers) do
+    {:error, :invalid_personal_state}
+  end
+
+  defp encrypt_entry_form(entry, form, context, answers) do
     case value(entry, form) do
       nil ->
         {:ok, entry, answers}
@@ -371,10 +382,6 @@ defmodule Decree.PersonalFields do
           {:ok, Map.put(entry, form, envelope), answers}
         end
     end
-  end
-
-  defp encrypt_entry(_entry, _entry_key, _context, _answers) do
-    {:error, :invalid_personal_state}
   end
 
   defp encrypt_state_value(_value, {_application, nil, _location}, _answers) do

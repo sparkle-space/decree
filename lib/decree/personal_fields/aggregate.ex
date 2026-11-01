@@ -29,10 +29,13 @@ defmodule Decree.PersonalFields.Aggregate do
   It generates `__personal_fold__/0`, `__personal_state__/0` and `__personal_state_subject__/0`.
   An aggregate without it pays one `function_exported?/3` per fold.
 
-  An aggregate that uses this module holds decrypted values in memory, so an exception raised
-  while it folds or executes reaches logs and telemetry as a
-  `Decree.PersonalFields.RedactedError`, and an exit or a throw from `apply/2` on a decrypted
-  event leaves reduced.
+  A list entry holding its key in both atom and string form records no snapshot.
+
+  An aggregate that uses this module can hold decrypted values in memory, from an event or from
+  a snapshot, whatever `@personal_fold` lists. So on every `apply/2`, listed event or not, and
+  on `execute/2` and `before_execute`, a raise reaches logs and telemetry as a
+  `Decree.PersonalFields.RedactedError`, and an exit or a throw leaves reduced by
+  `Decree.PersonalFields.RedactedError.reduce/1`. An aggregate that doesn't use it is untouched.
   """
 
   @doc false

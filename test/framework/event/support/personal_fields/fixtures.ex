@@ -243,10 +243,18 @@ defmodule Decree.PersonalFields.Fixtures.Events do
     end
   end
 
-  # Declares nothing, and `apply/2` fails on it as its `mode` says, not redacted.
+  # Declares nothing, and is off every fold list. `apply/2` fails on it as its `mode` says,
+  # with the note it carries: redacted on `Account`, and not on `PlainLedger`.
   defmodule PlainPoison do
     @derive Jason.Encoder
     defstruct [:mode, :note]
+  end
+
+  # Declares nothing, and is off every fold list. `apply/2` fails on it as its `mode` says,
+  # with the state's decrypted email in hand.
+  defmodule StateFails do
+    @derive Jason.Encoder
+    defstruct [:mode]
   end
 
   defmodule PassedThrough do
@@ -315,6 +323,21 @@ defmodule Decree.PersonalFields.Fixtures.Commands do
   defmodule DetailOnState do
     defstruct [:account_id]
   end
+
+  # `execute/2` fails as `mode` says, with the state's email in hand.
+  defmodule FailExecute do
+    defstruct [:account_id, :mode]
+  end
+
+  # `before_execute` fails as `mode` says, with the state's email in hand.
+  defmodule FailBefore do
+    defstruct [:account_id, :mode]
+  end
+
+  # For `PlainLedger`, which uses no personal fields.
+  defmodule PlainFail do
+    defstruct [:account_id, :mode, :note]
+  end
 end
 
 defmodule Decree.PersonalFields.Fixtures.Account do
@@ -327,6 +350,8 @@ defmodule Decree.PersonalFields.Fixtures.Account do
     DetailOnState,
     Emit,
     ExitNow,
+    FailBefore,
+    FailExecute,
     Hold,
     MatchState,
     RaiseNow
@@ -339,6 +364,7 @@ defmodule Decree.PersonalFields.Fixtures.Account do
     Poison,
     Registered,
     Renamed,
+    StateFails,
     TwoSubjects,
     Unfolded
   }
@@ -376,6 +402,18 @@ defmodule Decree.PersonalFields.Fixtures.Account do
     LeakyFailures.fail("database", email)
   end
 
+  def execute(%__MODULE__{email: email}, %FailExecute{mode: mode}) do
+    LeakyFailures.fail(mode, email)
+    []
+  end
+
+  def execute(%__MODULE__{}, %FailBefore{}), do: []
+
+  def before_failing(%__MODULE__{email: email}, %{command: %FailBefore{mode: mode}}) do
+    LeakyFailures.fail(mode, email)
+    :ok
+  end
+
   defp check(%__MODULE__{email: nil}), do: []
 
   def apply(%__MODULE__{} = state, %Registered{user_id: user_id, email: email}) do
@@ -397,6 +435,12 @@ defmodule Decree.PersonalFields.Fixtures.Account do
 
   def apply(%__MODULE__{} = state, %PlainPoison{mode: mode, note: note}) do
     LeakyFailures.fail(mode, note)
+
+    state
+  end
+
+  def apply(%__MODULE__{email: email} = state, %StateFails{mode: mode}) do
+    LeakyFailures.fail(mode, email)
 
     state
   end
@@ -424,26 +468,84 @@ defmodule Decree.PersonalFields.Fixtures.Account do
   defp seen(%__MODULE__{seen: seen} = state), do: %__MODULE__{state | seen: seen + 1}
 end
 
+defmodule Decree.PersonalFields.Fixtures.StateOnly do
+  @moduledoc false
+
+  # Lists state and no event: its value can only come from a snapshot.
+
+  use Decree.PersonalFields.Aggregate
+
+  alias Decree.PersonalFields.Fixtures.Events.StateFails
+  alias Decree.PersonalFields.Fixtures.LeakyFailures
+
+  @personal_state [email: :self]
+  @personal_state_subject :id
+
+  @derive Jason.Encoder
+  defstruct [:id, :email]
+
+  def apply(%__MODULE__{email: email} = state, %StateFails{mode: mode}) do
+    LeakyFailures.fail(mode, email)
+
+    state
+  end
+
+  def apply(%__MODULE__{} = state, _event), do: state
+end
+
+defmodule Decree.PersonalFields.Fixtures.PlainLedger do
+  @moduledoc false
+
+  # Uses no personal fields, so nothing here is redacted.
+
+  alias Decree.PersonalFields.Fixtures.Commands.PlainFail
+  alias Decree.PersonalFields.Fixtures.Events.PlainPoison
+  alias Decree.PersonalFields.Fixtures.LeakyFailures
+
+  defstruct [:note]
+
+  def execute(%__MODULE__{}, %PlainFail{mode: mode, note: note}) do
+    LeakyFailures.fail(mode, note)
+    []
+  end
+
+  def apply(%__MODULE__{} = state, %PlainPoison{mode: mode, note: note}) do
+    LeakyFailures.fail(mode, note)
+
+    state
+  end
+
+  def apply(%__MODULE__{} = state, _event), do: state
+end
+
 defmodule Decree.PersonalFields.Fixtures.Router do
   @moduledoc false
 
   use Decree.Commands.Router
 
-  alias Decree.PersonalFields.Fixtures.Account
+  alias Decree.PersonalFields.Fixtures.{Account, PlainLedger}
 
   alias Decree.PersonalFields.Fixtures.Commands.{
     ClauseOnState,
     DetailOnState,
     Emit,
     ExitNow,
+    FailBefore,
+    FailExecute,
     Hold,
     MatchState,
+    PlainFail,
     RaiseNow
   }
 
   identify Account, by: :account_id
+  identify PlainLedger, by: :account_id
 
-  dispatch [ClauseOnState, DetailOnState, Emit, ExitNow, Hold, MatchState, RaiseNow], to: Account
+  dispatch [ClauseOnState, DetailOnState, Emit, ExitNow, FailExecute, Hold, MatchState, RaiseNow],
+    to: Account
+
+  dispatch FailBefore, to: Account, before_execute: :before_failing
+  dispatch PlainFail, to: PlainLedger
 end
 
 defmodule Decree.PersonalFields.Fixtures.App do
@@ -541,6 +643,70 @@ defmodule Decree.PersonalFields.Fixtures.Handler do
 
     :ok
   end
+end
+
+defmodule Decree.PersonalFields.Fixtures.StatefulHandler do
+  @moduledoc false
+
+  # Keeps a decrypted value as its state, as a handler must not, and reports the state it is
+  # given. A later event fails as its note says, with that state in hand.
+
+  use Decree.Event.Handler,
+    application: Decree.PersonalFields.Fixtures.App,
+    name: __MODULE__
+
+  alias Decree.PersonalFields.Fixtures.Events.{Plain, Registered}
+  alias Decree.PersonalFields.Fixtures.{Keys, LeakyFailures}
+
+  def handle(%Registered{email: email}, _metadata), do: {:ok, email}
+
+  def handle(%Plain{note: "ok"}, %{state: state}) do
+    Keys.notify({:state_given, state})
+
+    :ok
+  end
+
+  def handle(%Plain{note: "keep"}, %{state: state}), do: {:ok, state}
+  def handle(%Plain{note: mode}, %{state: state}), do: LeakyFailures.fail(mode, state)
+end
+
+defmodule Decree.PersonalFields.Fixtures.StatefulReporting do
+  @moduledoc false
+
+  # The same, with an `error/3` that reports the state decree hands it, and stops.
+
+  use Decree.Event.Handler,
+    application: Decree.PersonalFields.Fixtures.App,
+    name: __MODULE__
+
+  alias Decree.Event.FailureContext
+  alias Decree.PersonalFields.Fixtures.Events.{Plain, Registered}
+  alias Decree.PersonalFields.Fixtures.{Keys, LeakyFailures}
+
+  def handle(%Registered{email: email}, _metadata), do: {:ok, email}
+  def handle(%Plain{note: mode}, %{state: state}), do: LeakyFailures.fail(mode, state)
+
+  def error(_error, _event, %FailureContext{handler_state: handler_state}) do
+    Keys.notify({:error_state, handler_state})
+
+    {:stop, :handed}
+  end
+end
+
+defmodule Decree.PersonalFields.Fixtures.PlainStateHandler do
+  @moduledoc false
+
+  # Keeps state from an event it was not decrypted for: nothing changes for it.
+
+  use Decree.Event.Handler,
+    application: Decree.PersonalFields.Fixtures.App,
+    name: __MODULE__
+
+  alias Decree.PersonalFields.Fixtures.Events.Plain
+  alias Decree.PersonalFields.Fixtures.LeakyFailures
+
+  def handle(%Plain{note: "ok"}, _metadata), do: {:ok, "kept-state"}
+  def handle(%Plain{note: mode}, %{state: state}), do: LeakyFailures.fail(mode, state)
 end
 
 defmodule Decree.PersonalFields.Fixtures.OpaqueHandler do
