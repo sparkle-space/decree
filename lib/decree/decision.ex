@@ -155,6 +155,14 @@ defmodule Decree.Decision do
   `after_failure` and the answer as a `Decree.PersonalFields.RedactedError` with a scrubbed
   stacktrace. A decision that doesn't use it keeps the exception.
 
+  An `{:error, reason}` from `c:followup_query/3`, `c:admit/2` or `c:decide/2` goes the same
+  places, so on such a decision `Decree.PersonalFields.RedactedError.reduce/1` reduces its
+  reason first: a reason a handler matches on is an atom, or a tuple whose head is one, and
+  the rest of a tuple is `:redacted`. `c:query/2` sees nothing decrypted, so its reason
+  stands, as does every reason on a decision that doesn't use it. `Decree.Decision.Assertions`
+  runs no dispatch and answers the callback's reason whole, where a handler gets the reduced
+  one.
+
   ## Answers
 
   A raise from any callback, or from a `Decree.Event.Tags` implementation, is rescued, and

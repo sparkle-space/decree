@@ -250,7 +250,7 @@ defmodule Decree.Decision.Dispatch do
           {:ok, merged, [first], answers}
 
         {:error, _reason} = error ->
-          error
+          callback_answer(dispatch, error)
 
         items ->
           with {:ok, parsed} <- Read.parse(items),
@@ -335,12 +335,24 @@ defmodule Decree.Decision.Dispatch do
   end
 
   # Step 6.
-  defp admit(%__MODULE__{decision: decision, context: context}, state) do
+  defp admit(%__MODULE__{decision: decision, context: context} = dispatch, state) do
     case decision.admit(state, context.command) do
       :ok -> :ok
-      {:error, _reason} = error -> error
+      {:error, _reason} = error -> callback_answer(dispatch, error)
     end
   end
+
+  # An answer from a callback that saw decrypted events or state: its reason is returned to the
+  # caller and goes to `after_failure` and telemetry, so an adopted decision's is reduced, as an
+  # exit's is. In the steps, not in `shape/1`: `Decree.Decision.Assertions` shares that, with no
+  # logs or telemetry to keep a value from.
+  defp callback_answer(%__MODULE__{fold: nil}, answer), do: answer
+
+  defp callback_answer(%__MODULE__{}, {:error, reason}) do
+    {:error, RedactedError.reduce(reason)}
+  end
+
+  defp callback_answer(%__MODULE__{}, answer), do: answer
 
   # Step 7: any command match refuses, and the mode is what step 8 takes.
   defp classify(%Merged{} = merged, _tags) do
@@ -352,7 +364,8 @@ defmodule Decree.Decision.Dispatch do
 
   # Step 8.
   defp decide(:open, %__MODULE__{decision: decision} = dispatch, state, merged, reads) do
-    with {:ok, shape} <- shape(decision.decide(state, dispatch.context.command)),
+    with {:ok, shape} <-
+           shape(callback_answer(dispatch, decision.decide(state, dispatch.context.command))),
          events = events_of(shape),
          :ok <- within_batch(dispatch, events),
          # Before anything commits: a raise here has to leave the store as it was.

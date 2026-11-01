@@ -34,6 +34,7 @@ defmodule Decree.Decision.PersonalFieldsTest do
   @read [:decree, :decision, :read]
   @retry [:decree, :decision, :retry]
   @refused [:decree, :decision, :refused]
+  @dispatch_stop [:decree, :application, :dispatch, :stop]
 
   @every_event [
     @start,
@@ -700,6 +701,108 @@ defmodule Decree.Decision.PersonalFieldsTest do
         end)
 
       assert log =~ planted
+    end
+  end
+
+  defp refusing(:followup, answer, tag) do
+    [query: reading(tag), followup: fn _command, _tag_context, _events -> answer end]
+  end
+
+  defp refusing(:admit, answer, tag) do
+    [query: reading(tag), admit: fn _state, _command -> answer end]
+  end
+
+  defp refusing(:decide, answer, tag) do
+    [query: reading(tag), decide: fn _state, _command -> answer end]
+  end
+
+  describe "an error reason on a decision that lists its fold" do
+    for callback <- [:followup, :admit, :decide] do
+      test "from `#{callback}` holds no value, anywhere it goes", %{tag: tag} do
+        secret = email("reason-" <> UUID.uuid4())
+        script = refusing(unquote(callback), {:error, {:invalid, secret}}, tag)
+
+        assert {:error, {:invalid, :redacted}} =
+                 PersonalApp.dispatch(scripted(script, Personal))
+
+        pipeline = after_failure()
+
+        assert pipeline.response == {:error, {:invalid, :redacted}}
+        assert pipeline.assigns.error == {:invalid, :redacted}
+        refute leaks?(pipeline, secret)
+
+        assert_received {:telemetry, @stop, _, %{error: {:invalid, :redacted}} = metadata}
+        refute leaks?(metadata, secret)
+
+        assert_received {:telemetry, @dispatch_stop, _,
+                         %{error: {:invalid, :redacted}} = metadata}
+
+        refute leaks?(metadata, secret)
+
+        refute leaks?(flush_telemetry(), secret)
+      end
+
+      test "from `#{callback}` stays when it is an atom", %{tag: tag} do
+        script = refusing(unquote(callback), {:error, :email_taken}, tag)
+
+        assert {:error, :email_taken} = PersonalApp.dispatch(scripted(script, Personal))
+        assert_received {:telemetry, @stop, _, %{error: :email_taken}}
+      end
+
+      test "from `#{callback}` keeps a tuple's head", %{tag: tag} do
+        reason = {:email_taken, email("head-" <> UUID.uuid4()), :more}
+        script = refusing(unquote(callback), {:error, reason}, tag)
+
+        assert {:error, {:email_taken, :redacted}} =
+                 PersonalApp.dispatch(scripted(script, Personal))
+      end
+
+      test "from `#{callback}` is its type for an exception, and nothing else for a value",
+           %{tag: tag} do
+        secret = email("reason-" <> UUID.uuid4())
+        command = scripted(refusing(unquote(callback), {:error, secret}, tag), Personal)
+
+        assert {:error, :redacted} = PersonalApp.dispatch(command)
+
+        exception = %ArgumentError{message: secret}
+        command = scripted(refusing(unquote(callback), {:error, exception}, tag), Personal)
+
+        assert {:error, ArgumentError} = PersonalApp.dispatch(command)
+      end
+    end
+
+    test "from `query/2` stands, which holds nothing decrypted" do
+      reason = {:invalid, "kept-" <> UUID.uuid4()}
+      query = fn _command, _tag_context -> {:error, reason} end
+
+      assert {:error, ^reason} = PersonalApp.dispatch(scripted([query: query], Personal))
+    end
+
+    test "leaves `:duplicate` its answer", %{tag: tag} do
+      command = scripted(refusing(:decide, :duplicate, tag), Personal)
+
+      assert {:error, :duplicate_command} = PersonalApp.dispatch(command)
+    end
+
+    test "leaves a refusal of preparing as it stands", %{tag: tag} do
+      command = scripted(refusing(:decide, %Registered{email: email("nobody")}, tag), Personal)
+
+      assert {:error, :personal_subject_missing} = PersonalApp.dispatch(command)
+    end
+  end
+
+  describe "an error reason on a decision that doesn't list its fold" do
+    for callback <- [:followup, :admit, :decide] do
+      test "from `#{callback}` stays whole", %{tag: tag} do
+        reason = {:invalid, "kept-" <> UUID.uuid4()}
+        command = scripted(refusing(unquote(callback), {:error, reason}, tag), Bare)
+
+        assert {:error, ^reason} = PersonalApp.dispatch(command)
+
+        assert after_failure().response == {:error, reason}
+        assert_received {:telemetry, @stop, _, %{error: ^reason}}
+        assert_received {:telemetry, @dispatch_stop, _, %{error: ^reason}}
+      end
     end
   end
 
