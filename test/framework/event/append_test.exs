@@ -1,0 +1,147 @@
+defmodule Decree.Event.AppendTest do
+  use ExUnit.Case, async: true
+
+  alias Decree.Aggregates.ExecutionContext
+  alias Decree.Event.Append
+  alias Decree.Event.TagContext
+  alias Decree.Event.Tagging.Commands.Emit
+  alias Decree.Event.Tagging.Events.{Refused, Tagged, Unimplemented}
+  alias Decree.EventStore.Adapters.EventStore.Mapper
+  alias Decree.EventStore.EventData
+  alias Decree.UUID
+
+  defmodule Bare do
+    defstruct [:_id]
+  end
+
+  @kind "command_kind:Decree.Event.Tagging.Commands.Emit"
+
+  defp data(event, metadata \\ %{}), do: %EventData{data: event, metadata: metadata}
+
+  defp context(command, fields \\ []) do
+    struct!(%ExecutionContext{command: command}, fields)
+  end
+
+  test "the tag context holds the metadata and the command, and nothing else" do
+    assert %TagContext{} |> Map.from_struct() |> Map.keys() |> Enum.sort() == [
+             :command,
+             :metadata
+           ]
+  end
+
+  test "the event's own tags come first, the framework's after" do
+    command_id = UUID.uuid4()
+    command = %Emit{user_id: UUID.uuid4(), command_id: command_id}
+
+    assert {:ok, [%EventData{tags: tags}]} =
+             Append.prepare(
+               [data(%Tagged{tags: ["a:1"]})],
+               context(command, identity: :user_id)
+             )
+
+    assert tags == ["a:1", "command:" <> command_id, @kind, "user:" <> command.user_id]
+  end
+
+  test "keeps every other field of the event data, and the order of the events" do
+    first = %EventData{
+      causation_id: "cause",
+      correlation_id: "correlation",
+      event_type: "type",
+      data: %Tagged{note: "first"},
+      metadata: %{"a" => 1}
+    }
+
+    second = data(%Unimplemented{note: "second"})
+
+    assert {:ok, [prepared_first, prepared_second]} =
+             Append.prepare([first, second], context(%Emit{}))
+
+    assert prepared_first == %EventData{first | tags: [@kind]}
+    assert prepared_second == %EventData{second | tags: [@kind]}
+  end
+
+  test "is pure: the same input gives the same answer, and the input is untouched" do
+    metadata = %{"who" => "alice"}
+    context = context(%Emit{user_id: UUID.uuid4()}, identity: :user_id, metadata: metadata)
+    event_data = [data(%Tagged{tags: ["a:1"]}, metadata)]
+
+    assert {:ok, prepared} = Append.prepare(event_data, context)
+    assert {:ok, ^prepared} = Append.prepare(event_data, context)
+
+    assert [%EventData{tags: []}] = event_data
+    assert context.metadata == metadata
+    assert [%EventData{metadata: ^metadata}] = prepared
+  end
+
+  test "the stored tags reach the store's event data" do
+    assert %Decree.Store.EventData{tags: ["a:1"]} =
+             Mapper.to_event_data(%EventData{data: %Tagged{}, tags: ["a:1"]})
+  end
+
+  test "the first error stops and is returned as it stands" do
+    event_data = [
+      data(%Tagged{tags: ["a:1"]}),
+      data(%Refused{reason: "first"}),
+      data(%Refused{reason: "second"})
+    ]
+
+    assert Append.prepare(event_data, context(%Emit{})) == {:error, {:refused, "first"}}
+  end
+
+  test "an implementation answering neither shape raises" do
+    event_data = [data(%Tagged{tags: "not a list"})]
+
+    assert_raise CaseClauseError, fn -> Append.prepare(event_data, context(%Emit{})) end
+  end
+
+  describe "the key tags" do
+    for {name, value} <- [{"nil", nil}, {"empty", ""}, {"a number", 1}, {"an atom", :id}] do
+      test "are absent for a value that is #{name}" do
+        command = %Emit{command_id: unquote(value), correlation_id: unquote(value)}
+
+        assert {:ok, [%EventData{tags: [@kind]}]} =
+                 Append.prepare([data(%Unimplemented{})], context(command))
+      end
+    end
+
+    test "are absent for a command with no such field" do
+      command = %Bare{}
+
+      assert {:ok, [%EventData{tags: ["command_kind:Decree.Event.AppendTest.Bare"]}]} =
+               Append.prepare([data(%Unimplemented{})], context(command))
+    end
+
+    test "never read the context's correlation or causation ids" do
+      context = context(%Emit{}, correlation_id: UUID.uuid4(), causation_id: UUID.uuid4())
+
+      assert {:ok, [%EventData{tags: [@kind]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+    end
+  end
+
+  describe "the stream tag" do
+    test "is absent from a context built with no identity" do
+      command = %Emit{user_id: UUID.uuid4()}
+
+      assert {:ok, [%EventData{tags: [@kind]}]} =
+               Append.prepare([data(%Unimplemented{})], context(command))
+    end
+
+    test "is absent for a field whose stem is empty" do
+      command = %Bare{_id: UUID.uuid4()}
+
+      assert {:ok, [%EventData{tags: ["command_kind:Decree.Event.AppendTest.Bare"]}]} =
+               Append.prepare([data(%Unimplemented{})], context(command, identity: :_id))
+    end
+
+    test "takes its kind from `stream_tag`, over the field's stem" do
+      user_id = UUID.uuid4()
+      context = context(%Emit{user_id: user_id}, identity: :user_id, stream_tag: :member)
+
+      assert {:ok, [%EventData{tags: [@kind, tag]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+
+      assert tag == "member:" <> user_id
+    end
+  end
+end
