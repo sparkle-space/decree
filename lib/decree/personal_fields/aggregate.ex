@@ -31,7 +31,8 @@ defmodule Decree.PersonalFields.Aggregate do
 
   An aggregate that uses this module holds decrypted values in memory, so an exception raised
   while it folds or executes reaches logs and telemetry as a
-  `Decree.PersonalFields.RedactedError`.
+  `Decree.PersonalFields.RedactedError`, and an exit or a throw from `apply/2` on a decrypted
+  event leaves reduced.
   """
 
   @doc false

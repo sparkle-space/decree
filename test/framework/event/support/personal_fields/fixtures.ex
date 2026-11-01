@@ -201,6 +201,11 @@ defmodule Decree.PersonalFields.Fixtures.Events do
       end
 
       def tags(%{mode: "invalid", email: email}, _context), do: {:ok, email}
+      def tags(%{mode: "exit", email: email}, _context), do: exit({:gave_up, email})
+      def tags(%{mode: "throw", email: email}, _context), do: throw({:thrown, email})
+      def tags(%{mode: "error", email: email}, _context), do: {:error, {:refused, email}}
+      def tags(%{mode: "bare_error", email: email}, _context), do: {:error, email}
+      def tags(%{mode: "atom_error"}, _context), do: {:error, :refused}
       def tags(%{email: nil}, _context), do: {:ok, []}
       def tags(%{email: email}, _context), do: {:ok, ["digest:" <> digest(email)]}
 
@@ -225,14 +230,23 @@ defmodule Decree.PersonalFields.Fixtures.Events do
     end
   end
 
-  # A plain event with a tag implementation that raises, unredacted.
+  # A plain event whose tag implementation fails as its `mode` says, and is not redacted.
   defmodule RaisingPlain do
     @derive Jason.Encoder
-    defstruct [:user_id]
+    defstruct [:user_id, :mode, :note]
 
     defimpl Tags do
+      def tags(%{mode: "exit", note: note}, _context), do: exit({:gave_up, note})
+      def tags(%{mode: "throw", note: note}, _context), do: throw({:thrown, note})
+      def tags(%{mode: "error", note: note}, _context), do: {:error, {:refused, note}}
       def tags(_event, _context), do: raise(ArgumentError, "plain raise")
     end
+  end
+
+  # Declares nothing, and `apply/2` fails on it as its `mode` says, not redacted.
+  defmodule PlainPoison do
+    @derive Jason.Encoder
+    defstruct [:mode, :note]
   end
 
   defmodule PassedThrough do
@@ -321,6 +335,7 @@ defmodule Decree.PersonalFields.Fixtures.Account do
   alias Decree.PersonalFields.Fixtures.Events.{
     Linked,
     PassedThrough,
+    PlainPoison,
     Poison,
     Registered,
     Renamed,
@@ -376,6 +391,12 @@ defmodule Decree.PersonalFields.Fixtures.Account do
 
   def apply(%__MODULE__{} = state, %Poison{mode: mode, email: email}) do
     LeakyFailures.fail(mode, email)
+
+    state
+  end
+
+  def apply(%__MODULE__{} = state, %PlainPoison{mode: mode, note: note}) do
+    LeakyFailures.fail(mode, note)
 
     state
   end

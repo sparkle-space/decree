@@ -35,10 +35,11 @@ defmodule Decree.Event.Append do
   retry derives afresh from plaintext. It runs once per attempt. A lookup aside, it is
   deterministic: the same event and context give the same tags.
 
-  The first `{:error, reason}` stops and is returned as it stands. A raise from an
-  implementation is not rescued here: the aggregate answers it, with its state unchanged. On an
-  event with a declaration it is re-raised as a `Decree.PersonalFields.RedactedError`, because
-  it can carry the value it failed on.
+  The first `{:error, reason}` stops and is returned. A raise from an implementation is not
+  rescued here: the aggregate answers it, with its state unchanged. On an event with a
+  declaration anything leaving an implementation can carry the value it failed on, so its
+  error reason, exit and throw are reduced by `Decree.PersonalFields.RedactedError.reduce/1`,
+  and a raise becomes a `Decree.PersonalFields.RedactedError`.
 
   ## Framework tags
 
@@ -92,11 +93,18 @@ defmodule Decree.Event.Append do
     tags(data, context)
   end
 
+  # The event holds its plaintext here, and anything leaving this function can hold it too.
   defp event_tags(%EventData{} = data, _plan, %ExecutionContext{} = context) do
-    tags(data, context)
+    case tags(data, context) do
+      {:error, reason} -> {:error, RedactedError.reduce(reason)}
+      {:ok, tags} -> {:ok, tags}
+    end
   rescue
     error ->
       reraise RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)
+  catch
+    :exit, reason -> exit(RedactedError.reduce(reason))
+    :throw, value -> throw(RedactedError.reduce(value))
   end
 
   # The tag context's metadata is this event's copy, after the drop and before the encrypt.

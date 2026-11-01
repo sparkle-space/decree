@@ -23,6 +23,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
     Linked,
     MetadataOnly,
     Plain,
+    PlainPoison,
     Poison,
     Registered,
     Unfolded
@@ -417,6 +418,85 @@ defmodule Decree.PersonalFields.RehydrationTest do
         assert log =~ "details redacted"
         refute log =~ "secret.example"
       end
+    end
+
+    for {mode, reason} <- [
+          {"exit", {:gave_up, :redacted}},
+          {"throw", {:bad_return_value, {:error, :redacted}}}
+        ] do
+      test "(#{mode}) from `apply/2` on the dispatch path is reduced", context do
+        %{stream: stream, subject: subject} = context
+        store_poison(stream, subject, unquote(mode))
+
+        log =
+          capture_log(fn ->
+            {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, Account, stream)
+            pid = resident(stream)
+            ref = Process.monitor(pid)
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            assert reason == unquote(Macro.escape(reason))
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+
+      test "(#{mode}) from `apply/2` on the cold path is reduced", context do
+        %{stream: stream, subject: subject} = context
+        store_poison(stream, subject, unquote(mode))
+
+        log =
+          capture_log(fn ->
+            {pid, ref} = spawn_monitor(fn -> Aggregate.aggregate_state(App, Account, stream) end)
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            refute inspect(reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+      end
+    end
+
+    test "(exit) on its own stream is reduced" do
+      fresh = UUID.uuid4()
+      subject = Keys.mint(UUID.uuid4())
+
+      registered(fresh, subject)
+      {pid, ref} = monitor_resident(fresh)
+
+      [poison] = prepare!(fresh, %Poison{user_id: subject, email: email(), mode: "exit"})
+
+      log =
+        capture_log(fn ->
+          :ok = EventStore.append_to_stream(App, fresh, 1, [poison])
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, {:gave_up, :redacted}}
+
+          Process.sleep(50)
+        end)
+
+      refute log =~ "secret.example"
+    end
+
+    test "on an event it did not decrypt stays exactly as it is", %{stream: stream} do
+      store_raw!(stream, %PlainPoison{mode: "exit", note: "shown"})
+
+      log =
+        capture_log(fn ->
+          {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, Account, stream)
+          pid = resident(stream)
+          ref = Process.monitor(pid)
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, {:gave_up, "shown"}}
+
+          Process.sleep(50)
+        end)
+
+      assert log =~ "shown"
     end
 
     test "on its own stream is redacted" do

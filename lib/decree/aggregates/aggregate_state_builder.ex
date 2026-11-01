@@ -131,8 +131,8 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   @doc false
   # Applies one recorded event: the fold's one step, for every path that folds. `fold` is
   # `PersonalFields.fold_events/1`'s list, and `answers` the fold's own lookups, which end
-  # with it. An event in the list is decrypted first, and a raise from `apply/2` on it can hold
-  # the value, so it leaves here redacted.
+  # with it. An event in the list is decrypted first, and a raise, an exit or a throw from
+  # `apply/2` on it can hold the value, so each leaves here redacted.
   def apply_event(%RecordedEvent{} = event, %Aggregate{} = state, fold, answers) do
     %RecordedEvent{data: data, stream_version: stream_version} = event
     %Aggregate{application: application, aggregate_state: aggregate_state} = state
@@ -160,6 +160,9 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   rescue
     error ->
       reraise RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)
+  catch
+    :exit, reason -> exit(RedactedError.reduce(reason))
+    :throw, value -> throw(RedactedError.reduce(value))
   end
 
   defp advance(%Aggregate{} = state, stream_version, aggregate_state) do

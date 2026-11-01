@@ -2,6 +2,7 @@ defmodule Decree.PersonalFields.AppendTest do
   use Decree.PostgresCase
 
   import Decree.PersonalFields.Fixtures, only: [email: 0, email: 1]
+  import ExUnit.CaptureLog
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.Append
@@ -400,6 +401,63 @@ defmodule Decree.PersonalFields.AppendTest do
 
       assert {%RedactedError{type: CaseClauseError}, _stacktrace} =
                raised(fn -> prepare(event_data(event)) end)
+    end
+  end
+
+  describe "a tag implementation failing with the value in hand" do
+    defp tag_failure(mode, subject) do
+      event_data(%Tagged{user_id: subject, email: email(), mode: mode})
+    end
+
+    test "an `{:error, reason}` answers reduced, on a declared event", %{subject: subject} do
+      assert prepare(tag_failure("error", subject)) == {:error, {:refused, :redacted}}
+      assert prepare(tag_failure("bare_error", subject)) == {:error, :redacted}
+      assert prepare(tag_failure("atom_error", subject)) == {:error, :refused}
+    end
+
+    test "an exit is reduced, on a declared event", %{subject: subject} do
+      assert catch_exit(prepare(tag_failure("exit", subject))) == {:gave_up, :redacted}
+    end
+
+    test "a throw is reduced, on a declared event", %{subject: subject} do
+      assert catch_throw(prepare(tag_failure("throw", subject))) == {:thrown, :redacted}
+    end
+
+    for mode <- ["error", "exit", "throw"] do
+      test "(#{mode}) a real dispatch shows nothing in its logs or its answer", context do
+        %{subject: subject} = context
+        stream = UUID.uuid4()
+
+        command = %Emit{
+          account_id: stream,
+          events: [%Tagged{user_id: subject, email: email(), mode: unquote(mode)}]
+        }
+
+        # The debug line printing a command is not this path: commands are not redacted.
+        log =
+          capture_log([level: :info], fn ->
+            answer = App.dispatch(command)
+
+            send(self(), {:answer, answer})
+            Process.sleep(50)
+          end)
+
+        assert_received {:answer, {:error, _reason} = answer}
+
+        refute inspect(answer, limit: :infinity) =~ "secret.example"
+        refute log =~ "secret.example"
+      end
+    end
+
+    test "on an event with no declaration stays exactly as it is" do
+      assert prepare(event_data(%RaisingPlain{mode: "error", note: "shown"})) ==
+               {:error, {:refused, "shown"}}
+
+      assert catch_exit(prepare(event_data(%RaisingPlain{mode: "exit", note: "shown"}))) ==
+               {:gave_up, "shown"}
+
+      assert catch_throw(prepare(event_data(%RaisingPlain{mode: "throw", note: "shown"}))) ==
+               {:thrown, "shown"}
     end
   end
 
