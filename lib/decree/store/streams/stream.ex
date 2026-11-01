@@ -600,7 +600,9 @@ defmodule Decree.Store.Streams.Stream do
   # `retry` runs the whole append again with the given opts, from its stream-info reads.
   # Not inside a caller's transaction: the unique violation aborted it, so the read would
   # answer `in_failed_sql_transaction`, and the caller decides. A `DBConnection.run/3`
-  # checkout is not one, and retries.
+  # checkout is not one, and retries. `Decree.Store` takes no `mode: :savepoint`, which would
+  # keep the transaction alive, so this does not ask: `DBConnection.status/1` disconnects a
+  # connection marked aborted, as the path for 1,000 or more events leaves a caller's.
   defp maybe_retry_once(
          {:error, :duplicate_stream_uuid} = error,
          %DBConnection{conn_mode: :transaction},
