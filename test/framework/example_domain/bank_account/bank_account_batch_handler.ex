@@ -5,7 +5,8 @@ defmodule Decree.ExampleDomain.BankAccount.BankAccountBatchHandler do
     application: Decree.ExampleDomain.BankApp,
     name: __MODULE__,
     start_from: :origin,
-    batch_size: 3
+    batch_size: 3,
+    personal_fields: :opaque
 
   alias Decree.ExampleDomain.BankAccount.Events.BankAccountOpened
 

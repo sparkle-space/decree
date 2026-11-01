@@ -91,6 +91,21 @@ defmodule Decree.Aggregates.Aggregate do
           ]
         }
 
+  ## Personal fields
+
+  An aggregate's fold can read an event's personal fields, listed with
+  `Decree.PersonalFields.Aggregate`. When one can't be read the aggregate does not guess. It
+  stops under `{:shutdown, :key_unknown}`, which prints no crash report, and the caller gets
+  `{:error, :key_unknown}`. That covers populating on dispatch, the rebuild after a
+  `:wrong_expected_version`, and an event appended to its stream by another process. A cold
+  `aggregate_state/4` exits with the tuple a call to a stopping aggregate exits with.
+
+  A plain `{:error, :key_unknown}` from preparing an append does not stop the aggregate: its
+  state is still good.
+
+  `format_status/1` keeps the state, and the dispatch metadata a command carries, out of crash
+  reports and `:sys.get_status/1`.
+
   ## Telemetry
 
   #{telemetry_docs()}
@@ -109,6 +124,8 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Event.Upcast
   alias Decree.EventStore
   alias Decree.EventStore.RecordedEvent
+  alias Decree.PersonalFields
+  alias Decree.PersonalFields.RedactedError
   alias Decree.Registration
   alias Decree.Snapshotting
   alias Decree.Store.AppendError
@@ -139,6 +156,8 @@ defmodule Decree.Aggregates.Aggregate do
     :aggregate_uuid,
     :aggregate_state,
     :snapshotting,
+    # Why this aggregate must stop once it has replied, when its state can't be trusted.
+    :stop_reason,
     aggregate_version: 0,
     lifespan_timeout: :infinity
   ]
@@ -222,6 +241,22 @@ defmodule Decree.Aggregates.Aggregate do
       {{:shutdown, :append_outcome_unknown},
        {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
         {:exit, {:normal, :aggregate_stopped}}
+
+      # A command queued behind a stop, or that opened the aggregate that stopped.
+      :exit,
+      {{:shutdown, :key_unknown},
+       {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
+        {:error, :key_unknown}
+
+      # An exit reason holds the call, and the call holds the context: its command and its
+      # metadata. Leaving here as an exit would print them in the task's crash report. These
+      # are the two answers the dispatcher gives for such an exit.
+      :exit,
+      {{:nodedown, _node}, {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
+        {:error, :remote_node_down}
+
+      :exit, {_reason, {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
+        {:error, :aggregate_execution_failed}
     end
   end
 
@@ -249,12 +284,20 @@ defmodule Decree.Aggregates.Aggregate do
               snapshotting: Snapshotting.new(application, aggregate_uuid, snapshot_options)
             }
             |> AggregateStateBuilder.populate()
-            |> Map.fetch!(:aggregate_state)
+            |> case do
+              %Aggregate{aggregate_state: aggregate_state} -> {:ok, aggregate_state}
+              {:error, :key_unknown} = error -> error
+            end
           end)
 
         case Task.yield(task, timeout) || Task.shutdown(task) do
-          {:ok, result} ->
-            result
+          {:ok, {:ok, aggregate_state}} ->
+            aggregate_state
+
+          {:ok, {:error, :key_unknown}} ->
+            exit(
+              {{:shutdown, :key_unknown}, {GenServer, :call, [name, :aggregate_state, timeout]}}
+            )
 
           nil ->
             exit({:timeout, {GenServer, :call, [name, :aggregate_state, timeout]}})
@@ -291,11 +334,17 @@ defmodule Decree.Aggregates.Aggregate do
   @doc false
   @impl GenServer
   def handle_continue(:populate_aggregate_state, %Aggregate{} = state) do
-    state = AggregateStateBuilder.populate(state)
+    case AggregateStateBuilder.populate(state) do
+      %Aggregate{} = state ->
+        # Subscribe to aggregate's events to catch any events appended to its stream
+        # by another process, such as directly appended to the event store.
+        {:noreply, state, {:continue, :subscribe_to_events}}
 
-    # Subscribe to aggregate's events to catch any events appended to its stream
-    # by another process, such as directly appended to the event store.
-    {:noreply, state, {:continue, :subscribe_to_events}}
+      {:error, :key_unknown} ->
+        Logger.warning(describe(state) <> " stopping: a personal field can't be read")
+
+        {:stop, {:shutdown, :key_unknown}, state}
+    end
   end
 
   @doc false
@@ -351,6 +400,11 @@ defmodule Decree.Aggregates.Aggregate do
 
     response =
       cond do
+        state.stop_reason != nil ->
+          # Its rebuild failed: the state kept here is behind the stream, and the next
+          # command must open a fresh aggregate.
+          {:stop, state.stop_reason, formatted_reply, state}
+
         append_outcome_unknown?(result) ->
           # The append may have been written while the state kept here is the one
           # before it. Stop, whatever the lifespan says, so the next command opens
@@ -397,16 +451,18 @@ defmodule Decree.Aggregates.Aggregate do
   @doc false
   @impl GenServer
   def handle_info({:events, events}, %Aggregate{} = state) do
-    %Aggregate{application: application} = state
+    %Aggregate{application: application, aggregate_module: aggregate_module} = state
 
     Logger.debug(describe(state) <> " received events: " <> inspect(events))
 
     try do
-      state =
+      fold = PersonalFields.fold_events(aggregate_module)
+
+      {state, _answers} =
         events
         |> Enum.reject(&event_already_seen?(&1, state))
         |> Upcast.upcast_event_stream(additional_metadata: %{application: application})
-        |> Enum.reduce(state, &handle_event/2)
+        |> Enum.reduce({state, %{}}, &handle_event(&1, &2, fold))
 
       noreply_with_lifespan(state)
     catch
@@ -457,22 +513,22 @@ defmodule Decree.Aggregates.Aggregate do
 
   # Handle events appended to the aggregate's stream, received by its
   # event store subscription, by applying any missed events to its state.
-  defp handle_event(%RecordedEvent{} = event, %Aggregate{} = state) do
-    %RecordedEvent{data: data, stream_version: stream_version} = event
-
-    %Aggregate{
-      aggregate_module: aggregate_module,
-      aggregate_state: aggregate_state,
-      aggregate_version: aggregate_version
-    } = state
+  defp handle_event(%RecordedEvent{} = event, {%Aggregate{} = state, answers}, fold) do
+    %RecordedEvent{stream_version: stream_version} = event
+    %Aggregate{aggregate_version: aggregate_version} = state
 
     if stream_version == aggregate_version + 1 do
       # Apply event to aggregate's state
-      %Aggregate{
-        state
-        | aggregate_version: stream_version,
-          aggregate_state: aggregate_module.apply(aggregate_state, data)
-      }
+      case AggregateStateBuilder.apply_event(event, state, fold, answers) do
+        {:ok, state, answers} ->
+          {state, answers}
+
+        {:error, :key_unknown} ->
+          Logger.warning(describe(state) <> " stopping: a personal field can't be read")
+
+          # A shutdown, so no crash report prints the state
+          throw({:error, {:shutdown, :key_unknown}})
+      end
     else
       Logger.debug(describe(state) <> " received an unexpected event: " <> inspect(event))
 
@@ -559,10 +615,20 @@ defmodule Decree.Aggregates.Aggregate do
     end
   rescue
     error ->
-      stacktrace = __STACKTRACE__
+      {error, stacktrace} = reported_exception(error, __STACKTRACE__, state)
       Logger.error(Exception.format(:error, error, stacktrace))
 
       {{:error, error, stacktrace}, state}
+  end
+
+  # An aggregate holding decrypted state passes it to `execute/2` and `apply/2`, and a raise
+  # from either can carry it in its message or in a stack frame's arguments.
+  defp reported_exception(error, stacktrace, %Aggregate{aggregate_module: aggregate_module}) do
+    if PersonalFields.adopted?(aggregate_module) do
+      {RedactedError.redact(error), RedactedError.scrub_stacktrace(stacktrace)}
+    else
+      {error, stacktrace}
+    end
   end
 
   defp apply_and_persist_events(pending_events, context, %Aggregate{} = state) do
@@ -581,7 +647,7 @@ defmodule Decree.Aggregates.Aggregate do
   # An error from preparing the events is answered here, ahead of the arms below: those
   # read the event store's answer, and a `Decree.Event.Tags` implementation's is not one.
   defp persist_events(pending_events, aggregate_state, context, %Aggregate{} = state) do
-    case prepare_events(pending_events, context) do
+    case prepare_events(pending_events, context, state) do
       {:ok, event_data} ->
         store_events(pending_events, event_data, aggregate_state, context, state)
 
@@ -590,22 +656,25 @@ defmodule Decree.Aggregates.Aggregate do
     end
   end
 
-  defp prepare_events([], _context), do: {:ok, []}
+  defp prepare_events([], _context, _state), do: {:ok, []}
 
-  defp prepare_events(pending_events, %ExecutionContext{} = context) do
+  defp prepare_events(pending_events, %ExecutionContext{} = context, %Aggregate{} = state) do
     %ExecutionContext{
       causation_id: causation_id,
       correlation_id: correlation_id,
       metadata: metadata
     } = context
 
-    pending_events
-    |> Mapper.map_to_event_data(
-      causation_id: causation_id,
-      correlation_id: correlation_id,
-      metadata: metadata
-    )
-    |> Append.prepare(context)
+    %Aggregate{application: application, aggregate_uuid: aggregate_uuid} = state
+
+    event_data =
+      Mapper.map_to_event_data(pending_events,
+        causation_id: causation_id,
+        correlation_id: correlation_id,
+        metadata: metadata
+      )
+
+    Append.prepare(application, aggregate_uuid, event_data, context)
   end
 
   defp store_events(pending_events, event_data, aggregate_state, context, %Aggregate{} = state) do
@@ -624,22 +693,32 @@ defmodule Decree.Aggregates.Aggregate do
     else
       {:error, :wrong_expected_version} ->
         # Fetch missing events from event store
-        state = AggregateStateBuilder.rebuild_from_events(state)
+        case AggregateStateBuilder.rebuild_from_events(state) do
+          %Aggregate{} = state ->
+            retry_command(context, state)
 
-        # Retry command if there are any attempts left
-        case ExecutionContext.retry(context) do
-          {:ok, context} ->
-            Logger.debug(describe(state) <> " wrong expected version, retrying command")
+          {:error, :key_unknown} = reply ->
+            Logger.warning(describe(state) <> " stopping: a personal field can't be read")
 
-            execute_command(context, state)
-
-          reply ->
-            Logger.debug(describe(state) <> " wrong expected version, but not retrying command")
-
-            {reply, state}
+            {reply, %Aggregate{state | stop_reason: {:shutdown, :key_unknown}}}
         end
 
       {:error, _error} = reply ->
+        {reply, state}
+    end
+  end
+
+  # Retry command if there are any attempts left
+  defp retry_command(context, %Aggregate{} = state) do
+    case ExecutionContext.retry(context) do
+      {:ok, context} ->
+        Logger.debug(describe(state) <> " wrong expected version, retrying command")
+
+        execute_command(context, state)
+
+      reply ->
+        Logger.debug(describe(state) <> " wrong expected version, but not retrying command")
+
         {reply, state}
     end
   end
@@ -673,6 +752,30 @@ defmodule Decree.Aggregates.Aggregate do
         Logger.warning(describe(state) <> " snapshot failed due to: " <> inspect(reason))
 
         error
+    end
+  end
+
+  # A crash report and `:sys.get_status/1` print this. The state can hold decrypted values,
+  # and a command's context holds its dispatch metadata.
+  @doc false
+  @impl GenServer
+  def format_status(status) do
+    status
+    |> redact_status(:state, fn
+      %Aggregate{} = state -> %Aggregate{state | aggregate_state: :redacted}
+      state -> state
+    end)
+    |> redact_status(:message, fn
+      {:execute_command, %ExecutionContext{}} -> {:execute_command, :redacted}
+      message -> message
+    end)
+    |> redact_status(:log, fn _log -> [] end)
+  end
+
+  defp redact_status(status, key, redact) do
+    case status do
+      %{^key => value} -> %{status | key => redact.(value)}
+      %{} -> status
     end
   end
 

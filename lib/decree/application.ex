@@ -159,6 +159,28 @@ defmodule Decree.Application do
   See the `Decree.Commands.Router` module for more details about the
   supported options.
 
+  ## Personal fields
+
+  Two options name what protects personal data. They are read from the `use` line and nowhere
+  else: `config`, `start_link/1` options and `c:init/1` can't set them.
+
+      defmodule MyApp.Application do
+        use Decree.Application,
+          otp_app: :my_app,
+          key_source: MyApp.SubjectKeys,
+          personal_metadata_keys: [:email, :password_hash]
+      end
+
+    - `:key_source` - a `Decree.PersonalFields.KeySource`. With none, an append of a declared
+      value fails with `{:error, :key_unknown}`.
+
+    - `:personal_metadata_keys` - metadata keys an event must declare to carry. A dispatch
+      putting a non-nil value under one of them, in atom or string form, on an event that does
+      not declare it fails with `{:error, :undeclared_personal_metadata}`. With none, there
+      is no such check.
+
+  See `Decree.PersonalFields`.
+
   ## Telemetry
 
   #{telemetry_docs()}
@@ -174,9 +196,12 @@ defmodule Decree.Application do
       @behaviour Decree.Application
 
       {otp_app, config} = Decree.Application.Supervisor.compile_config(__MODULE__, opts)
+      {key_source, personal_metadata_keys} = Decree.Application.Supervisor.source_opts(opts)
 
       @otp_app otp_app
       @config config
+      @key_source key_source
+      @personal_metadata_keys personal_metadata_keys
 
       use Decree.Commands.CompositeRouter,
         application: __MODULE__,
@@ -228,6 +253,12 @@ defmodule Decree.Application do
           timeout
         )
       end
+
+      @doc false
+      def __key_source__, do: @key_source
+
+      @doc false
+      def __personal_metadata_keys__, do: @personal_metadata_keys
 
       defp name(opts) do
         case Keyword.get(opts, :name) do
@@ -403,4 +434,13 @@ defmodule Decree.Application do
   @spec on_event_handler_error(Decree.Application.t()) :: atom | module
   def on_event_handler_error(application),
     do: Config.get(application, :on_event_handler_error)
+
+  @doc false
+  @spec key_source(Decree.Application.t()) :: module | nil
+  def key_source(application), do: application_module(application).__key_source__()
+
+  @doc false
+  @spec personal_metadata_keys(Decree.Application.t()) :: [atom]
+  def personal_metadata_keys(application),
+    do: application_module(application).__personal_metadata_keys__()
 end

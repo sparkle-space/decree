@@ -1,7 +1,8 @@
 defmodule Decree.Event.GracefulShutdownHandler do
   use Decree.Event.Handler,
     application: Decree.MockedApp,
-    name: __MODULE__
+    name: __MODULE__,
+    personal_fields: :opaque
 
   def handle(event, metadata) do
     %{reply_to: reply_to} = event

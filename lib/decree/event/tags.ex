@@ -7,7 +7,7 @@ defprotocol Decree.Event.Tags do
   the aggregate, so it must be deterministic: the same event and context give the same
   tags. It must read no database, clock or process state a retry could see differently.
 
-  `Decree.Event.Append.prepare/2` calls it for every event a command appends, then adds
+  `Decree.Event.Append.prepare/4` calls it for every event a command appends, then adds
   the framework's tags: `command:`, `command_kind:`, `correlation:` and the stream's
   entity tag. Those need nothing from this protocol.
 

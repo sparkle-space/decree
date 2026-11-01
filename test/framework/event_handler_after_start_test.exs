@@ -134,7 +134,8 @@ defmodule Decree.Event.HandlerAfterStartTest do
         application: Decree.MockedApp,
         name: __MODULE__,
         batch_size: 10,
-        batch_timeout: 60_000
+        batch_timeout: 60_000,
+        personal_fields: :opaque
 
       def handle_batch(_events), do: :ok
     end
@@ -185,7 +186,8 @@ defmodule Decree.Event.HandlerAfterStartTest do
         application: Decree.MockedApp,
         name: __MODULE__,
         batch_size: 10,
-        batch_timeout: 60_000
+        batch_timeout: 60_000,
+        personal_fields: :opaque
 
       def handle_batch([{%{reply_to: reply_to}, _metadata} | _rest] = events) do
         send(reply_to, {:batch_handled, length(events)})

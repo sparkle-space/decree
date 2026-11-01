@@ -4,6 +4,8 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   alias Decree.EventStore
   alias Decree.EventStore.RecordedEvent
   alias Decree.EventStore.SnapshotData
+  alias Decree.PersonalFields
+  alias Decree.PersonalFields.RedactedError
   alias Decree.Snapshotting
   alias Decree.Telemetry
 
@@ -52,31 +54,59 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   If the snapshot exists, fetch any subsequent events to rebuild its state.
   Otherwise start with the aggregate struct and stream all existing events for
   the aggregate from the event store to rebuild its state from those events.
+
+  Answers the `%Aggregate{}`, or `{:error, :key_unknown}` when a personal value in its
+  snapshot or in an event its fold reads can't be read. It never raises for that.
   """
   def populate(%Aggregate{} = state) do
-    %Aggregate{aggregate_module: aggregate_module, snapshotting: snapshotting} = state
+    %Aggregate{snapshotting: snapshotting} = state
 
-    aggregate =
-      case Snapshotting.read_snapshot(snapshotting) do
-        {:ok, %SnapshotData{source_version: source_version, data: data}} ->
-          %Aggregate{
-            state
-            | aggregate_version: source_version,
-              aggregate_state: data
-          }
+    case Snapshotting.read_snapshot(snapshotting) do
+      {:ok, %SnapshotData{} = snapshot} ->
+        populate_from_snapshot(state, snapshot)
 
-        {:error, _error} ->
-          # No snapshot present, or exists but for outdated state, so use initial empty state
-          %Aggregate{state | aggregate_version: 0, aggregate_state: struct(aggregate_module)}
-      end
+      {:error, _error} ->
+        # No snapshot present, or exists but for outdated state, so use initial empty state
+        rebuild_from_events(initial_state(state), %{})
+    end
+  end
 
-    rebuild_from_events(aggregate)
+  defp populate_from_snapshot(%Aggregate{} = state, %SnapshotData{} = snapshot) do
+    %Aggregate{
+      application: application,
+      aggregate_module: aggregate_module,
+      aggregate_uuid: aggregate_uuid
+    } = state
+
+    %SnapshotData{source_version: source_version, data: data} = snapshot
+
+    case PersonalFields.decrypt_state(application, aggregate_uuid, aggregate_module, data) do
+      {:ok, data, answers} ->
+        state = %Aggregate{state | aggregate_version: source_version, aggregate_state: data}
+
+        rebuild_from_events(state, answers)
+
+      {:erased, answers} ->
+        # The events' erased fields fold as absent, which a snapshot can't give.
+        rebuild_from_events(initial_state(state), answers)
+
+      {:error, :key_unknown} = error ->
+        error
+    end
+  end
+
+  defp initial_state(%Aggregate{aggregate_module: aggregate_module} = state) do
+    %Aggregate{state | aggregate_version: 0, aggregate_state: struct(aggregate_module)}
   end
 
   @doc """
   Load events from the event store, in batches, to rebuild the aggregate state
+
+  Answers the `%Aggregate{}`, or `{:error, :key_unknown}` as `populate/1` does.
   """
-  def rebuild_from_events(%Aggregate{} = state) do
+  def rebuild_from_events(%Aggregate{} = state), do: rebuild_from_events(state, %{})
+
+  defp rebuild_from_events(%Aggregate{} = state, answers) do
     %Aggregate{
       application: application,
       aggregate_uuid: aggregate_uuid,
@@ -94,32 +124,74 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
         state
 
       event_stream ->
-        rebuild_from_event_stream(event_stream, state)
+        rebuild_from_event_stream(event_stream, state, answers)
     end
   end
 
+  @doc false
+  # Applies one recorded event: the fold's one step, for every path that folds. `fold` is
+  # `PersonalFields.fold_events/1`'s list, and `answers` the fold's own lookups, which end
+  # with it. An event in the list is decrypted first, and a raise from `apply/2` on it can hold
+  # the value, so it leaves here redacted.
+  def apply_event(%RecordedEvent{} = event, %Aggregate{} = state, fold, answers) do
+    %RecordedEvent{data: data, stream_version: stream_version} = event
+    %Aggregate{application: application, aggregate_state: aggregate_state} = state
+    %Aggregate{aggregate_module: aggregate_module} = state
+
+    if in_fold?(data, fold) do
+      with {:ok, data, answers} <-
+             PersonalFields.decrypt_fold_event(application, event, answers) do
+        aggregate_state = apply_decrypted(aggregate_module, aggregate_state, data)
+
+        {:ok, advance(state, stream_version, aggregate_state), answers}
+      end
+    else
+      aggregate_state = aggregate_module.apply(aggregate_state, data)
+
+      {:ok, advance(state, stream_version, aggregate_state), answers}
+    end
+  end
+
+  defp in_fold?(%module{}, fold), do: module in fold
+  defp in_fold?(_data, _fold), do: false
+
+  defp apply_decrypted(aggregate_module, aggregate_state, data) do
+    aggregate_module.apply(aggregate_state, data)
+  rescue
+    error ->
+      reraise RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)
+  end
+
+  defp advance(%Aggregate{} = state, stream_version, aggregate_state) do
+    %{state | aggregate_version: stream_version, aggregate_state: aggregate_state}
+  end
+
   # Rebuild aggregate state from a `Stream` of its events.
-  defp rebuild_from_event_stream(event_stream, %Aggregate{} = state) do
+  defp rebuild_from_event_stream(event_stream, %Aggregate{} = state, answers) do
     telemetry_prefix = [:decree, :aggregate, :populate]
     start_time = Telemetry.start(telemetry_prefix, telemetry_metadata(state))
+    fold = PersonalFields.fold_events(state.aggregate_module)
 
-    {state, count} =
-      Enum.reduce(event_stream, {state, 0}, fn event, {state, count} ->
-        %RecordedEvent{data: data, stream_version: stream_version} = event
-        %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state
-
-        state = %{
-          state
-          | aggregate_version: stream_version,
-            aggregate_state: aggregate_module.apply(aggregate_state, data)
-        }
-
-        {state, count + 1}
+    result =
+      Enum.reduce_while(event_stream, {state, 0, answers}, fn event, {state, count, answers} ->
+        case apply_event(event, state, fold, answers) do
+          {:ok, state, answers} -> {:cont, {state, count + 1, answers}}
+          {:error, :key_unknown} = error -> {:halt, error}
+        end
       end)
 
-    Telemetry.stop(telemetry_prefix, start_time, telemetry_metadata(state), %{count: count})
+    case result do
+      {:error, :key_unknown} = error ->
+        metadata = Map.put(telemetry_metadata(state), :error, :key_unknown)
+        Telemetry.stop(telemetry_prefix, start_time, metadata, %{count: 0})
 
-    state
+        error
+
+      {state, count, _answers} ->
+        Telemetry.stop(telemetry_prefix, start_time, telemetry_metadata(state), %{count: count})
+
+        state
+    end
   end
 
   defp telemetry_metadata(%Aggregate{} = state) do

@@ -5,6 +5,10 @@ defmodule Decree.Application.Supervisor do
 
   alias Decree.Application.Config
 
+  # Options read from the `use` line and nowhere else: they name what protects personal
+  # data, so neither the environment, nor start options, nor `init/1` can change them.
+  @source_opts [:key_source, :personal_metadata_keys]
+
   @doc """
   Retrieves the compile time configuration.
   """
@@ -12,9 +16,30 @@ defmodule Decree.Application.Supervisor do
     otp_app = Keyword.fetch!(opts, :otp_app)
     env_opts = Application.get_env(otp_app, application, [])
 
-    config = Keyword.merge(opts, env_opts)
+    config = opts |> Keyword.merge(env_opts) |> Keyword.drop(@source_opts)
 
     {otp_app, config}
+  end
+
+  @doc """
+  Retrieves the source-level options from the `use` line, and only from there.
+  """
+  def source_opts(opts) do
+    key_source = Keyword.get(opts, :key_source)
+    personal_metadata_keys = Keyword.get(opts, :personal_metadata_keys, [])
+
+    unless is_atom(key_source) do
+      raise ArgumentError,
+            "expected :key_source to be a module but got: " <> inspect(key_source)
+    end
+
+    unless is_list(personal_metadata_keys) and Enum.all?(personal_metadata_keys, &is_atom/1) do
+      raise ArgumentError,
+            "expected :personal_metadata_keys to be a list of atoms but got: " <>
+              inspect(personal_metadata_keys)
+    end
+
+    {key_source, personal_metadata_keys}
   end
 
   @doc """

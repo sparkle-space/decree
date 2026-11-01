@@ -37,7 +37,7 @@ defmodule Decree.Aggregates.ExecutionContext do
 
     - `identity` - how the route finds the aggregate's identity: the name of a command
       field, or a one argument function returning it. Only
-      `Decree.Event.Append.prepare/2` reads it, and only for the kind of the stream's
+      `Decree.Event.Append.prepare/4` reads it, and only for the kind of the stream's
       entity tag. It is not called for that: `aggregate_identity` is what it resolved to.
 
     - `aggregate_identity` - the identity the stream was routed by, as the string

@@ -2,6 +2,7 @@ defmodule Decree.Event.AppendTest do
   use ExUnit.Case, async: true
 
   alias Decree.Aggregates.ExecutionContext
+  alias Decree.Application.Config
   alias Decree.Event.Append
   alias Decree.Event.TagContext
   alias Decree.Event.Tagging.Commands.Emit
@@ -14,7 +15,17 @@ defmodule Decree.Event.AppendTest do
     defstruct [:_id]
   end
 
+  defmodule App do
+    use Decree.Application, otp_app: :decree
+  end
+
   @kind "command_kind:Decree.Event.Tagging.Commands.Emit"
+
+  setup_all do
+    Config.associate(self(), App, application: App)
+  end
+
+  defp prepare(event_data, context), do: Append.prepare(App, "stream-1", event_data, context)
 
   defp data(event, metadata \\ %{}), do: %EventData{data: event, metadata: metadata}
 
@@ -34,7 +45,7 @@ defmodule Decree.Event.AppendTest do
     command = %Emit{user_id: UUID.uuid4(), command_id: command_id}
 
     assert {:ok, [%EventData{tags: tags}]} =
-             Append.prepare(
+             prepare(
                [data(%Tagged{tags: ["a:1"]})],
                context(command, identity: :user_id, aggregate_identity: command.user_id)
              )
@@ -54,7 +65,7 @@ defmodule Decree.Event.AppendTest do
     second = data(%Unimplemented{note: "second"})
 
     assert {:ok, [prepared_first, prepared_second]} =
-             Append.prepare([first, second], context(%Emit{}))
+             prepare([first, second], context(%Emit{}))
 
     assert prepared_first == %EventData{first | tags: [@kind]}
     assert prepared_second == %EventData{second | tags: [@kind]}
@@ -73,8 +84,8 @@ defmodule Decree.Event.AppendTest do
 
     event_data = [data(%Tagged{tags: ["a:1"]}, metadata)]
 
-    assert {:ok, prepared} = Append.prepare(event_data, context)
-    assert {:ok, ^prepared} = Append.prepare(event_data, context)
+    assert {:ok, prepared} = prepare(event_data, context)
+    assert {:ok, ^prepared} = prepare(event_data, context)
 
     assert [%EventData{tags: []}] = event_data
     assert context.metadata == metadata
@@ -93,13 +104,13 @@ defmodule Decree.Event.AppendTest do
       data(%Refused{reason: "second"})
     ]
 
-    assert Append.prepare(event_data, context(%Emit{})) == {:error, {:refused, "first"}}
+    assert prepare(event_data, context(%Emit{})) == {:error, {:refused, "first"}}
   end
 
   test "an implementation answering neither shape raises" do
     event_data = [data(%Tagged{tags: "not a list"})]
 
-    assert_raise CaseClauseError, fn -> Append.prepare(event_data, context(%Emit{})) end
+    assert_raise CaseClauseError, fn -> prepare(event_data, context(%Emit{})) end
   end
 
   describe "the key tags" do
@@ -108,7 +119,7 @@ defmodule Decree.Event.AppendTest do
         command = %Emit{command_id: unquote(value), correlation_id: unquote(value)}
 
         assert {:ok, [%EventData{tags: [@kind]}]} =
-                 Append.prepare([data(%Unimplemented{})], context(command))
+                 prepare([data(%Unimplemented{})], context(command))
       end
     end
 
@@ -116,14 +127,14 @@ defmodule Decree.Event.AppendTest do
       command = %Bare{}
 
       assert {:ok, [%EventData{tags: ["command_kind:Decree.Event.AppendTest.Bare"]}]} =
-               Append.prepare([data(%Unimplemented{})], context(command))
+               prepare([data(%Unimplemented{})], context(command))
     end
 
     test "never read the context's correlation or causation ids" do
       context = context(%Emit{}, correlation_id: UUID.uuid4(), causation_id: UUID.uuid4())
 
       assert {:ok, [%EventData{tags: [@kind]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
     end
   end
 
@@ -132,14 +143,14 @@ defmodule Decree.Event.AppendTest do
       command = %Emit{user_id: UUID.uuid4()}
 
       assert {:ok, [%EventData{tags: [@kind]}]} =
-               Append.prepare([data(%Unimplemented{})], context(command))
+               prepare([data(%Unimplemented{})], context(command))
     end
 
     test "is absent with no resolved identity, whatever the command's field holds" do
       context = context(%Emit{user_id: UUID.uuid4()}, identity: :user_id)
 
       assert {:ok, [%EventData{tags: [@kind]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
     end
 
     test "is the resolved identity, not the command's field" do
@@ -149,7 +160,7 @@ defmodule Decree.Event.AppendTest do
         context(%Emit{user_id: UUID.uuid4()}, identity: :user_id, aggregate_identity: resolved)
 
       assert {:ok, [%EventData{tags: [@kind, tag]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
 
       assert tag == "user:" <> resolved
     end
@@ -165,7 +176,7 @@ defmodule Decree.Event.AppendTest do
         )
 
       assert {:ok, [%EventData{tags: [@kind, tag]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
 
       assert tag == "user:" <> resolved
     end
@@ -175,21 +186,21 @@ defmodule Decree.Event.AppendTest do
         context(%Emit{}, identity: fn _command -> nil end, aggregate_identity: UUID.uuid4())
 
       assert {:ok, [%EventData{tags: [@kind]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
     end
 
     test "is absent for a context with a resolved identity and no way to name its kind" do
       context = context(%Emit{}, aggregate_identity: UUID.uuid4())
 
       assert {:ok, [%EventData{tags: [@kind]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
     end
 
     test "is absent for a field whose stem is empty" do
       id = UUID.uuid4()
 
       assert {:ok, [%EventData{tags: ["command_kind:Decree.Event.AppendTest.Bare"]}]} =
-               Append.prepare(
+               prepare(
                  [data(%Unimplemented{})],
                  context(%Bare{_id: id}, identity: :_id, aggregate_identity: id)
                )
@@ -206,7 +217,7 @@ defmodule Decree.Event.AppendTest do
         )
 
       assert {:ok, [%EventData{tags: [@kind, tag]}]} =
-               Append.prepare([data(%Unimplemented{})], context)
+               prepare([data(%Unimplemented{})], context)
 
       assert tag == "member:" <> user_id
     end

@@ -6,22 +6,39 @@ defmodule Decree.Event.Append do
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.{TagContext, Tags}
   alias Decree.EventStore.EventData
+  alias Decree.PersonalFields
+  alias Decree.PersonalFields.RedactedError
   alias Decree.UUID
 
   @doc """
   Answers a copy of `event_data` ready for the store.
 
-  Every framework append path calls this one function. Today it does one thing: it sets
-  each event's `tags`, from `Decree.Event.Tags.tags/2` followed by the framework's. Key
-  lookup, drop and encrypt are later steps of this function, around the tags, which is why
-  it is not named after any one of them.
+  Every framework append path calls this one function, with the application's name and the
+  stream's. Each event takes these steps, on copies:
 
-  It is pure. It works on copies and `ExecutionContext.metadata` is untouched, so a
-  `:wrong_expected_version` retry derives afresh from plaintext. It runs once per attempt,
-  and it is deterministic: the same event and context give the same tags.
+    1. **Lookup.** One `Decree.PersonalFields.KeySource` lookup per subject, for each declared
+       value that is not nil.
 
-  The first `{:error, reason}` from an implementation stops and is returned as it stands.
-  A raise from one is not rescued here: the aggregate answers it, with its state unchanged.
+    2. **Resolve.** An unknown key fails the whole append. An erased one removes the value: a
+       field becomes nil and a metadata key goes. A missing subject, a value that is already an
+       envelope and metadata the application fences also stop here.
+
+    3. **Tags.** `Decree.Event.Tags.tags/2`, followed by the framework's. An implementation
+       sees the plaintext that will be stored, so an erased subject gets no tag derived from
+       its value, and no tag holds ciphertext.
+
+    4. **Encrypt.** Declared fields and metadata entries become envelopes.
+
+  An event that declares nothing takes step 3 alone, and comes out as it went in, with tags.
+
+  It writes nothing, and `ExecutionContext.metadata` is untouched, so a `:wrong_expected_version`
+  retry derives afresh from plaintext. It runs once per attempt. A lookup aside, it is
+  deterministic: the same event and context give the same tags.
+
+  The first `{:error, reason}` stops and is returned as it stands. A raise from an
+  implementation is not rescued here: the aggregate answers it, with its state unchanged. On an
+  event with a declaration it is re-raised as a `Decree.PersonalFields.RedactedError`, because
+  it can carry the value it failed on.
 
   ## Framework tags
 
@@ -42,25 +59,51 @@ defmodule Decree.Event.Append do
 
   The store removes a repeat, so a domain tag equal to a framework tag is stored once.
   """
-  @spec prepare([EventData.t()], ExecutionContext.t()) ::
-          {:ok, [EventData.t()]} | {:error, term()}
-  def prepare(event_data, %ExecutionContext{} = context) when is_list(event_data) do
-    tag_context = %TagContext{metadata: context.metadata, command: context.command}
+  @spec prepare(
+          Decree.Application.t(),
+          String.t(),
+          [EventData.t()],
+          ExecutionContext.t()
+        ) :: {:ok, [EventData.t()]} | {:error, term()}
+  def prepare(application, stream_uuid, event_data, %ExecutionContext{} = context)
+      when is_binary(stream_uuid) and is_list(event_data) do
     framework_tags = framework_tags(context)
+    fence = PersonalFields.metadata_fence(application, event_data)
 
     event_data
-    |> Enum.reduce_while([], fn %EventData{data: event} = data, prepared ->
-      case Tags.tags(event, tag_context) do
-        {:ok, tags} when is_list(tags) ->
-          {:cont, [%EventData{data | tags: tags ++ framework_tags} | prepared]}
-
-        {:error, _reason} = error ->
-          {:halt, error}
+    |> Enum.reduce_while([], fn %EventData{} = data, prepared ->
+      with {:ok, resolved, plan} <- PersonalFields.resolve_append(application, data, fence),
+           {:ok, tags} <- event_tags(resolved, plan, context),
+           {:ok, %EventData{} = protected} <-
+             PersonalFields.encrypt_append(resolved, plan, stream_uuid) do
+        {:cont, [%EventData{protected | tags: tags ++ framework_tags} | prepared]}
+      else
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do
       {:error, _reason} = error -> error
       prepared -> {:ok, Enum.reverse(prepared)}
+    end
+  end
+
+  # `plan` is nil for an event with no declaration.
+  defp event_tags(%EventData{} = data, nil, %ExecutionContext{} = context) do
+    tags(data, context)
+  end
+
+  defp event_tags(%EventData{} = data, _plan, %ExecutionContext{} = context) do
+    tags(data, context)
+  rescue
+    error ->
+      reraise RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)
+  end
+
+  # The tag context's metadata is this event's copy, after the drop and before the encrypt.
+  defp tags(%EventData{data: event, metadata: metadata}, %ExecutionContext{command: command}) do
+    case Tags.tags(event, %TagContext{metadata: metadata, command: command}) do
+      {:ok, tags} when is_list(tags) -> {:ok, tags}
+      {:error, _reason} = error -> error
     end
   end
 

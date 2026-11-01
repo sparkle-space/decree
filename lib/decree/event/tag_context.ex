@@ -2,7 +2,8 @@ defmodule Decree.Event.TagContext do
   @moduledoc """
   What `Decree.Event.Tags.tags/2` may read besides the event.
 
-    - `metadata` - the dispatch metadata, in plaintext, as it will be stored.
+    - `metadata` - this event's copy of the dispatch metadata, in plaintext: what will be
+      stored, before personal entries are encrypted.
 
     - `command` - the command struct that produced the event.
 
