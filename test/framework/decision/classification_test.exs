@@ -474,6 +474,10 @@ defmodule Decree.Decision.ClassificationTest do
       test = self()
       calls = :counters.new(1, [])
 
+      # Exactly the ageing below. The first `read_at` precedes the winner's real stamp, so from
+      # it the age is under the window, and only the retry's fresh one reads as outside.
+      with_window(@an_hour * 1_000)
+
       # The count crosses into the dispatch's task, so the retry's `query` is what holds.
       query = fn command, _context ->
         :counters.add(calls, 1, 1)
