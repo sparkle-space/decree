@@ -321,6 +321,15 @@ defmodule Decree.Store.Storage.AppendTagsTest do
       assert tag_rows(context) == [[1, "tenant:a", "typed"]]
     end
 
+    test "gives way to `:invalid_tag` on another event" do
+      events = [
+        %{event("first") | tags: [String.duplicate("a", 513)]},
+        %{event("second") | tags: [<<0>>]}
+      ]
+
+      assert {:error, :invalid_tag} = EventStore.append_to_stream("stream", 0, events)
+    end
+
     test "through a direct appender call is refused by the table", context do
       %{conn: conn, schema: schema} = context
 
@@ -332,6 +341,122 @@ defmodule Decree.Store.Storage.AppendTagsTest do
                Appender.append(conn, stream_id, events, schema: schema, tags: tags)
 
       assert_nothing_written(context)
+    end
+  end
+
+  describe "a tag that is not a string Postgres can hold" do
+    # Refused before any statement, so no connection is ever asked for.
+    @no_conn :a_connection_that_does_not_exist
+
+    for {name, tag} <- [
+          {"a lone NUL byte", quote(do: <<0>>)},
+          {"holding a NUL byte", quote(do: <<"a", 0>>)},
+          {"not UTF-8", quote(do: <<0xFF>>)},
+          {"an atom", :atom},
+          {"nil", nil},
+          {"a number", 1}
+        ] do
+      test "is refused and writes nothing: #{name}", context do
+        events = [%{event("typed") | tags: [unquote(tag)]}]
+
+        assert {:error, :invalid_tag} =
+                 EventStore.append_to_stream("stream", 0, events, conn: @no_conn)
+
+        assert_nothing_written(context)
+        assert {:error, :stream_not_found} = EventStore.read_stream_forward("stream")
+      end
+    end
+
+    test "answers before a stale expected version", context do
+      :ok = EventStore.append_to_stream("stream", 0, EventFactory.create_events(1))
+
+      events = [%{event("typed") | tags: [<<0>>]}]
+
+      assert {:error, :invalid_tag} = EventStore.append_to_stream("stream", 0, events)
+
+      assert tag_rows(context) == []
+      assert all_version(context) == 1
+    end
+
+    test "answers `:invalid_tag`, not `:tag_too_long`, when it is both" do
+      events = [%{event("typed") | tags: [String.duplicate(<<0>>, 513)]}]
+
+      assert {:error, :invalid_tag} = EventStore.append_to_stream("stream", 0, events)
+    end
+
+    test "on any event refuses the whole append", context do
+      events = [
+        %{event("first") | tags: ["tenant:a"]},
+        %{event("second") | tags: [<<0xFF>>]}
+      ]
+
+      assert {:error, :invalid_tag} = EventStore.append_to_stream("stream", 0, events)
+
+      assert_nothing_written(context)
+    end
+
+    test "leaves a caller's transaction usable", context do
+      %{postgrex_config: postgrex_config} = context
+
+      session = LockSession.start(postgrex_config)
+      bad = [%{event("typed") | tags: [<<0>>]}]
+      fine = [%{event("typed") | tags: ["tenant:a"]}]
+
+      LockSession.run(session, fn tx ->
+        assert {:error, :invalid_tag} = EventStore.append_to_stream("stream", 0, bad, conn: tx)
+        assert :ok = EventStore.append_to_stream("stream", 0, fine, conn: tx)
+      end)
+
+      assert {:ok, :ok} = LockSession.commit(session)
+
+      assert tag_rows(context) == [[1, "tenant:a", "typed"]]
+    end
+
+    test "in an append of 1,000 or more events leaves a caller's transaction usable", context do
+      %{postgrex_config: postgrex_config} = context
+
+      session = LockSession.start(postgrex_config)
+
+      bad =
+        1_001
+        |> EventFactory.create_events()
+        |> List.update_at(1_000, &%{&1 | tags: [<<0xFF>>]})
+
+      fine = [%{event("typed") | tags: ["tenant:a"]}]
+
+      LockSession.run(session, fn tx ->
+        assert {:error, :invalid_tag} = EventStore.append_to_stream("stream", 0, bad, conn: tx)
+        assert :ok = EventStore.append_to_stream("stream", 0, fine, conn: tx)
+      end)
+
+      assert {:ok, :ok} = LockSession.commit(session)
+
+      assert tag_rows(context) == [[1, "tenant:a", "typed"]]
+    end
+
+    test "through `append_to_streams` is refused before any statement" do
+      appends = [{"a", 0, [%{event("typed") | tags: [<<0>>]}]}]
+
+      assert {:error, :invalid_tag} = EventStore.append_to_streams(appends, conn: @no_conn)
+    end
+  end
+
+  describe "the tag predicate" do
+    test "takes any valid UTF-8 up to and past the limit" do
+      assert EventData.valid_tag?("tenant:a")
+      assert EventData.valid_tag?("")
+      assert EventData.valid_tag?("é")
+      assert EventData.valid_tag?(String.duplicate("a", 513))
+    end
+
+    test "refuses what Postgres cannot hold, and anything that is not a binary" do
+      refute EventData.valid_tag?(<<0>>)
+      refute EventData.valid_tag?(<<"a", 0, "b">>)
+      refute EventData.valid_tag?(<<0xFF>>)
+      refute EventData.valid_tag?(nil)
+      refute EventData.valid_tag?(:atom)
+      refute EventData.valid_tag?(1)
+      refute EventData.valid_tag?(~c"tag")
     end
   end
 

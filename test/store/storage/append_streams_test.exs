@@ -667,6 +667,7 @@ defmodule Decree.Store.Storage.AppendStreamsTest do
       for {condition, answer} <- [
             {[items: [[tags: ["tag"]]], after: nil], :invalid_condition},
             {[items: [], after: 0], :invalid_query},
+            {[items: [[tags: [<<0xFF>>]]], after: 0], :invalid_tag},
             {[items: [[tags: [String.duplicate("a", 513)]]], after: 0], :tag_too_long}
           ] do
         assert EventStore.append_to_streams(appends, conn: @no_conn, condition: condition) ==

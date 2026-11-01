@@ -103,9 +103,7 @@ defmodule Decree.Store.QueryTest do
           {"an item with neither", [[]]},
           {"a map item with neither", quote(do: [%{}])},
           {"an item with both empty", [[types: [], tags: []]]},
-          {"a tag that is an atom", [[tags: [:tag]]]},
           {"a type that is an atom", [[types: [:type]]]},
-          {"a nil tag", [[tags: [nil]]]},
           {"a nil type", [[types: [nil]]]},
           {"tags that are not a list", [[tags: "x"]]},
           {"types that are nil", [[types: nil, tags: ["x"]]]},
@@ -113,13 +111,34 @@ defmodule Decree.Store.QueryTest do
           {"a misspelt key", [[tag: ["x"], types: ["a"]]]},
           {"a repeated key", [[tags: ["x"], tags: ["y"]]]},
           {"a string key", quote(do: [%{"tags" => ["x"]}])},
-          {"a tag that is not UTF-8", quote(do: [[tags: [<<0xFF>>]]])},
-          {"a tag with a NUL byte", quote(do: [[tags: [<<"a", 0>>]]])},
           {"a type with a NUL byte", quote(do: [[types: [<<"a", 0>>]]])}
         ] do
       test "refuses #{name}" do
         assert {:error, :invalid_query} = Query.compile(unquote(items))
       end
+    end
+
+    for {name, tag} <- [
+          {"an atom", :tag},
+          {"nil", nil},
+          {"a number", 1},
+          {"not UTF-8", quote(do: <<0xFF>>)},
+          {"a lone NUL byte", quote(do: <<0>>)},
+          {"holding a NUL byte", quote(do: <<"a", 0>>)}
+        ] do
+      test "answers `:invalid_tag` for a tag that is #{name}" do
+        assert {:error, :invalid_tag} = Query.compile([[tags: [unquote(tag)]]])
+        assert {:error, :invalid_tag} = Query.compile([[tags: ["x", unquote(tag)]]])
+        assert {:error, :invalid_tag} = Query.compile([[tags: ["x"]], [tags: [unquote(tag)]]])
+      end
+    end
+
+    test "answers `:invalid_tag` for a tag both invalid and over the limit" do
+      assert {:error, :invalid_tag} = Query.compile([[tags: [String.duplicate(<<0>>, 513)]]])
+    end
+
+    test "answers `:invalid_query` before `:invalid_tag` for a query that is both" do
+      assert {:error, :invalid_query} = Query.compile([[tags: [<<0>>]], []])
     end
 
     test "refuses an invalid item beside a valid one" do

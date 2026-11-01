@@ -33,14 +33,16 @@ defmodule Decree.Store.AppendCondition do
   Compiles a condition.
 
   Answers `{:error, :invalid_condition}` for anything but a keyword list of exactly the
-  keys above with a usable `after`, and passes on `{:error, :invalid_query}` and
-  `{:error, :tag_too_long}` from `Decree.Store.Query.compile/1`. A refusal sends nothing
-  to the database, so a caller's transaction stays alive.
+  keys above with a usable `after`, and passes on `{:error, :invalid_query}`,
+  `{:error, :invalid_tag}` and `{:error, :tag_too_long}` from
+  `Decree.Store.Query.compile/1`. A refusal sends nothing to the database, so a caller's
+  transaction stays alive.
   """
   @spec compile(condition :: term()) ::
           {:ok, t()}
           | {:error, :invalid_condition}
           | {:error, :invalid_query}
+          | {:error, :invalid_tag}
           | {:error, :tag_too_long}
   def compile(condition) do
     with {:ok, items, position, target} <- parse(condition),

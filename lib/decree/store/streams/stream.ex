@@ -308,14 +308,14 @@ defmodule Decree.Store.Streams.Stream do
   # all, not even a BEGIN, and answers before `stream_info/4` can. A caller's transaction
   # stays alive: the table's CHECK, or a rollback here, would abort it.
   defp validate_tags(events) do
-    too_long? = fn tag -> byte_size(tag) > EventData.max_tag_bytes() end
-
-    if Enum.any?(events, fn event -> Enum.any?(event.tags, too_long?) end) do
-      {:error, :tag_too_long}
-    else
-      :ok
+    cond do
+      any_tag?(events, &(not EventData.valid_tag?(&1))) -> {:error, :invalid_tag}
+      any_tag?(events, &(byte_size(&1) > EventData.max_tag_bytes())) -> {:error, :tag_too_long}
+      true -> :ok
     end
   end
+
+  defp any_tag?(events, fun), do: Enum.any?(events, &Enum.any?(&1.tags, fun))
 
   # Runs where `validate_tags/1` does, for the same reason: a refusal sends no statement.
   # `opts` come back with the compiled condition, and without one a plain append's are
