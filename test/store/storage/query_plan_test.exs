@@ -372,7 +372,7 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     )
   end
 
-  # Built like `append_events_v4`: no schema in its text, and the `search_path` set on entry.
+  # Built like `append_events_v5`: no schema in its text, and the `search_path` set on entry.
   defp condition_function do
     """
     CREATE FUNCTION pg_temp.conflicts(

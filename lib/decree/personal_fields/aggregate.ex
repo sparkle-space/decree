@@ -36,6 +36,11 @@ defmodule Decree.PersonalFields.Aggregate do
   on `execute/2` and `before_execute`, a raise reaches logs and telemetry as a
   `Decree.PersonalFields.RedactedError`, and an exit or a throw leaves reduced by
   `Decree.PersonalFields.RedactedError.reduce/1`. An aggregate that doesn't use it is untouched.
+
+  A `Decree.Decision` uses this module too, for what `evolve/2` and `followup_query/3` read:
+  `@personal_fold` means there what it means here, and a raise from a decision that uses it is
+  redacted the same way. `@personal_state` and `@personal_state_subject` don't apply, because a
+  decision has no snapshot. See "Personal fields" in `Decree.Decision`.
   """
 
   @doc false

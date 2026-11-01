@@ -86,6 +86,19 @@ defmodule Decree.Store.Storage.HardDeletePlanTest do
       assert_tag_rows_locked_in_order(plan)
       refute plan =~ ~r/Seq Scan on \S*(event_tags|stream_events)\b/, plan
     end
+
+    test "`read_tags` reaches its rows through the position", context do
+      %{conn: conn, plan_schema: schema} = context
+
+      positions = Enum.to_list(1..@stream_events)
+
+      for tag_kinds <- [[], ["content_ref"]], event_types <- [[], ["captured"]] do
+        plan = explain(conn, Statements.read_tags(schema), [positions, tag_kinds, event_types])
+
+        assert plan =~ "ix_event_tags_position", plan
+        refute plan =~ ~r/Seq Scan on \S*event_tags\b/, plan
+      end
+    end
   end
 
   # `LockRows` over the sort, or the locks follow the scan and the two statements can cycle.

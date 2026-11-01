@@ -40,6 +40,9 @@ defmodule Decree.Commands.CompositeRouter do
       :ok = Bank.AppRouter.dispatch(command, application: BankApp)
 
   A composite router can include composite routers.
+
+  A decision's stream prefix may not overlap an aggregate's across the routers it includes:
+  see "Prefixes" in `Decree.Commands.Router.decide/2`.
   """
 
   alias Decree.Commands.Router
@@ -63,6 +66,7 @@ defmodule Decree.Commands.CompositeRouter do
 
       @default_dispatch_opts default_dispatch_opts
       @registered_commands %{}
+      @stream_prefixes %{decision: [], other: []}
     end
   end
 
@@ -83,6 +87,12 @@ defmodule Decree.Commands.CompositeRouter do
             raise "duplicate registration for #{inspect(command)} command, registered in both #{inspect(existing_router)} and #{inspect(unquote(router_module))}"
         end
       end
+
+      @stream_prefixes Router.merge_stream_prefixes!(
+                         @stream_prefixes,
+                         unquote(router_module).__stream_prefixes__(),
+                         __MODULE__
+                       )
     end
   end
 
@@ -92,6 +102,9 @@ defmodule Decree.Commands.CompositeRouter do
       def __registered_commands__ do
         Enum.map(@registered_commands, fn {command_module, _router} -> command_module end)
       end
+
+      @doc false
+      def __stream_prefixes__, do: @stream_prefixes
 
       @doc """
       Dispatch a registered command.

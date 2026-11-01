@@ -1,0 +1,18 @@
+<%!--
+  The tags of the events at the given positions, one row per position that has any, with the
+  tags in their column's bytewise order. A position is reached through
+  `ix_event_tags_position`.
+
+  `$2` is the store's deletable tag kinds, split as `delete_stream_tags` splits them, and `$3`
+  its deletable event types, each row carrying its event's type. These rows are left out here,
+  in the statement, so that this read is no way round the refusal of a query naming either: a
+  `command:` item can reach an event of a deletable type, and none of that event's tags is
+  answered. A position with no row left is absent. `= ANY` of an empty array is false, so a
+  store that declares neither leaves nothing out.
+--%>
+SELECT position, array_agg(tag ORDER BY tag)
+FROM "<%= schema %>".event_tags
+WHERE position = ANY($1::bigint[])
+  AND NOT (split_part(tag, ':', 1) = ANY($2::text[]))
+  AND NOT (event_type = ANY($3::text[]))
+GROUP BY position;

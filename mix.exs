@@ -46,6 +46,7 @@ defmodule Decree.MixProject do
       "test/framework/aggregates/support",
       "test/framework/application/support",
       "test/framework/commands/support",
+      "test/framework/decision/support",
       "test/framework/event/support",
       "test/framework/event_store/support",
       "test/framework/example_domain",

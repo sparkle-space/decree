@@ -101,6 +101,12 @@ defmodule Decree.Commands.Router do
   aggregate's events: `"<identity_prefix><aggregate_uuid>"`. It can be a string or
   a zero arity function returning a string.
 
+  ## Decide a command with a decision
+
+  A command can be routed to a `Decree.Decision`, which has no aggregate process: it reads
+  what it names, folds it and decides, and its append is conditional on what it read. See
+  `decide/2` for the route, and for what is refused when the router compiles.
+
   ## Consistency
 
   You can choose the consistency guarantee when dispatching a command. The
@@ -394,8 +400,53 @@ defmodule Decree.Commands.Router do
 
   """
   defmacro dispatch(command_module_or_modules, opts) do
-    opts = parse_opts(opts)
+    register(command_module_or_modules, parse_opts(opts))
+  end
 
+  @doc """
+  Configure the command, or list of commands, to be decided by a `Decree.Decision`.
+
+  ## Example
+
+      defmodule AccountRouter do
+        use Decree.Commands.Router
+
+        decide ClaimEmail, to: EmailClaims, identity: :user_id, identity_prefix: "user-"
+      end
+
+  The params are `to`, `identity`, `identity_prefix`, `stream_tag`, `timeout` and
+  `consistency`, as on `dispatch/2`, and `identify/2` works on the decision module as it does
+  on an aggregate. The events land on `<identity_prefix><identity>`, or on the members
+  `c:Decree.Decision.decide/2` names, under that prefix. Middleware, `returning:` and
+  `consistency:` work as on an aggregate route. See `Decree.Decision`.
+
+  ## Prefixes
+
+  A decision's stream prefix must be declared in the event store's `conditional_appends`:
+  the store then refuses anything but a decision's conditional append on those streams. So
+  that it can, a route is refused when the router compiles, with an `ArgumentError`, for:
+
+    - no identity, neither `identity:` nor an `identify` with `by:`: no dispatch could name
+      a stream.
+    - no prefix, or `""`: the store could not tell these streams from any other.
+    - a function prefix: nothing can compare it at build time.
+    - a function identity with no `stream_tag:`: it has no kind for the stream's entity tag.
+    - an aggregate route's or an `identify`'s binary prefix overlapping the decision's, one
+      being a prefix of the other: the aggregate's appends would be refused at run time.
+
+  The same overlap is refused across the routers of a `Decree.Commands.CompositeRouter`, and
+  of a `Decree.Application`, which is one.
+
+  An aggregate's function prefix and an aggregate's bare identity, with no prefix, cannot be
+  checked at build time. The store's refusal holds them:
+  `{:error, :plain_append_to_conditional_prefix}` when such a stream lands in a declared
+  prefix.
+  """
+  defmacro decide(command_module_or_modules, opts) do
+    register(command_module_or_modules, parse_decide_opts(opts))
+  end
+
+  defp register(command_module_or_modules, opts) do
     for command_module <- List.wrap(command_module_or_modules) do
       quote do
         if Enum.any?(@registered_commands, fn {command_module, _command_opts} ->
@@ -521,6 +572,15 @@ defmodule Decree.Commands.Router do
         Enum.map(@registered_commands, fn {command_module, _command_opts} -> command_module end)
       end
 
+      @stream_prefixes Router.stream_prefixes!(
+                         __MODULE__,
+                         @registered_commands,
+                         @registered_identities
+                       )
+
+      @doc false
+      def __stream_prefixes__, do: @stream_prefixes
+
       @doc false
       def dispatch(command, opts \\ [])
 
@@ -542,6 +602,8 @@ defmodule Decree.Commands.Router do
 
       for {command_module, command_opts} <- @registered_commands do
         @aggregate Keyword.fetch!(command_opts, :aggregate)
+        @decision Keyword.get(command_opts, :decision)
+        @identified_by @decision || @aggregate
         @handler Keyword.fetch!(command_opts, :to)
         @function Keyword.fetch!(command_opts, :function)
         @before_execute Keyword.get(command_opts, :before_execute)
@@ -591,7 +653,7 @@ defmodule Decree.Commands.Router do
             end
 
           {identity, identity_prefix} =
-            case Map.get(@registered_identities, @aggregate) do
+            case Map.get(@registered_identities, @identified_by) do
               nil ->
                 {@identity, @identity_prefix}
 
@@ -613,6 +675,7 @@ defmodule Decree.Commands.Router do
             handler_function: @function,
             handler_before_execute: @before_execute,
             aggregate_module: @aggregate,
+            decision_module: @decision,
             identity: identity,
             identity_prefix: identity_prefix,
             stream_tag: @stream_tag,
@@ -686,14 +749,109 @@ defmodule Decree.Commands.Router do
     end
   end
 
-  defp stream_tag_kind?(kind) when kind in [nil, true, false], do: false
+  @doc false
+  def stream_tag_kind?(kind) when kind in [nil, true, false], do: false
 
   # `\A` and `\z`, because `$` also matches before a trailing newline.
-  defp stream_tag_kind?(kind) when is_atom(kind) do
+  def stream_tag_kind?(kind) when is_atom(kind) do
     Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, Atom.to_string(kind))
   end
 
-  defp stream_tag_kind?(_kind), do: false
+  def stream_tag_kind?(_kind), do: false
+
+  # The router's prefixes, each route's as its dispatch will resolve it, once `identify` has
+  # been seen. Refuses what `decide/2` lists, here and not in the macro because an `identify`
+  # may follow a `decide`.
+  @doc false
+  def stream_prefixes!(router, registered_commands, registered_identities) do
+    decisions =
+      for {command, opts} <- registered_commands, decision = opts[:decision] do
+        {identity, prefix} = route_identity(registered_identities, decision, opts)
+
+        validate_decision_route!(router, command, decision, identity, prefix, opts)
+
+        {decision, prefix}
+      end
+
+    decision_modules = Enum.map(decisions, &elem(&1, 0))
+
+    routes =
+      for {_command, opts} <- registered_commands, not Keyword.has_key?(opts, :decision) do
+        registered_identities |> route_identity(opts[:aggregate], opts) |> elem(1)
+      end
+
+    identified =
+      for {module, config} <- registered_identities, module not in decision_modules do
+        Keyword.get(config, :prefix)
+      end
+
+    prefixes = %{
+      decision: decisions |> Enum.map(&elem(&1, 1)) |> Enum.uniq(),
+      other: (routes ++ identified) |> Enum.filter(&binary_prefix?/1) |> Enum.uniq()
+    }
+
+    merge_stream_prefixes!(%{decision: [], other: []}, prefixes, router)
+  end
+
+  # Merges one router's prefixes into a composite's. Raises when a decision's overlaps
+  # another's prefix, one being a prefix of the other, whichever router holds which.
+  @doc false
+  def merge_stream_prefixes!(known, added, router) do
+    merged = %{
+      decision: Enum.uniq(known.decision ++ added.decision),
+      other: Enum.uniq(known.other ++ added.other)
+    }
+
+    with {decision, other} <- overlap(merged) do
+      raise ArgumentError,
+            "#{inspect(router)} has an aggregate prefix #{inspect(other)} overlapping the " <>
+              "decision prefix #{inspect(decision)}: the store refuses a plain append under " <>
+              "a decision's prefix"
+    end
+
+    merged
+  end
+
+  defp overlap(%{decision: decisions, other: others}) do
+    Enum.find_value(decisions, fn decision ->
+      other =
+        Enum.find(others, fn other ->
+          String.starts_with?(decision, other) or String.starts_with?(other, decision)
+        end)
+
+      if other, do: {decision, other}
+    end)
+  end
+
+  defp route_identity(registered_identities, module, opts) do
+    case Map.get(registered_identities, module) do
+      nil -> {opts[:identity], opts[:identity_prefix]}
+      config -> {Keyword.get(config, :by, opts[:identity]), Keyword.get(config, :prefix)}
+    end
+  end
+
+  defp validate_decision_route!(router, command, decision, identity, prefix, opts) do
+    named = "#{inspect(command)} decided by #{inspect(decision)} in #{inspect(router)}"
+
+    cond do
+      is_nil(identity) ->
+        raise ArgumentError, "#{named} has no identity: name `identity:` or `identify ... by:`"
+
+      is_function(prefix) ->
+        raise ArgumentError, "#{named} has a function prefix, which cannot be checked at build"
+
+      not binary_prefix?(prefix) ->
+        raise ArgumentError, "#{named} has no stream prefix"
+
+      is_function(identity) and is_nil(opts[:stream_tag]) ->
+        raise ArgumentError, "#{named} has a function identity with no `stream_tag:`"
+
+      true ->
+        :ok
+    end
+  end
+
+  defp binary_prefix?(prefix), do: is_binary(prefix) and prefix != ""
 
   @doc false
   def get_opt(opts, name, default \\ nil) do
@@ -735,6 +893,22 @@ defmodule Decree.Commands.Router do
     :lifespan,
     :consistency
   ]
+
+  @decide_params [:to, :identity, :identity_prefix, :stream_tag, :timeout, :consistency]
+
+  defp parse_decide_opts(opts) do
+    with {unknown_param, _} <- Enum.find(opts, fn {param, _} -> param not in @decide_params end) do
+      raise """
+      unexpected decide parameter "#{unknown_param}"
+      available params are: #{Enum.map_join(@decide_params, ", ", &to_string/1)}
+      """
+    end
+
+    case Keyword.fetch(opts, :to) do
+      {:ok, to} -> [decision: to, aggregate: nil, function: :decide] ++ opts
+      :error -> raise "decide missing required parameter: :to"
+    end
+  end
 
   defp parse_opts(opts) do
     {to, opts} = Keyword.pop(opts, :to)

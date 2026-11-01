@@ -50,7 +50,6 @@ defmodule Decree.Aggregates.ExecutionContext do
 
   """
 
-  alias Decree.Aggregates.Aggregate
   alias Decree.Aggregates.DefaultLifespan
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Commands.ExecutionResult
@@ -85,12 +84,15 @@ defmodule Decree.Aggregates.ExecutionContext do
     {:ok, context}
   end
 
-  def format_reply({:ok, events}, %ExecutionContext{} = context, %Aggregate{} = aggregate) do
-    %Aggregate{
+  # `outcome` is an `%Aggregate{}`, or a decision's map of the same three keys. A decision
+  # has no process, so nothing else of an aggregate's applies, and it adds what its append
+  # wrote: `:position` and `:stream_versions`, which an aggregate has not got.
+  def format_reply({:ok, events}, %ExecutionContext{} = context, outcome) do
+    %{
       aggregate_uuid: aggregate_uuid,
       aggregate_state: aggregate_state,
       aggregate_version: aggregate_version
-    } = aggregate
+    } = outcome
 
     %ExecutionContext{metadata: metadata, returning: returning} = context
 
@@ -110,7 +112,9 @@ defmodule Decree.Aggregates.ExecutionContext do
           aggregate_state: aggregate_state,
           aggregate_version: aggregate_version,
           events: events,
-          metadata: metadata
+          metadata: metadata,
+          position: Map.get(outcome, :position),
+          stream_versions: Map.get(outcome, :stream_versions)
         }
 
         {:ok, aggregate_version, events, aggregate_state, result}

@@ -315,7 +315,7 @@ defmodule Decree.Store.Sql.Init do
   # The append function, in its latest version only: a fresh store carries no older
   # one. The signature follows the `events` columns, because Postgrex encodes from
   # the declared types. The body must stay byte-identical to the migration that
-  # adds this version (priv/decree/store/migrations/v1.7.0.sql); the comment at its
+  # adds this version (priv/decree/store/migrations/v1.9.0.sql); the comment at its
   # top states the name resolution and the versioning contract. The condition is
   # rendered from the one text that says what a query matches, and the migration
   # embeds the same bytes, so a change to that template fails their comparison.
@@ -336,7 +336,7 @@ defmodule Decree.Store.Sql.Init do
       |> IO.iodata_to_binary()
 
     """
-    CREATE FUNCTION append_events_v4(
+    CREATE FUNCTION append_events_v5(
       p_schema text,
       p_stream_ids bigint[],
       p_stream_uuids text[],
@@ -360,8 +360,11 @@ defmodule Decree.Store.Sql.Init do
       p_probe_types text[],
       p_rest_items bigint[],
       p_rest_tags text[],
-      p_after bigint
-    ) RETURNS bigint[]
+      p_after bigint,
+      OUT o_stream_ids bigint[],
+      OUT o_stream_versions bigint[],
+      OUT o_position bigint
+    ) RETURNS record
     LANGUAGE plpgsql VOLATILE
     SET search_path TO pg_catalog, pg_temp
     SET enable_seqscan TO off
@@ -388,8 +391,14 @@ defmodule Decree.Store.Sql.Init do
     -- needs nothing but the config change. SET search_path FROM CURRENT, or a schema
     -- baked into this text, would freeze the name the function was created under.
     --
-    -- The _v4 suffix is a contract: a later change adds a new version and never
+    -- The _v5 suffix is a contract: a later change adds a new version and never
     -- replaces or drops this one, because an old pod still calls this signature.
+    --
+    -- Three OUT parameters say what this call wrote. o_stream_ids[n] and
+    -- o_stream_versions[n] are member n's stream id and its version after this call, in
+    -- the caller's order, and o_position is the last $all position this call wrote. The
+    -- members' two are set before $all, so what they add under the lock is nothing:
+    -- only o_position's assignment is new there.
     --
     -- The p_stream_* arrays are parallel, one entry per member in the caller's order:
     -- p_stream_ids[n] NULL creates that stream, p_expected_versions[n] NULL means any
@@ -431,12 +440,14 @@ defmodule Decree.Store.Sql.Init do
       v_conflict boolean;
     BEGIN
       IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION 'append_events_v4 needs READ COMMITTED, not %',
+        RAISE EXCEPTION 'append_events_v5 needs READ COMMITTED, not %',
           current_setting('transaction_isolation')
           USING ERRCODE = 'invalid_transaction_state';
       END IF;
 
       PERFORM set_config('search_path', quote_ident(p_schema) || ', pg_temp', true);
+
+      o_stream_versions := array_fill(0::bigint, ARRAY[cardinality(p_stream_uuids)]);
 
       -- Every arm writes its member's row here, so the members' event_notification NOTIFYs
       -- fire in this order, before the one for $all. A stale member writes no row, and the
@@ -482,7 +493,11 @@ defmodule Decree.Store.Sql.Init do
           SET stream_version = stream_version + p_stream_counts[v_member]
           WHERE stream_id = p_stream_ids[v_member];
         END IF;
+
+        o_stream_versions[v_member] := v_versions[v_member] + p_stream_counts[v_member];
       END LOOP;
+
+      o_stream_ids := v_stream_ids;
 
       -- These rows carry no position, so they stay out of the $all lock.
       INSERT INTO events
@@ -560,7 +575,9 @@ defmodule Decree.Store.Sql.Init do
       FROM unnest(p_tag_event_indexes, p_tags, p_tag_event_types)
         AS new_tags (index, tag, event_type);
 
-      RETURN v_stream_ids;
+      o_position := v_all_version + v_count;
+
+      RETURN;
     END;
     $$;
     """
@@ -625,7 +642,7 @@ defmodule Decree.Store.Sql.Init do
   defp record_event_store_schema_version do
     """
     INSERT INTO schema_migrations (major_version, minor_version, patch_version)
-    VALUES (1, 8, 0);
+    VALUES (1, 9, 0);
     """
   end
 end

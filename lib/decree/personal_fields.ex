@@ -13,15 +13,20 @@ defmodule Decree.PersonalFields do
 
     - **Append.** `Decree.Event.Append.prepare/4` looks up each subject of each event, drops
       erased values, takes the tags from the plaintext that will be stored, then encrypts. An
-      aggregate's append runs it. `Decree.EventStore.append_to_stream/5` and `Decree.Store` do
-      not: an application's own direct append of a declared event stores what it is given, so
-      a build check of its own must fence that.
+      aggregate's append runs it, and a decision's, once per member with that member's stream.
+      `Decree.EventStore.append_to_stream/5` and `Decree.Store` do not: an application's own
+      direct append of a declared event stores what it is given, so a build check of its own
+      must fence that.
 
     - **Delivery.** `Decree.Event.Handler` decrypts an event for a handler whose `handle/2`
       names it in a clause head, and for no other. The `RecordedEvent` is never rewritten.
 
     - **Rehydration.** An aggregate lists the events its state reads with
       `Decree.PersonalFields.Aggregate`, and those are decrypted in its fold.
+
+    - **Decisions.** A `Decree.Decision` lists the events it reads the same way, and those
+      reach `evolve/2` and `followup_query/3` decrypted, body only. Every other event reaches
+      them as stored. There is no snapshot.
 
     - **Snapshots.** The state an aggregate lists is encrypted on the way to the store and
       decrypted on the way back.
@@ -36,9 +41,10 @@ defmodule Decree.PersonalFields do
 
   A lookup answers a key, `:erased` or `:unknown`. Erased means absent: a field is nil and a
   metadata key is gone. Unknown is everything else, and it is never written or read as absent:
-  an append fails with `{:error, :key_unknown}`, a delivery is held and not acked, and an
-  aggregate stops rather than fold a missing value. See `Decree.Event.Handler` and
-  `Decree.Aggregates.Aggregate`.
+  an append fails with `{:error, :key_unknown}`, a delivery is held and not acked, an
+  aggregate stops rather than fold a missing value, and a decision answers
+  `{:error, :key_unknown}` with nothing appended. See `Decree.Event.Handler`,
+  `Decree.Aggregates.Aggregate` and `Decree.Decision`.
 
   A nil stays nil. A bare value in a declared field passes through, and emits
   `[:decree, :personal_field, :plaintext_read]` unless its subject is `{:when_present, _}`.
@@ -60,6 +66,7 @@ defmodule Decree.PersonalFields do
   alias Decree.PersonalFields.Declaration
   alias Decree.PersonalFields.Envelope
   alias Decree.PersonalFields.Lookup
+  alias Decree.PersonalFields.RedactedError
 
   @type answers :: Lookup.answers()
 
@@ -271,21 +278,49 @@ defmodule Decree.PersonalFields do
   ## Fold
 
   @doc false
-  # The events an aggregate's state reads, or `nil` for an aggregate that doesn't use
-  # `Decree.PersonalFields.Aggregate`. Read once per fold, because an aggregate that uses it can
-  # hold decrypted state whatever it lists, and one that doesn't pays this one check.
+  # The events a fold reads, or `nil` for an aggregate or a decision that doesn't use
+  # `Decree.PersonalFields.Aggregate`. Read once per fold, because one that uses it can hold
+  # decrypted state whatever it lists, and one that doesn't pays this one check.
   @spec fold_events(module) :: [module] | nil
   def fold_events(aggregate_module) do
     if adopted?(aggregate_module), do: aggregate_module.__personal_fold__()
   end
 
   @doc false
-  # An aggregate that holds decrypted values, whose raises are redacted.
+  # An aggregate or a decision that holds decrypted values, whose raises are redacted.
   @spec adopted?(module) :: boolean
-  def adopted?(aggregate_module), do: exports?(aggregate_module, :__personal_fold__)
+  def adopted?(module), do: exports?(module, :__personal_fold__)
 
   @doc false
-  # Decrypts one event's body for a fold. Metadata is never read: `apply/2` does not see it.
+  # What a raise from such a module reports. Its code holds decrypted values, and a raise can
+  # carry them in its message or in a stack frame's arguments. Any other module's is its own.
+  @spec reported_exception(module, Exception.t(), Exception.stacktrace()) ::
+          {Exception.t(), Exception.stacktrace()}
+  def reported_exception(module, error, stacktrace) do
+    if adopted?(module) do
+      {RedactedError.redact(error), RedactedError.scrub_stacktrace(stacktrace)}
+    else
+      {error, stacktrace}
+    end
+  end
+
+  @doc false
+  # One event as a fold reads it: decrypted when `fold` lists it, and as stored otherwise.
+  @spec readable_event(Application.t(), RecordedEvent.t(), [module], answers) ::
+          {:ok, term, answers} | {:error, :key_unknown}
+  def readable_event(application, %RecordedEvent{data: data} = event, fold, answers) do
+    if in_fold?(data, fold) do
+      decrypt_fold_event(application, event, answers)
+    else
+      {:ok, data, answers}
+    end
+  end
+
+  defp in_fold?(%module{}, fold), do: module in fold
+  defp in_fold?(_data, _fold), do: false
+
+  @doc false
+  # Decrypts one event's body for a fold. Metadata is never read: no fold sees it.
   @spec decrypt_fold_event(Application.t(), RecordedEvent.t(), answers) ::
           {:ok, struct, answers} | {:error, :key_unknown}
   def decrypt_fold_event(application, %RecordedEvent{} = event, answers) do

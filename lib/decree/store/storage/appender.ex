@@ -1,12 +1,12 @@
 defmodule Decree.Store.Storage.Appender do
   @moduledoc false
-  alias Decree.Store.{AppendCondition, AppendError, Query, RecordedEvent, UUID}
+  alias Decree.Store.{AppendCondition, AppendError, AppendResult, Query, RecordedEvent, UUID}
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Stream, as: StreamStorage
 
   require Logger
 
-  # The SQLSTATEs `append_events_v4` raises for a failed condition and for a member's row
+  # The SQLSTATEs `append_events_v5` raises for a failed condition and for a member's row
   # that is gone: the `ZD` class is no Postgres one, so nothing else raises them, and
   # Postgrex has no name for them.
   @append_condition_failed "ZD001"
@@ -16,7 +16,7 @@ defmodule Decree.Store.Storage.Appender do
   Append the given list of events to one stream in storage.
 
   Events are inserted in batches of 1,000 within a single transaction, one call
-  of the `append_events_v4` function per batch, each a call of one member. The batch
+  of the `append_events_v5` function per batch, each a call of one member. The batch
   keeps one call's arrays and its hold of the `$all` row bounded.
 
   The `:tags` option is one list of tags per event, in event order; an event past
@@ -25,7 +25,9 @@ defmodule Decree.Store.Storage.Appender do
   a `:rejected` `Decree.Store.AppendError`, and a tag repeated on one event hits
   `event_tags_pkey`, which reads as `:wrong_expected_version`.
 
-  The `:condition` option is a compiled `Decree.Store.AppendCondition`.
+  The `:condition` option is a compiled `Decree.Store.AppendCondition`. With
+  `returning: :append_result`, success answers `{:ok, %Decree.Store.AppendResult{}}`, from
+  the last batch.
 
   Returns `:ok` on success, or one of `{:error, :not_found}`,
   `{:error, :duplicate_event}`, `{:error, :duplicate_stream_uuid}`,
@@ -39,12 +41,13 @@ defmodule Decree.Store.Storage.Appender do
     {tags, opts} = Keyword.pop(opts, :tags, [])
     {condition, opts} = Keyword.pop(opts, :condition)
     {expected_version, opts} = Keyword.pop(opts, :expected_version)
+    {returning, opts} = Keyword.pop(opts, :returning)
 
     try do
       events
       |> encode_events(tags, correlation_id_type, causation_id_type)
       |> Stream.chunk_every(1_000)
-      |> Enum.reduce({stream_id, condition}, fn batch, {stream_id, condition} ->
+      |> Enum.reduce({stream_id, condition, nil}, fn batch, {stream_id, condition, _written} ->
         {events, tags} = Enum.unzip(batch)
         event_count = length(events)
 
@@ -55,19 +58,21 @@ defmodule Decree.Store.Storage.Appender do
           tags: tags
         }
 
-        with {:ok, [new_stream_id]} <- insert_members(conn, [member], condition, opts) do
+        with {:ok, {[new_stream_id], _versions, _position} = written} <-
+               insert_members(conn, [member], condition, opts) do
           Logger.debug("Appended #{event_count} event(s) to stream #{inspect(stream_uuid)}")
 
           # Only the first batch carries the condition. A later batch's would see the
           # earlier batches' own rows and fail on them, and `$all` is held from the first
           # batch to the commit, so nothing can interleave.
-          {new_stream_id, nil}
+          {new_stream_id, nil, written}
         else
           {:error, error} -> throw({:error, error})
         end
       end)
-
-      :ok
+      |> then(fn {_stream_id, _condition, written} ->
+        success_reply(returning, [stream_uuid], written)
+      end)
     catch
       {:error, error} = reply ->
         Logger.warning(
@@ -79,7 +84,7 @@ defmodule Decree.Store.Storage.Appender do
   end
 
   @doc """
-  Append to several streams in storage, atomically, in one call of the `append_events_v4`
+  Append to several streams in storage, atomically, in one call of the `append_events_v5`
   function at any size, so one statement is what makes it all or nothing. There is no
   split: a later batch would take a stream's row while holding `$all`, which breaks the
   lock order. The call holds `$all` no longer than a split would, because a split holds
@@ -96,6 +101,7 @@ defmodule Decree.Store.Storage.Appender do
     {correlation_id_type, opts} = Keyword.pop(opts, :correlation_id_type, "uuid")
     {causation_id_type, opts} = Keyword.pop(opts, :causation_id_type, "uuid")
     {condition, opts} = Keyword.pop(opts, :condition)
+    {returning, opts} = Keyword.pop(opts, :returning)
 
     members =
       Enum.map(members, fn %{events: events, tags: tags} = member ->
@@ -110,12 +116,12 @@ defmodule Decree.Store.Storage.Appender do
     stream_uuids = Enum.map(members, &stream_uuid/1)
 
     case insert_members(conn, members, condition, opts) do
-      {:ok, _stream_ids} ->
+      {:ok, written} ->
         event_count = members |> Enum.map(&length(&1.events)) |> Enum.sum()
 
         Logger.debug("Appended #{event_count} event(s) to streams #{inspect(stream_uuids)}")
 
-        :ok
+        success_reply(returning, stream_uuids, written)
 
       {:error, error} = reply ->
         Logger.warning(
@@ -197,7 +203,8 @@ defmodule Decree.Store.Storage.Appender do
   defp encode_uuid(nil), do: nil
   defp encode_uuid(value), do: UUID.string_to_binary!(value)
 
-  # One call of `append_events_v4`, which answers each member's stream id.
+  # One call of `append_events_v5`, which answers each member's stream id and version after
+  # the call, in the caller's order, and the last position it wrote.
   defp insert_members(conn, members, condition, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {created_at, opts} = Keyword.pop(opts, :created_at_override)
@@ -214,12 +221,22 @@ defmodule Decree.Store.Storage.Appender do
         build_tag_parameters(events, tags) ++ build_condition_parameters(condition)
 
     case Postgrex.query(conn, Statements.append_events(schema), params, opts) do
-      {:ok, %Postgrex.Result{rows: [[stream_ids]]}} ->
-        {:ok, stream_ids}
+      {:ok, %Postgrex.Result{rows: [[stream_ids, stream_versions, position]]}} ->
+        {:ok, {stream_ids, stream_versions, position}}
 
       {:error, error} ->
         handle_error(error)
     end
+  end
+
+  defp success_reply(nil, _stream_uuids, _written), do: :ok
+
+  defp success_reply(:append_result, stream_uuids, {_stream_ids, stream_versions, position}) do
+    {:ok,
+     %AppendResult{
+       position: position,
+       stream_versions: stream_uuids |> Enum.zip(stream_versions) |> Map.new()
+     }}
   end
 
   # Each batch checks its own base, so the second batch of a new stream finds the
@@ -257,7 +274,7 @@ defmodule Decree.Store.Storage.Appender do
     [streams, offsets]
   end
 
-  # One array per column of `append_events_v4`, in the function's order.
+  # One array per column of `append_events_v5`, in the function's order.
   defp build_insert_parameters(events) do
     [
       Enum.map(events, & &1.event_id),

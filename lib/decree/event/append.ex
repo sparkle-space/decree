@@ -4,7 +4,7 @@ defmodule Decree.Event.Append do
   """
 
   alias Decree.Aggregates.ExecutionContext
-  alias Decree.Event.{TagContext, Tags}
+  alias Decree.Event.{Mapper, TagContext, Tags}
   alias Decree.EventStore.EventData
   alias Decree.PersonalFields
   alias Decree.PersonalFields.RedactedError
@@ -13,8 +13,8 @@ defmodule Decree.Event.Append do
   @doc """
   Answers a copy of `event_data` ready for the store.
 
-  Every framework append path calls this one function, with the application's name and the
-  stream's. Each event takes these steps, on copies:
+  Every framework append path reaches this one function, through `prepare_events/4`, with the
+  application's name and the stream's. Each event takes these steps, on copies:
 
     1. **Lookup.** One `Decree.PersonalFields.KeySource` lookup per subject, for each declared
        value that is not nil.
@@ -36,9 +36,9 @@ defmodule Decree.Event.Append do
   deterministic: the same event and context give the same tags.
 
   The first `{:error, reason}` stops and is returned. A raise from an implementation is not
-  rescued here: the aggregate answers it, with its state unchanged. On an event with a
-  declaration anything leaving an implementation can carry the value it failed on, so its
-  error reason, exit and throw are reduced by `Decree.PersonalFields.RedactedError.reduce/1`,
+  rescued here: the aggregate or the decision answers it, having written nothing. On an event
+  with a declaration anything leaving an implementation can carry the value it failed on, so
+  its error reason, exit and throw are reduced by `Decree.PersonalFields.RedactedError.reduce/1`,
   and a raise becomes a `Decree.PersonalFields.RedactedError`.
 
   ## Framework tags
@@ -88,6 +88,38 @@ defmodule Decree.Event.Append do
     end
   end
 
+  @doc """
+  Maps `events` to event data for the dispatch `context` describes, and answers them through
+  `prepare/4`. Every path that appends a command's events calls this one function, per stream.
+  No events prepare to `{:ok, []}`.
+  """
+  @spec prepare_events(Decree.Application.t(), String.t(), [struct()], ExecutionContext.t()) ::
+          {:ok, [EventData.t()]} | {:error, term()}
+  def prepare_events(_application, _stream_uuid, [], %ExecutionContext{}), do: {:ok, []}
+
+  def prepare_events(application, stream_uuid, events, %ExecutionContext{} = context) do
+    %ExecutionContext{
+      causation_id: causation_id,
+      correlation_id: correlation_id,
+      metadata: metadata
+    } = context
+
+    event_data =
+      Mapper.map_to_event_data(events,
+        causation_id: causation_id,
+        correlation_id: correlation_id,
+        metadata: metadata
+      )
+
+    prepare(application, stream_uuid, event_data, context)
+  end
+
+  # The tag every event a command appends carries, for a read that has to name it: being
+  # the code that writes the tag, it cannot differ from what the store holds.
+  @doc false
+  @spec command_tag(struct()) :: String.t() | nil
+  def command_tag(command), do: key_tag("command", Map.get(command, :command_id))
+
   # `plan` is nil for an event with no declaration.
   defp event_tags(%EventData{} = data, nil, %ExecutionContext{} = context) do
     tags(data, context)
@@ -118,7 +150,7 @@ defmodule Decree.Event.Append do
   defp framework_tags(%ExecutionContext{command: command} = context) do
     Enum.reject(
       [
-        key_tag("command", Map.get(command, :command_id)),
+        command_tag(command),
         "command_kind:" <> inspect(command.__struct__),
         key_tag("correlation", Map.get(command, :correlation_id)),
         stream_tag(context)

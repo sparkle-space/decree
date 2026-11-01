@@ -4,6 +4,7 @@ defmodule Decree.EventStore.Adapters.EventStore do
   """
 
   alias Decree.EventStore.Adapters.EventStore.Mapper
+  alias Decree.Store.ReadResult
 
   @behaviour Decree.EventStore.Adapter
 
@@ -38,6 +39,35 @@ defmodule Decree.EventStore.Adapters.EventStore do
 
     opts = Keyword.put(opts, :name, name)
     event_store.append_to_stream(stream_uuid, expected_version, events, opts)
+  end
+
+  @impl Decree.EventStore.Adapter
+  def append_to_streams(adapter_meta, appends, opts) do
+    {event_store, name} = extract_adapter_meta(adapter_meta)
+
+    appends =
+      Enum.map(appends, fn {stream_uuid, expected_version, events} ->
+        {stream_uuid, expected_version, Enum.map(events, &Mapper.to_event_data/1)}
+      end)
+
+    event_store.append_to_streams(appends, Keyword.put(opts, :name, name))
+  end
+
+  @impl Decree.EventStore.Adapter
+  def read_query(adapter_meta, items, opts) do
+    {event_store, name} = extract_adapter_meta(adapter_meta)
+
+    with {:ok, %ReadResult{events: events} = result} <-
+           event_store.read_query(items, Keyword.put(opts, :name, name)) do
+      {:ok, %ReadResult{result | events: Enum.map(events, &Mapper.from_recorded_event/1)}}
+    end
+  end
+
+  @impl Decree.EventStore.Adapter
+  def read_tags(adapter_meta, positions, opts) do
+    {event_store, name} = extract_adapter_meta(adapter_meta)
+
+    event_store.read_tags(positions, Keyword.put(opts, :name, name))
   end
 
   @impl Decree.EventStore.Adapter

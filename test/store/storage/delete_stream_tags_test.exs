@@ -134,6 +134,37 @@ defmodule Decree.Store.Storage.DeleteStreamTagsTest do
       end
     end
 
+    test "the `command` kind, alone or among others, with no statement sent" do
+      for tag_kinds <- [["command"], ["email", "command"], ["command", "email"]] do
+        assert {:error, :invalid_tag_kinds} =
+                 EventStore.delete_stream_tags("a", tag_kinds, conn: @no_conn)
+      end
+    end
+
+    test "the `command` kind takes nothing, and a caller's transaction survives", context do
+      append("a", ["command:abc", "email:x"])
+
+      session = LockSession.start(context.postgrex_config)
+
+      LockSession.run(session, fn tx ->
+        assert {:error, :invalid_tag_kinds} =
+                 EventStore.delete_stream_tags("a", ["email", "command"], conn: tx)
+
+        assert %Postgrex.Result{rows: [[1]]} = Postgrex.query!(tx, "SELECT 1", [])
+      end)
+
+      assert {:ok, :ok} = LockSession.commit(session)
+      assert tags(context, "a") == ["command:abc", "email:x"]
+    end
+
+    test "a kind that only resembles `command` goes", context do
+      append("a", ["command:abc", "command_kind:x", "commander:y"])
+
+      assert {:ok, 2} = EventStore.delete_stream_tags("a", ["command_kind", "commander"])
+
+      assert tags(context, "a") == ["command:abc"]
+    end
+
     test "`enable_hard_deletes` off, with no statement sent" do
       stop_supervised!(TestEventStore)
       start_supervised!({TestEventStore, serializer: PassThroughSerializer})

@@ -245,6 +245,24 @@ defmodule Decree.Store do
   before a query's answer can be trusted to be complete. W-1 starts from an empty store,
   and the plan's §5.6 fallback backfills.
 
+  ## Reading the tags of events
+
+  A `Decree.Store.ReadResult` carries no tags: `matched_items` says which items matched an
+  event, and an item cannot name a value it does not know. `c:read_tags/2` answers what tags
+  the events at some positions carry, in one statement:
+
+      {:ok, %{12 => ["command:1", "user:7"]}} = MyApp.EventStore.read_tags([12, 40])
+
+  A position with no row is absent, as position 40 is here, and a caller reads that as an
+  event that does not carry the tag. Tags of a kind the store declares deletable are left out
+  in the statement, and so is every tag of an event of a type it declares, the `command:` tag
+  included, so this is no way round `{:error, :query_names_deletable}` (see "Deletable
+  streams"), even at a position a `command:` item reached. A position whose every tag is left
+  out is absent too and reads the same way, which fails closed: no tag of it reaches a caller,
+  and a decision still refuses that command match, by the item that matched and not by the
+  tag. It is a read of its own, in its own snapshot. That is sound for what a tag row can do:
+  a row takes no update, so a read after another read can see one go and never see one change.
+
   ## Conditional appends
 
   A conditional append writes its events only if no event after a position matches a
@@ -280,6 +298,37 @@ defmodule Decree.Store do
   earlier events, so one of them past `after` fails it. Outside a transaction, a failed
   condition is an answer and is not retried. A `deadlock_detected` retry evaluates the
   condition again, with the same `after`.
+
+  **Nothing else writes to a declared prefix.** A stream starting with a prefix of
+  `conditional_appends` holds what a condition let through, and only that. A plain
+  `c:append_to_stream/4` or `c:append_to_streams/2` to one answers
+  `{:error, :plain_append_to_conditional_prefix}`, one such member refusing the whole batch,
+  and a `c:link_to_stream/4` into one answers `{:error, :link_into_conditional_prefix}`. Both
+  are answered before any statement is sent, at every expected version. A condition is what
+  makes an append conditional, so one passing on a declared `target` is allowed on such a
+  stream.
+
+  Those events are what later decisions rest on, their `command:` tags included, so a hard
+  delete of a stream starting with such a prefix answers
+  `{:error, :hard_delete_of_conditional_prefix}`, before any statement is sent and at every
+  expected version, unless the stream also starts with a prefix of `deletable`: a store that
+  declares both has said so, and "Deletable streams" states that cost. A store without
+  `enable_hard_deletes` keeps its own answer, and a soft delete is unchanged. The refusal goes
+  by the stream's name, so it does not reach a hard delete of another stream holding a link
+  to such an event, which removes that event as "Deletable streams" says.
+
+  **What the append wrote.** With `returning: :append_result`, an append answers
+  `{:ok, %Decree.Store.AppendResult{}}` in place of `:ok`, with the last position it wrote and
+  each stream's version after it:
+
+      {:ok, %Decree.Store.AppendResult{position: position, stream_versions: versions}} =
+        MyApp.EventStore.append_to_stream("decision-1", :no_stream, events,
+          condition: [items: items, after: head],
+          returning: :append_result
+        )
+
+  Both come from the function that wrote them, so no read can race them. Any other value
+  answers `{:error, :invalid_returning}` before any statement is sent.
 
   **The coverage gap, on a write path.** A condition matches rows of the `event_tags` and
   `event_types` tables. An event from before store migration 1.5.0, or one an old pod
@@ -359,8 +408,10 @@ defmodule Decree.Store do
   declaration, such as a misspelt key or a module where its name belongs, raises an
   `ArgumentError` when the config is parsed, because it would refuse nothing. Only the config
   declares: `deletable` is no option of any call. A store that declares nothing behaves as
-  if none of this existed. Declaring does not change what `enable_hard_deletes` allows: a
-  hard delete can still delete a stream outside the prefixes.
+  if none of this existed. Declaring does not narrow what `enable_hard_deletes` allows: a
+  hard delete can still delete a stream outside the prefixes. The one stream a hard delete
+  refuses starts with a `conditional_appends` prefix and with no prefix declared here: see
+  "Conditional appends".
 
   **The refusal.** A `c:read_query/2`, a `c:stream_query/2` or a condition with a query naming
   a declared type, or a tag of a declared kind, answers `{:error, :query_names_deletable}`
@@ -372,7 +423,8 @@ defmodule Decree.Store do
   The refusal is per name, so an item naming a declared type or kind beside its `command:` tag
   is refused. What this costs: a deleted stream's command tags vanish with it, which ends
   their deduplication early. A condition on such a tag fails before the delete and passes
-  after it, and a read agrees with it both times.
+  after it, and a read agrees with it both times. The item finds an event and not its tags:
+  `c:read_tags/2` answers none of the tags of an event of a declared type.
 
   **Completeness.** An append to a stream starting with a declared prefix, of an event whose
   type is not in `event_types`, answers `{:error, :undeclared_deletable_event_type}` before
@@ -502,7 +554,7 @@ defmodule Decree.Store do
         Supervisor.stop(supervisor, :normal, timeout)
       end
 
-      @accepted_overrides_append_to_stream [:created_at_override, :condition]
+      @accepted_overrides_append_to_stream [:created_at_override, :condition, :returning]
 
       def append_to_stream(stream_uuid, expected_version, events, opts \\ [])
 
@@ -635,6 +687,12 @@ defmodule Decree.Store do
         opts = opts |> Keyword.merge(overrides) |> Keyword.put_new(:count, @default_count)
 
         Stream.read_query(conn, items, opts)
+      end
+
+      def read_tags(positions, opts \\ []) do
+        {conn, opts} = parse_opts(opts)
+
+        Stream.read_tags(conn, positions, opts)
       end
 
       def stream_query(items, opts \\ []) do
@@ -921,6 +979,9 @@ defmodule Decree.Store do
         milliseconds. Defaults to 15,000ms.
       - `condition` a `Decree.Store.AppendCondition` keyword list, for a conditional
         append. See "Conditional appends" in `Decree.Store`, and below.
+      - `returning` `:append_result` to answer `{:ok, %Decree.Store.AppendResult{}}` on
+        success. Without it success answers `:ok`. An append that splits into batches of
+        1,000 answers its last batch's position and version, which are the whole append's.
 
   #### Declaring a conditional append
 
@@ -945,7 +1006,11 @@ defmodule Decree.Store do
   has no prefix. Only the config declares: `conditional_appends` is no `append_to_stream/4`
   option.
 
-  Returns `:ok` on success, or an `{:error, reason}` tagged tuple:
+  A declared prefix also keeps every other writer out: an append with no condition to a
+  stream starting with one is refused.
+
+  Returns `:ok` on success, `{:ok, %Decree.Store.AppendResult{}}` with
+  `returning: :append_result`, or an `{:error, reason}` tagged tuple:
 
     * `{:error, :wrong_expected_version}` when the actual stream version differs
       from the provided expected version, or another writer appended at the same
@@ -972,11 +1037,15 @@ defmodule Decree.Store do
       declared deletable prefix and an event's type is not declared. See "Deletable
       streams" in `Decree.Store`. It is answered as a tag that is too long is, and after
       one.
+    * `{:error, :invalid_returning}` when `returning` is anything but `:append_result`, or
+      is given twice. It is answered after that one and before any statement is sent.
     * `{:error, :invalid_condition}`, `{:error, :invalid_query}`,
       `{:error, :query_names_deletable}` and `{:error, :undeclared_conditional_target}`
       when the `condition` is malformed, when its `items` are, when they name something
       deletable, and when the store does not declare it. Each is answered after a tag that
       is too long and before any statement is sent, as that one is.
+    * `{:error, :plain_append_to_conditional_prefix}` when there is no `condition` and the
+      stream starts with a declared prefix. It is answered where a condition's refusals are.
     * `{:error, :duplicate_stream_uuid}` when the append lost the race to create a
       new stream inside a caller's transaction. That aborts the transaction, so it
       is answered and not retried.
@@ -999,9 +1068,10 @@ defmodule Decree.Store do
               stream_uuid :: String.t(),
               expected_version,
               events :: list(EventData.t()),
-              opts :: [option | {:condition, keyword()}]
+              opts :: [option | {:condition, keyword()} | {:returning, :append_result}]
             ) ::
               :ok
+              | {:ok, Decree.Store.AppendResult.t()}
               | {:error, :cannot_append_to_all_stream}
               | {:error, :stream_exists}
               | {:error, :stream_not_found}
@@ -1017,6 +1087,8 @@ defmodule Decree.Store do
               | {:error, :invalid_condition}
               | {:error, :invalid_query}
               | {:error, :undeclared_conditional_target}
+              | {:error, :plain_append_to_conditional_prefix}
+              | {:error, :invalid_returning}
               | {:error, :duplicate_stream_uuid}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
@@ -1042,13 +1114,19 @@ defmodule Decree.Store do
         `c:append_to_stream/4` says, when every member starts with a declared prefix, or
         when its `target` is declared.
       - `created_at_override` dates the new streams and every event.
+      - `returning` `:append_result` to answer `{:ok, %Decree.Store.AppendResult{}}` on
+        success, with a version for every member. Without it success answers `:ok`.
 
-  Returns `:ok` on success, or the errors of `c:append_to_stream/4`, for any member, and:
+  Returns `:ok` on success, `{:ok, %Decree.Store.AppendResult{}}` with
+  `returning: :append_result`, or the errors of `c:append_to_stream/4`, for any member, and:
 
     * `{:error, :cannot_append_to_all_stream}` when a member is the `$all` stream.
     * `{:error, :invalid_append}` when `appends` is not a non-empty list of those tuples.
     * `{:error, :repeated_stream}` when a stream appears twice, whatever its expected
       versions. A repeat cannot name one base version.
+
+  With no `condition`, one member starting with a declared prefix refuses the batch with
+  `{:error, :plain_append_to_conditional_prefix}`.
 
   These, like a tag that is invalid or too long and a condition that cannot run, are
   answered before any statement is sent, so a caller's transaction stays usable.
@@ -1063,10 +1141,14 @@ defmodule Decree.Store do
   @callback append_to_streams(
               appends :: [{stream_uuid :: String.t(), expected_version, list(EventData.t())}],
               opts :: [
-                option | {:condition, keyword()} | {:created_at_override, DateTime.t()}
+                option
+                | {:condition, keyword()}
+                | {:created_at_override, DateTime.t()}
+                | {:returning, :append_result}
               ]
             ) ::
               :ok
+              | {:ok, Decree.Store.AppendResult.t()}
               | {:error, :cannot_append_to_all_stream}
               | {:error, :invalid_append}
               | {:error, :repeated_stream}
@@ -1084,6 +1166,8 @@ defmodule Decree.Store do
               | {:error, :invalid_condition}
               | {:error, :invalid_query}
               | {:error, :undeclared_conditional_target}
+              | {:error, :plain_append_to_conditional_prefix}
+              | {:error, :invalid_returning}
               | {:error, :duplicate_stream_uuid}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
@@ -1133,6 +1217,10 @@ defmodule Decree.Store do
     * `{:error, :link_into_deletable_stream}` when the stream starts with a
       declared deletable prefix, at every expected version and before any
       statement is sent. See "Deletable streams" in `Decree.Store`.
+    * `{:error, :link_into_conditional_prefix}` when the stream starts with a declared
+      `conditional_appends` prefix, at every expected version and before any statement is
+      sent. See "Conditional appends" in `Decree.Store`. A stream both declare answers
+      `:link_into_deletable_stream`.
     * `{:error, :duplicate_event}` when an event is already linked to the
       stream, or is listed twice.
     * `{:error, :not_found}` when an event id does not exist, or when a hard
@@ -1178,6 +1266,7 @@ defmodule Decree.Store do
               | {:error, :wrong_expected_version}
               | {:error, :stream_deleted}
               | {:error, :link_into_deletable_stream}
+              | {:error, :link_into_conditional_prefix}
               | {:error, :duplicate_event}
               | {:error, :not_found}
               | {:error, :duplicate_stream_uuid}
@@ -1399,6 +1488,30 @@ defmodule Decree.Store do
               | {:error, reason :: term}
 
   @doc """
+  Reads the tags of the events at the given `$all` positions, in one SQL statement. See
+  "Reading the tags of events" in the module documentation.
+
+    - `positions` a list of non-negative `$all` positions. A position may repeat.
+
+    - `opts` an optional keyword list containing:
+      - `name` the name of the event store if provided to `start_link/1`.
+      - `conn` an existing Postgrex connection or transaction to read through.
+      - `timeout` an optional timeout for the database query, in milliseconds.
+        Defaults to 15,000ms.
+
+  Returns `{:ok, %{position => tags}}`, with each position's tags sorted bytewise. A position
+  with no row is absent, and so is one whose every tag is left out: tags of a kind the store
+  declares deletable, and every tag of an event of a type it declares. `[]` answers
+  `{:ok, %{}}` and sends nothing to the database.
+  `{:error, :invalid_positions}` answers anything but a list of non-negative bigints, and
+  sends nothing either, so a caller's transaction stays usable.
+  """
+  @callback read_tags(positions :: [non_neg_integer()], opts :: options) ::
+              {:ok, %{non_neg_integer() => [String.t()]}}
+              | {:error, :invalid_positions}
+              | {:error, reason :: term}
+
+  @doc """
   Streams the events matching a query across all streams, in order of their `$all`
   position, reading a page at a time.
 
@@ -1533,6 +1646,11 @@ defmodule Decree.Store do
 
       :ok = MyApp.EventStore.delete_stream("stream2", :stream_exists, :hard)
 
+  A hard delete of a stream starting with a declared `conditional_appends` prefix, and with
+  no declared `deletable` prefix, answers `{:error, :hard_delete_of_conditional_prefix}`
+  before any statement is sent, at every expected version. See "Conditional appends" in
+  `Decree.Store`.
+
   """
   @callback delete_stream(
               stream_uuid :: String.t(),
@@ -1544,6 +1662,7 @@ defmodule Decree.Store do
               | {:error, :stream_not_found}
               | {:error, :stream_deleted}
               | {:error, :wrong_expected_version}
+              | {:error, :hard_delete_of_conditional_prefix}
               | {:error, term}
 
   @doc """
@@ -1555,6 +1674,8 @@ defmodule Decree.Store do
 
     - `tag_kinds` a non-empty list of tag kinds. A tag's kind is what precedes its first
       `:`, so `email` does not match `email_verified:x`, and it does match `email:a:b`.
+      `command` is refused, alone or among others: those rows are what a decision reads to
+      refuse a resend, so erasing them would let one `command_id` commit twice.
 
     - `opts` an optional keyword list containing:
       - `name` the name of the event store if provided to `start_link/1`.
@@ -1572,7 +1693,7 @@ defmodule Decree.Store do
   Returns `{:ok, deleted_row_count}`, which a second call makes `{:ok, 0}`, or:
 
     * `{:error, :invalid_tag_kinds}` when `tag_kinds` is not a non-empty list of non-empty
-      strings without a `:`, before any statement is sent.
+      strings without a `:`, or holds `command`, before any statement is sent.
     * `{:error, :not_supported}` when hard deletes are not enabled, also before any
       statement is sent.
     * `{:error, :cannot_delete_all_stream}` for the `$all` stream.

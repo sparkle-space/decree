@@ -48,6 +48,15 @@ defmodule Decree.Aggregates.LostAppendAdapter do
   def subscribe(_adapter_meta, _stream_uuid), do: :ok
 
   @impl Decree.EventStore.Adapter
+  defdelegate append_to_streams(adapter_meta, appends, opts), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate read_query(adapter_meta, items, opts), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate read_tags(adapter_meta, positions, opts), to: Adapter
+
+  @impl Decree.EventStore.Adapter
   defdelegate child_spec(application, config), to: Adapter
 
   @impl Decree.EventStore.Adapter

@@ -2,8 +2,9 @@
   # Elixir template variables:
   #   schema - string
 
-  # Bind variables, the parameters of `append_events_v4` (see
-  # `Decree.Store.Sql.Init`). One call is one atomic append to its member streams:
+  # Bind variables, the parameters of `append_events_v5` (see
+  # `Decree.Store.Sql.Init`). One call is one atomic append to its member streams, and
+  # answers one row of its OUT parameters:
   #   1 - schema - text
   #   2 - stream_ids - bigint[], one per member, in the caller's order, NULL creates it
   #   3 - stream_uuids - text[], parallel to stream_ids
@@ -29,4 +30,4 @@
   #  23 - rest_tags - text[], parallel to rest_items
   #  24 - after - bigint, the condition's position, NULL means a plain append
 %>
-SELECT "<%= schema %>".append_events_v4($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24);
+SELECT * FROM "<%= schema %>".append_events_v5($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24);

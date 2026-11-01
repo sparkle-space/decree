@@ -13,6 +13,7 @@ defmodule Decree.Store.Config.Parser do
   ]
 
   @deletable_keys [:stream_prefixes, :event_types, :tag_kinds]
+  @conditional_appends_keys [:stream_prefixes, :targets]
 
   def parse(config) do
     config
@@ -35,6 +36,9 @@ defmodule Decree.Store.Config.Parser do
 
       {:deletable, value}, config ->
         Keyword.put(config, :deletable, validate_deletable!(value))
+
+      {:conditional_appends, value}, config ->
+        Keyword.put(config, :conditional_appends, validate_conditional_appends!(value))
 
       {key, value}, config ->
         Keyword.put(config, key, get_config_value(value))
@@ -72,6 +76,27 @@ defmodule Decree.Store.Config.Parser do
       non_empty_strings?(Keyword.get(declared, :stream_prefixes, [])) and
       non_empty_strings?(Keyword.get(declared, :event_types, [])) and
       Query.tag_kinds?(Keyword.get(declared, :tag_kinds, []))
+  end
+
+  # Raises for the reason `validate_deletable!/1` does. A declared prefix also refuses every
+  # plain append to a stream starting with it, so `""` would refuse every plain append.
+  defp validate_conditional_appends!(declared) do
+    if not well_formed_conditional_appends?(declared) do
+      raise ArgumentError,
+        message:
+          "expected `:conditional_appends` to be a keyword list of `:stream_prefixes`, a list " <>
+            "of non-empty strings, and `:targets`, a list, each once, got: " <> inspect(declared)
+    end
+
+    declared
+  end
+
+  defp well_formed_conditional_appends?(declared) do
+    Keyword.keyword?(declared) and
+      Keyword.keys(declared) -- @conditional_appends_keys == [] and
+      Keyword.keys(declared) == Enum.uniq(Keyword.keys(declared)) and
+      non_empty_strings?(Keyword.get(declared, :stream_prefixes, [])) and
+      is_list(Keyword.get(declared, :targets, []))
   end
 
   defp non_empty_strings?([]), do: true

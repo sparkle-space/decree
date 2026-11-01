@@ -122,7 +122,6 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Application.Config
   alias Decree.Event.Append
-  alias Decree.Event.Mapper
   alias Decree.Event.Upcast
   alias Decree.EventStore
   alias Decree.EventStore.RecordedEvent
@@ -617,22 +616,14 @@ defmodule Decree.Aggregates.Aggregate do
     end
   rescue
     error ->
-      {error, stacktrace} = reported_exception(error, __STACKTRACE__, state)
+      {error, stacktrace} =
+        PersonalFields.reported_exception(state.aggregate_module, error, __STACKTRACE__)
+
       Logger.error(Exception.format(:error, error, stacktrace))
 
       {{:error, error, stacktrace}, state}
   catch
     kind, value -> leave_with(kind, value, __STACKTRACE__, state)
-  end
-
-  # An aggregate holding decrypted state passes it to `execute/2` and `apply/2`, and a raise
-  # from either can carry it in its message or in a stack frame's arguments.
-  defp reported_exception(error, stacktrace, %Aggregate{aggregate_module: aggregate_module}) do
-    if PersonalFields.adopted?(aggregate_module) do
-      {RedactedError.redact(error), RedactedError.scrub_stacktrace(stacktrace)}
-    else
-      {error, stacktrace}
-    end
   end
 
   # An exit or a throw from the same code, and nothing rescues those. A `throw` from here reaches
@@ -670,25 +661,10 @@ defmodule Decree.Aggregates.Aggregate do
     end
   end
 
-  defp prepare_events([], _context, _state), do: {:ok, []}
-
   defp prepare_events(pending_events, %ExecutionContext{} = context, %Aggregate{} = state) do
-    %ExecutionContext{
-      causation_id: causation_id,
-      correlation_id: correlation_id,
-      metadata: metadata
-    } = context
-
     %Aggregate{application: application, aggregate_uuid: aggregate_uuid} = state
 
-    event_data =
-      Mapper.map_to_event_data(pending_events,
-        causation_id: causation_id,
-        correlation_id: correlation_id,
-        metadata: metadata
-      )
-
-    Append.prepare(application, aggregate_uuid, event_data, context)
+    Append.prepare_events(application, aggregate_uuid, pending_events, context)
   end
 
   defp store_events(pending_events, event_data, aggregate_state, context, %Aggregate{} = state) do

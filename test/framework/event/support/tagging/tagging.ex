@@ -46,6 +46,15 @@ defmodule Decree.Event.Tagging.Adapter do
   end
 
   @impl Decree.EventStore.Adapter
+  defdelegate append_to_streams(adapter_meta, appends, opts), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate read_query(adapter_meta, items, opts), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate read_tags(adapter_meta, positions, opts), to: Adapter
+
+  @impl Decree.EventStore.Adapter
   defdelegate subscribe(adapter_meta, stream_uuid), to: Adapter
 
   @impl Decree.EventStore.Adapter
