@@ -137,10 +137,10 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
     end
   end
 
-  # A hard delete is three statements, so its lock order is its code's: the stream's row,
-  # then the events, then the delete of the stream's row. An append holding the row and
-  # re-sending a stored event id therefore waits on nothing the delete holds. If the order
-  # flips, that append and the delete form a cycle.
+  # A hard delete is four statements, so its lock order is its code's: the stream's row, then
+  # the event rows, then their delete, then the delete of the stream's row. An append holding
+  # the row and re-sending a stored event id therefore waits on nothing the delete holds. If
+  # the order flips, that append and the delete form a cycle.
   describe "a hard delete's own lock order" do
     test "blocked on the stream's row, it holds no event row", context do
       %{observer: observer, schema: schema, second_appender_backend: deleter_backend} = context

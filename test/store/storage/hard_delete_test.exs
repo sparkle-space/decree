@@ -3,17 +3,16 @@ defmodule Decree.Store.Storage.HardDeleteTest do
 
   import Decree.Store.StoreRows
 
-  alias Decree.Store.{AppendError, EventData, LockSession, UUID}
+  alias Decree.Store.{EventData, LockSession, UUID}
   alias Decree.Store.Storage
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
-  # Enough that the delete almost always holds another event's row when it blocks.
   @multi_link_events 8
 
-  # A hard delete takes the stream's row, deletes the events with their tag and type rows,
-  # and then deletes the stream's row. Each of these holds a session open across a step, so
-  # what each side holds shows in Postgres.
+  # A hard delete takes the stream's row, takes the events' rows, deletes the events with their
+  # tag and type rows, and then deletes the stream's row. Each of these holds a session open
+  # across a step, so what each side holds shows in Postgres.
   setup %{postgrex_config: postgrex_config} do
     observer = LockSession.connect(postgrex_config)
     deleter = LockSession.connect(postgrex_config)
@@ -102,7 +101,7 @@ defmodule Decree.Store.Storage.HardDeleteTest do
 
   # A link takes KEY SHARE on the event's row, and then on the original stream's. The delete
   # holds that stream's row in NO KEY UPDATE, which KEY SHARE does not conflict with, while
-  # it waits on the event's row. Its old shape deleted the stream's row first: this cycle.
+  # it waits on the event's row. A delete of the stream's row before that wait would be a cycle.
   describe "against a link" do
     setup context do
       :ok = EventStore.append_to_stream("stream", 0, [event(["tenant:a"])])
@@ -134,7 +133,7 @@ defmodule Decree.Store.Storage.HardDeleteTest do
       assert_nothing_left(context)
     end
 
-    test "with a real link: no cycle, and the delete fails the foreign key", context do
+    test "with a real link: no cycle, and the link's row goes with the event", context do
       %{recorded: recorded} = context
 
       linker = hold_event_key_share(context, recorded)
@@ -148,13 +147,10 @@ defmodule Decree.Store.Storage.HardDeleteTest do
                end)
 
       assert {:ok, :ok} = LockSession.commit(linker)
+      assert :ok = Task.await(delete)
 
-      assert {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}} =
-               Task.await(delete)
-
-      assert stream_versions(context, "stream") == [1]
-      assert stream_versions(context, "link-stream") == [1]
-      assert tag_rows(context) == [[1, "tenant:a"]]
+      assert stream_versions(context, "link-stream") == []
+      assert_nothing_left(context)
     end
 
     test "a link after the delete commits answers `:not_found`", context do
@@ -162,7 +158,7 @@ defmodule Decree.Store.Storage.HardDeleteTest do
 
       assert :ok = delete(context, "stream")
 
-      # The link's join finds no original row, so it writes none.
+      # The link's lock finds no event row, so it writes nothing.
       assert {:error, :not_found} =
                EventStore.link_to_stream("link-stream", :any_version, [recorded])
 
@@ -195,14 +191,17 @@ defmodule Decree.Store.Storage.HardDeleteTest do
     end
   end
 
-  # A measured residual, not a promise. A link of several of the stream's events locks event
-  # rows in its own row order and the delete in its scan's, so each can hold what the other
-  # wants. The delete's order changes run to run, so the setup can miss: the delete can reach
-  # the held row first and hold no other. Each arm is therefore what must be true of its
-  # case, and nothing here says that a deadlock happens.
+  # The event ids fall as the versions rise, so the link's list and the delete's scan both run
+  # against the sorted order, which is the one they share. The delete waits on the lowest id,
+  # holding no other event, and the link then takes every row from the session it waits on. So
+  # this stages the delete's order alone: the delete holds nothing a link's order could meet,
+  # and `Decree.Store.Storage.LinkLockOrderTest` stages the link's.
   describe "against a link of several of the stream's events" do
     setup context do
-      events = for index <- 1..@multi_link_events, do: event(["tenant:#{index}"])
+      events =
+        for rank <- @multi_link_events..1//-1 do
+          event(["tenant:#{rank}"], "00000000-0000-4000-8000-#{pad(rank)}")
+        end
 
       :ok = EventStore.append_to_stream("stream", 0, events)
 
@@ -211,52 +210,22 @@ defmodule Decree.Store.Storage.HardDeleteTest do
       [recorded: recorded, stream_id: stream_id(context, "stream")]
     end
 
-    test "a deadlock takes a delete back whole, and a retry goes through", context do
-      %{recorded: [first | rest]} = context
+    test "no cycle: the delete waits, and takes the link's rows with the events", context do
+      %{recorded: recorded} = context
 
-      before = store_state(context)
-
-      linker = hold_event_key_share(context, first)
+      linker = hold_event_key_share(context, Enum.min_by(recorded, & &1.event_id))
       delete = delete_blocked_on(context, linker)
 
-      case Enum.find(rest, &event_held?(context, &1)) do
-        nil ->
-          assert {:ok, :ok} = LockSession.commit(linker)
-          assert :ok = Task.await(delete)
+      assert :ok =
+               LockSession.run(linker, fn tx ->
+                 EventStore.link_to_stream("link-stream", :any_version, recorded, conn: tx)
+               end)
 
-          assert_nothing_left(context)
+      assert {:ok, :ok} = LockSession.commit(linker)
+      assert :ok = Task.await(delete)
 
-        other ->
-          link =
-            LockSession.start_run(linker, fn tx ->
-              EventStore.link_to_stream("link-stream", :any_version, [first, other], conn: tx)
-            end)
-
-          # The link first: a delete that survives waits for the link's transaction to end.
-          # `deadlock_timeout` is what bounds this, and it fires on the session that has
-          # waited longest, so either side can be the one that answers.
-          case LockSession.await_run(link) do
-            :ok ->
-              assert {:error, %Postgrex.Error{postgres: %{code: :deadlock_detected}}} =
-                       Task.await(delete)
-
-              assert store_state(context) == before
-
-              assert {:ok, :ok} = LockSession.commit(linker)
-              assert stream_versions(context, "link-stream") == [1, 2]
-
-              assert :ok = delete(context, "stream")
-
-              assert stream_versions(context, "link-stream") == []
-              assert_nothing_left(context)
-
-            {:error, %AppendError{code: :deadlock_detected}} ->
-              assert {:error, _rolled_back} = LockSession.commit(linker)
-              assert :ok = Task.await(delete)
-
-              assert_nothing_left(context)
-          end
-      end
+      assert stream_versions(context, "link-stream") == []
+      assert_nothing_left(context)
     end
   end
 
@@ -414,30 +383,6 @@ defmodule Decree.Store.Storage.HardDeleteTest do
     linker
   end
 
-  # NOWAIT from the observer, in autocommit, so a free row is taken and let go at once.
-  defp event_held?(context, recorded) do
-    match?(
-      {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}},
-      Postgrex.query(
-        context.observer,
-        ~s(SELECT 1 FROM "#{context.schema}".events WHERE event_id = $1) <>
-          " FOR KEY SHARE NOWAIT",
-        [UUID.string_to_binary!(recorded.event_id)]
-      )
-    )
-  end
-
-  defp store_state(context) do
-    %{
-      version: stream_version(context, "stream"),
-      versions: stream_versions(context, "stream"),
-      positions: all_positions(context),
-      events: count(context, "events"),
-      tags: tag_rows(context),
-      types: count(context, "event_types")
-    }
-  end
-
   # Blocked on the event's row, so it holds the stream's row, shown here with NOWAIT.
   defp delete_blocked_on(context, linker) do
     %{deleter_backend: deleter_backend, observer: observer} = context
@@ -464,7 +409,6 @@ defmodule Decree.Store.Storage.HardDeleteTest do
   defp legitimate_answers(answers) do
     Enum.filter(answers, fn
       {:ok, :ok} -> true
-      {:ok, :foreign_key_violation} -> true
       {:not_found, :ok} -> true
       _other -> false
     end)
@@ -494,8 +438,11 @@ defmodule Decree.Store.Storage.HardDeleteTest do
     rows(context, ~s(SELECT position, tag FROM "#{context.schema}".event_tags ORDER BY 1, 2), [])
   end
 
-  defp event(tags) do
+  defp pad(rank), do: rank |> Integer.to_string() |> String.pad_leading(12, "0")
+
+  defp event(tags, event_id \\ nil) do
     %EventData{
+      event_id: event_id,
       event_type: "Elixir.Decree.Store.EventFactory.Event",
       data: %Decree.Store.EventFactory.Event{event: 1},
       metadata: %{},
