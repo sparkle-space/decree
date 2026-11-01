@@ -746,8 +746,18 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
     Enum.map_join(rows, "\n", &hd/1)
   end
 
+  # A hash join builds on the side the planner estimates smaller, and no `enable_*` setting picks
+  # that side. The estimates come from `pg_statistic`, which autoanalyze writes in its own time
+  # and a TRUNCATE leaves behind, so a sample from when one stream held half of `stream_events`
+  # turns `deleter`'s walk around. The guard analyzes what it plans over instead: `padding` puts
+  # `stream`'s 5 rows well below `events`' 25, so `stream_events` is the hashed side.
   defp plan_of_delete(context, session) do
     source(context, "stream", 1, 5)
+    source(context, "padding", 2, 20)
+
+    for table <- ["events", "stream_events"] do
+      Postgrex.query!(context.observer, ~s(ANALYZE "#{context.schema}".#{table}), [])
+    end
 
     plan =
       plan_without_order(
