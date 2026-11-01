@@ -227,7 +227,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
     assert_raise RuntimeError,
                  """
                  unexpected dispatch parameter "id"
-                 available params are: to, function, before_execute, aggregate, identity, identity_prefix, timeout, lifespan, consistency
+                 available params are: to, function, before_execute, aggregate, identity, identity_prefix, stream_tag, timeout, lifespan, consistency
                  """,
                  fn ->
                    Code.eval_string("""

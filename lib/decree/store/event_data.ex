@@ -3,7 +3,8 @@ defmodule Decree.Store.EventData do
   EventData contains the data for a single event before being persisted to storage
 
   `tags` are stored with the event, in the same transaction. A repeated tag is stored
-  once, and a tag over 512 bytes refuses the append with `{:error, :tag_too_long}`.
+  once. A tag that is not a string Postgres can hold refuses the append with
+  `{:error, :invalid_tag}`, and one over 512 bytes with `{:error, :tag_too_long}`.
   """
 
   defstruct [
@@ -37,6 +38,17 @@ defmodule Decree.Store.EventData do
   The most bytes a tag can have.
   """
   def max_tag_bytes, do: @max_tag_bytes
+
+  @doc """
+  Whether a value is a string Postgres can hold as a tag: a binary of valid UTF-8 with no
+  NUL byte. Its length is `max_tag_bytes/0`'s question.
+  """
+  @spec valid_tag?(term) :: boolean
+  def valid_tag?(tag) when is_binary(tag) do
+    String.valid?(tag) and not String.contains?(tag, <<0>>)
+  end
+
+  def valid_tag?(_tag), do: false
 
   def fetch(map, key) when is_map(map) do
     Map.fetch(map, key)

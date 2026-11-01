@@ -7,7 +7,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       correlation_id: correlation_id,
       event_type: event_type,
       data: data,
-      metadata: metadata
+      metadata: metadata,
+      tags: tags
     } = event_data
 
     %Decree.Store.EventData{
@@ -15,7 +16,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       correlation_id: correlation_id,
       event_type: event_type,
       data: data,
-      metadata: metadata
+      metadata: metadata,
+      tags: tags
     }
   end
 

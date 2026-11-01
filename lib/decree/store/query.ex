@@ -140,7 +140,7 @@ defmodule Decree.Store.Query do
   # A string Postgres cannot hold could match nothing, and sending it would abort a
   # caller's transaction.
   defp strings?([string | strings]) when is_binary(string) do
-    String.valid?(string) and not String.contains?(string, <<0>>) and strings?(strings)
+    EventData.valid_tag?(string) and strings?(strings)
   end
 
   defp strings?(_strings), do: false

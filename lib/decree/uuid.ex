@@ -24,6 +24,26 @@ defmodule Decree.UUID do
   def uuid4, do: bingenerate() |> hex_encode()
 
   @doc """
+  Whether a value is a lowercase canonical UUID string: 36 bytes, with hyphens at 8, 13,
+  18 and 23 and only `0-9a-f` otherwise.
+
+  An uppercase UUID, the raw 16-byte form and anything that is not a binary are not.
+  """
+  @spec canonical?(term()) :: boolean()
+  def canonical?(
+        <<a::binary-size(8), ?-, b::binary-size(4), ?-, c::binary-size(4), ?-, d::binary-size(4),
+          ?-, e::binary-size(12)>>
+      ) do
+    lower_hex?(a) and lower_hex?(b) and lower_hex?(c) and lower_hex?(d) and lower_hex?(e)
+  end
+
+  def canonical?(_value), do: false
+
+  defp lower_hex?(<<>>), do: true
+  defp lower_hex?(<<c, rest::binary>>) when c in ?0..?9 or c in ?a..?f, do: lower_hex?(rest)
+  defp lower_hex?(_binary), do: false
+
+  @doc """
   Converts a string representing a UUID into a raw binary.
   """
   @spec string_to_binary!(hex()) :: raw()

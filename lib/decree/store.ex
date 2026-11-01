@@ -956,9 +956,11 @@ defmodule Decree.Store do
     * `{:error, :append_condition_failed}` when an event past the condition's
       `after` matches its `items`. A stale append answers
       `{:error, :wrong_expected_version}` instead: it never evaluates a condition.
-    * `{:error, :tag_too_long}` when a tag of an event is over 512 bytes. It is
-      answered before any statement is sent, so it wins over every answer above
-      that reads the stream, and a caller's transaction stays usable.
+    * `{:error, :invalid_tag}` when a tag of an event is not a binary, is not valid
+      UTF-8 or holds a NUL byte, and `{:error, :tag_too_long}` when a tag that is none of
+      these is over 512 bytes. Each is answered before any statement is sent, so it wins
+      over every answer above that reads the stream, and a caller's transaction stays
+      usable.
     * `{:error, :undeclared_deletable_event_type}` when the stream starts with a
       declared deletable prefix and an event's type is not declared. See "Deletable
       streams" in `Decree.Store`. It is answered as a tag that is too long is, and after
@@ -1001,6 +1003,7 @@ defmodule Decree.Store do
               | {:error, :duplicate_event}
               | {:error, :not_found}
               | {:error, :append_condition_failed}
+              | {:error, :invalid_tag}
               | {:error, :tag_too_long}
               | {:error, :query_names_deletable}
               | {:error, :undeclared_deletable_event_type}
@@ -1040,8 +1043,8 @@ defmodule Decree.Store do
     * `{:error, :repeated_stream}` when a stream appears twice, whatever its expected
       versions. A repeat cannot name one base version.
 
-  These, like a tag that is too long and a condition that cannot run, are answered before
-  any statement is sent, so a caller's transaction stays usable.
+  These, like a tag that is invalid or too long and a condition that cannot run, are
+  answered before any statement is sent, so a caller's transaction stays usable.
 
   A member's row gone by the time the function locks it answers `{:error, :not_found}`,
   and aborts a caller's transaction, as a stale append does. Outside a caller's
@@ -1067,6 +1070,7 @@ defmodule Decree.Store do
               | {:error, :duplicate_event}
               | {:error, :not_found}
               | {:error, :append_condition_failed}
+              | {:error, :invalid_tag}
               | {:error, :tag_too_long}
               | {:error, :query_names_deletable}
               | {:error, :undeclared_deletable_event_type}

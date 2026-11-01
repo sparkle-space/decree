@@ -373,6 +373,25 @@ defmodule Decree.Commands.Router do
         dispatch [OpenAccount, DepositMoney], to: BankAccount, identity: :account_number
       end
 
+  ## Stream tag
+
+  Every event a route appends carries an entity tag for its stream, `<kind>:<id>`, as long
+  as the identity the stream was routed by is a lowercase canonical UUID. Anything else,
+  such as a Stripe id, gives no tag. The id is that identity as a string, never the stream
+  name with its `identify` prefix.
+
+  The kind is the identity field's name without a trailing `_id`, so `user_id` gives
+  `user:` and `content_ref` gives `content_ref:`. A route names it with `stream_tag:`,
+  an atom other than `nil`, `true` or `false` whose name matches `^[a-z][a-z0-9_]*$`,
+  so that it fits the tag grammar. `dispatch` refuses anything else when the router
+  compiles:
+
+      dispatch [RequestExport], to: Export, identity: :requester_user_id, stream_tag: :user
+
+  A function identity (`by: &Module.function/1`) has no field name, so it has a stream
+  tag only when the route declares `stream_tag:`. The id is then what the function
+  answered when the dispatch resolved the identity, once, before the aggregate is called.
+
   """
   defmacro dispatch(command_module_or_modules, opts) do
     opts = parse_opts(opts)
@@ -387,10 +406,11 @@ defmodule Decree.Commands.Router do
               "Command `#{inspect(unquote(command_module))}` has already been registered in router `#{inspect(__MODULE__)}`"
         end
 
-        @registered_commands {
-          unquote(command_module),
-          Keyword.merge(@default_dispatch_opts, unquote(opts))
-        }
+        command_opts = Keyword.merge(@default_dispatch_opts, unquote(opts))
+
+        Router.validate_stream_tag!(unquote(command_module), command_opts)
+
+        @registered_commands {unquote(command_module), command_opts}
       end
     end
   end
@@ -528,6 +548,7 @@ defmodule Decree.Commands.Router do
         @lifespan Keyword.get(command_opts, :lifespan)
         @identity Keyword.get(command_opts, :identity)
         @identity_prefix Keyword.get(command_opts, :identity_prefix)
+        @stream_tag Keyword.get(command_opts, :stream_tag)
 
         @command_module command_module
         @command_opts command_opts
@@ -594,6 +615,7 @@ defmodule Decree.Commands.Router do
             aggregate_module: @aggregate,
             identity: identity,
             identity_prefix: identity_prefix,
+            stream_tag: @stream_tag,
             returning: returning,
             timeout: timeout,
             lifespan: @lifespan,
@@ -642,6 +664,37 @@ defmodule Decree.Commands.Router do
     end
   end
 
+  # Checked on the evaluated value, here and not in `parse_opts/1`, which sees the option's
+  # AST. A boolean is an atom, and `stream_tag: false` must not store a `false:` kind. A
+  # kind has no colon, and a module's name would store `Elixir.Some.Module:`. Not
+  # naming a kind is the way to take the default: there is no opt-out value.
+  @doc false
+  def validate_stream_tag!(command_module, command_opts) do
+    case Keyword.fetch(command_opts, :stream_tag) do
+      :error ->
+        :ok
+
+      {:ok, stream_tag} ->
+        unless stream_tag_kind?(stream_tag) do
+          raise ArgumentError,
+                "#{inspect(command_module)} has an invalid `stream_tag` option: " <>
+                  "#{inspect(stream_tag)}, expected an atom other than nil, true or false " <>
+                  "whose name matches ^[a-z][a-z0-9_]*$"
+        end
+
+        :ok
+    end
+  end
+
+  defp stream_tag_kind?(kind) when kind in [nil, true, false], do: false
+
+  # `\A` and `\z`, because `$` also matches before a trailing newline.
+  defp stream_tag_kind?(kind) when is_atom(kind) do
+    Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, Atom.to_string(kind))
+  end
+
+  defp stream_tag_kind?(_kind), do: false
+
   @doc false
   def get_opt(opts, name, default \\ nil) do
     Keyword.get(opts, name) || Application.get_env(:decree, name) || default
@@ -677,6 +730,7 @@ defmodule Decree.Commands.Router do
     :aggregate,
     :identity,
     :identity_prefix,
+    :stream_tag,
     :timeout,
     :lifespan,
     :consistency

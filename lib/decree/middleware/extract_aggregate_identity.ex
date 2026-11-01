@@ -2,6 +2,11 @@ defmodule Decree.Middleware.ExtractAggregateIdentity do
   @moduledoc """
   An internal `Decree.Middleware` that extracts the target aggregate's
   identity from the command.
+
+  It runs after every middleware a router registers, so it reads the command they leave.
+  It resolves the identity once per dispatch, and assigns it twice: `:aggregate_uuid` is
+  the stream name, with any `identify` prefix, and `:aggregate_identity` is the same
+  string before the prefix.
   """
 
   @behaviour Decree.Middleware
@@ -11,9 +16,11 @@ defmodule Decree.Middleware.ExtractAggregateIdentity do
 
   def before_dispatch(%Pipeline{} = pipeline) do
     with aggregate_uuid when aggregate_uuid not in [nil, ""] <- extract_aggregate_uuid(pipeline),
-         aggregate_uuid when is_binary(aggregate_uuid) <- identity_to_string(aggregate_uuid),
-         aggregate_uuid when is_binary(aggregate_uuid) <- prefix(aggregate_uuid, pipeline) do
-      assign(pipeline, :aggregate_uuid, aggregate_uuid)
+         identity when is_binary(identity) <- identity_to_string(aggregate_uuid),
+         aggregate_uuid when is_binary(aggregate_uuid) <- prefix(identity, pipeline) do
+      pipeline
+      |> assign(:aggregate_identity, identity)
+      |> assign(:aggregate_uuid, aggregate_uuid)
     else
       nil ->
         pipeline

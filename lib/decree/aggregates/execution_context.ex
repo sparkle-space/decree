@@ -35,6 +35,19 @@ defmodule Decree.Aggregates.ExecutionContext do
       value, `Decree.Aggregates.DefaultLifespan`, keeps the process running
       indefinitely.
 
+    - `identity` - how the route finds the aggregate's identity: the name of a command
+      field, or a one argument function returning it. Only
+      `Decree.Event.Append.prepare/2` reads it, and only for the kind of the stream's
+      entity tag. It is not called for that: `aggregate_identity` is what it resolved to.
+
+    - `aggregate_identity` - the identity the stream was routed by, as the string
+      `Decree.Middleware.ExtractAggregateIdentity` resolved once for the dispatch, before
+      any `identify` prefix. It is the id of the stream's entity tag. It is `nil` for a
+      context not built by a dispatch, which gives no stream tag.
+
+    - `stream_tag` - the kind the route named for the stream's entity tag, an atom, or
+      `nil`. See `Decree.Commands.Router.dispatch/2`.
+
   """
 
   alias Decree.Aggregates.Aggregate
@@ -48,6 +61,9 @@ defmodule Decree.Aggregates.ExecutionContext do
     :correlation_id,
     :handler,
     :function,
+    :identity,
+    :aggregate_identity,
+    :stream_tag,
     before_execute: nil,
     retry_attempts: 0,
     returning: false,

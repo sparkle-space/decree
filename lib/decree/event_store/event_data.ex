@@ -11,7 +11,8 @@ defmodule Decree.EventStore.EventData do
           correlation_id: uuid(),
           event_type: String.t(),
           data: struct(),
-          metadata: map()
+          metadata: map(),
+          tags: [String.t()]
         }
 
   defstruct [
@@ -19,6 +20,7 @@ defmodule Decree.EventStore.EventData do
     :correlation_id,
     :event_type,
     :data,
-    :metadata
+    :metadata,
+    tags: []
   ]
 end

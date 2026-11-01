@@ -24,6 +24,7 @@ defmodule Decree.Commands.Dispatcher do
       :aggregate_module,
       :identity,
       :identity_prefix,
+      :stream_tag,
       :timeout,
       :lifespan,
       :metadata,
@@ -159,6 +160,7 @@ defmodule Decree.Commands.Dispatcher do
 
   defp to_execution_context(%Pipeline{} = pipeline, %Payload{} = payload) do
     %Pipeline{
+      assigns: assigns,
       command: command,
       command_uuid: command_uuid,
       causation_id: causation_id,
@@ -170,9 +172,11 @@ defmodule Decree.Commands.Dispatcher do
       handler_module: handler_module,
       handler_function: handler_function,
       handler_before_execute: handler_before_execute,
+      identity: identity,
       lifespan: lifespan,
       retry_attempts: retry_attempts,
-      returning: returning
+      returning: returning,
+      stream_tag: stream_tag
     } = payload
 
     %ExecutionContext{
@@ -184,6 +188,10 @@ defmodule Decree.Commands.Dispatcher do
       handler: handler_module,
       function: handler_function,
       before_execute: handler_before_execute,
+      identity: identity,
+      # Absent from the context built for telemetry before the middleware runs.
+      aggregate_identity: Map.get(assigns, :aggregate_identity),
+      stream_tag: stream_tag,
       lifespan: lifespan,
       retry_attempts: retry_attempts,
       returning: returning
