@@ -237,6 +237,29 @@ defmodule Decree.PersonalFields.RehydrationTest do
       assert [_registered, _linked, _third] = read(stream)
     end
 
+    test "stops on the failed rebuild itself, not on the event it missed", context do
+      %{stream: stream, subject: subject} = context
+
+      registered(stream, subject)
+
+      [concurrent] = prepare!(stream, %Linked{user_id: subject, provider_uid: "elsewhere"})
+
+      holding = Task.async(fn -> App.dispatch(%Hold{account_id: stream, events: [%Plain{}]}) end)
+
+      assert_receive {:executing, aggregate}
+      ref = Process.monitor(aggregate)
+
+      :ok = EventStore.append_to_stream(App, stream, 1, [concurrent])
+
+      # Unknown for the rebuild alone, so the concurrent event's own delivery would read: only
+      # the rebuild's failure can stop this aggregate.
+      Keys.set(subject, :unknown_once)
+      send(aggregate, :release)
+
+      assert Task.await(holding) == {:error, :key_unknown}
+      assert_receive {:DOWN, ^ref, :process, ^aggregate, {:shutdown, :key_unknown}}
+    end
+
     test "a queued command answers the same, and the next dispatch succeeds", context do
       %{stream: stream, subject: subject} = context
 

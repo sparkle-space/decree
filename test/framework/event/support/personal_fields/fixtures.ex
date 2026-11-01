@@ -51,6 +51,13 @@ defmodule Decree.PersonalFields.Fixtures.Keys do
 
   def set(subject_id, mode), do: :ets.insert(@table, {{:mode, subject_id}, mode})
 
+  @doc "The same key under another id, as a store that lost track of it would answer."
+  def relabel(subject_id, key_id) do
+    {_key_id, key} = key(subject_id)
+
+    :ets.insert(@table, {{:key, subject_id}, key_id, key})
+  end
+
   def lookups(subject_id) do
     case :ets.lookup(@table, {:lookups, subject_id}) do
       [{_key, count}] -> count
@@ -73,6 +80,11 @@ defmodule Decree.PersonalFields.Fixtures.Keys do
         {key_id, key} = key(subject_id)
 
         {:ok, key_id, key}
+
+      [{_key, :unknown_once}] ->
+        set(subject_id, :key)
+
+        :unknown
 
       [{_key, :erased}] ->
         :erased

@@ -365,6 +365,16 @@ defmodule Decree.PersonalFields.ReadTest do
       assert_refused(stream, %Registered{user_id: subject, email: %{envelope | "k" => "other"}})
     end
 
+    test "a key id the lookup no longer names, with the same key", context do
+      %{stream: stream, subject: subject, envelope: envelope} = context
+
+      store_raw!(stream, %Registered{user_id: subject, email: envelope})
+      Keys.relabel(subject, "another-id")
+
+      assert [recorded] = read(stream)
+      assert decrypt(recorded) == {:error, :key_unknown}
+    end
+
     test "a subject changed to another", context do
       %{stream: stream, subject: subject, envelope: envelope, other: other} = context
 
