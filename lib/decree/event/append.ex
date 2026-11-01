@@ -88,6 +88,12 @@ defmodule Decree.Event.Append do
     end
   end
 
+  # The tag every event a command appends carries, for a read that has to name it: being
+  # the code that writes the tag, it cannot differ from what the store holds.
+  @doc false
+  @spec command_tag(struct()) :: String.t() | nil
+  def command_tag(command), do: key_tag("command", Map.get(command, :command_id))
+
   # `plan` is nil for an event with no declaration.
   defp event_tags(%EventData{} = data, nil, %ExecutionContext{} = context) do
     tags(data, context)
@@ -118,7 +124,7 @@ defmodule Decree.Event.Append do
   defp framework_tags(%ExecutionContext{command: command} = context) do
     Enum.reject(
       [
-        key_tag("command", Map.get(command, :command_id)),
+        command_tag(command),
         "command_kind:" <> inspect(command.__struct__),
         key_tag("correlation", Map.get(command, :correlation_id)),
         stream_tag(context)

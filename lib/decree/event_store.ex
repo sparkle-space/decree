@@ -11,9 +11,12 @@ defmodule Decree.EventStore do
     * ack_event/3
     * adapter/2
     * append_to_stream/4
+    * append_to_streams/3
     * delete_snapshot/2
     * delete_subscription/3
+    * read_query/3
     * read_snapshot/2
+    * read_tags/3
     * record_snapshot/2
     * stream_forward/2
     * stream_forward/3
@@ -26,6 +29,7 @@ defmodule Decree.EventStore do
   """
   alias Decree.Application
   alias Decree.Event.Upcast
+  alias Decree.Store.ReadResult
 
   @type application :: Application.t()
   @type config :: Keyword.t()
@@ -53,6 +57,60 @@ defmodule Decree.EventStore do
           events
         )
       end
+    end)
+  end
+
+  @doc """
+  Append events to several streams atomically, in one statement.
+
+  `appends` is a list of `{stream_uuid, expected_version, events}`.
+  See `c:Decree.Store.append_to_streams/2` for the options and answers.
+  """
+  def append_to_streams(application, appends, opts \\ []) do
+    # Names the streams only: every telemetry handler sees this, and the events are plaintext.
+    meta = %{application: application, stream_uuids: Enum.map(appends, &elem(&1, 0))}
+
+    span(:append_to_streams, meta, fn ->
+      {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+      adapter.append_to_streams(adapter_meta, appends, opts)
+    end)
+  end
+
+  @doc """
+  Reads the events matching a query across every stream, in one statement, each upcast as
+  `stream_forward/4` upcasts it.
+
+  See `c:Decree.Store.read_query/2` for the items, options and answers. The result's
+  events are `Decree.EventStore.RecordedEvent`s.
+  """
+  def read_query(application, items, opts \\ []) do
+    meta = %{application: application, items: items, opts: opts}
+
+    span(:read_query, meta, fn ->
+      {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+      with {:ok, %ReadResult{events: events} = result} <-
+             adapter.read_query(adapter_meta, items, opts) do
+        upcast_opts = [additional_metadata: %{application: application}]
+
+        {:ok, %ReadResult{result | events: Upcast.upcast_event_stream(events, upcast_opts)}}
+      end
+    end)
+  end
+
+  @doc """
+  Reads the tags of the events at the given `$all` positions, in one statement.
+
+  See `c:Decree.Store.read_tags/2` for the answers.
+  """
+  def read_tags(application, positions, opts \\ []) do
+    meta = %{application: application, positions: positions}
+
+    span(:read_tags, meta, fn ->
+      {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+      adapter.read_tags(adapter_meta, positions, opts)
     end)
   end
 

@@ -3,7 +3,7 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
 
   import Decree.Store.StoreRows
 
-  alias Decree.Store.{AppendResult, EventData, LockSession}
+  alias Decree.Store.{AppendResult, Config, EventData, LockSession}
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -251,6 +251,43 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
                events(1),
                [conditional_appends: [stream_prefixes: ["decision-"]]] ++ opts
              ) == {:error, :plain_append_to_conditional_prefix}
+    end
+  end
+
+  describe "the declaration, in the config" do
+    test "is checked when the config is parsed" do
+      for declared <- [
+            :all,
+            ["decision-"],
+            [stream_prefixes: [""]],
+            [stream_prefixes: ["decision-", ""]],
+            [stream_prefixes: "decision-"],
+            [stream_prefixes: [:decision]],
+            [stream_prefixes: nil],
+            [stream_prefix: ["decision-"]],
+            [targets: :mine],
+            [stream_prefixes: ["a-"], stream_prefixes: ["b-"]]
+          ] do
+        assert_raise ArgumentError, ~r/conditional_appends/, fn ->
+          Config.parse(conditional_appends: declared)
+        end
+      end
+    end
+
+    test "takes what a store declares" do
+      for declared <- [
+            [],
+            [stream_prefixes: []],
+            [stream_prefixes: ["decision-"]],
+            [targets: [:mine, MyApp.User, "any term"]],
+            [stream_prefixes: ["decision-"], targets: [:mine]]
+          ] do
+        parsed = Config.parse(conditional_appends: declared)
+
+        assert Keyword.fetch!(parsed, :conditional_appends) == declared
+      end
+
+      refute Keyword.has_key?(Config.parse([]), :conditional_appends)
     end
   end
 

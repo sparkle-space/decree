@@ -3,6 +3,7 @@ defmodule Decree.Commands.Dispatcher do
   alias Decree.Aggregates.Aggregate
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Commands.Router
+  alias Decree.Decision.Dispatch
   alias Decree.Middleware.Pipeline
   alias Decree.Telemetry
 
@@ -22,6 +23,7 @@ defmodule Decree.Commands.Dispatcher do
       :handler_function,
       :handler_before_execute,
       :aggregate_module,
+      :decision_module,
       :identity,
       :identity_prefix,
       :stream_tag,
@@ -80,7 +82,11 @@ defmodule Decree.Commands.Dispatcher do
   # Open issue in dialyxir:
   # https://github.com/jeremyjh/dialyxir/issues/568
   @dialyzer {:nowarn_function, execute: 3}
-  defp execute(%Pipeline{} = pipeline, %Payload{} = payload, %ExecutionContext{} = context) do
+  defp execute(
+         %Pipeline{} = pipeline,
+         %Payload{decision_module: nil} = payload,
+         %ExecutionContext{} = context
+       ) do
     %Pipeline{application: application, assigns: %{aggregate_uuid: aggregate_uuid}} = pipeline
     %Payload{aggregate_module: aggregate_module, timeout: timeout} = payload
 
@@ -121,6 +127,59 @@ defmodule Decree.Commands.Dispatcher do
       end
 
     case result do
+      {:exit, {:normal, :aggregate_stopped}} ->
+        # Maybe retry command when aggregate process stopped by lifespan timeout
+        maybe_retry(pipeline, payload, context)
+
+      {:error, :remote_node_down} ->
+        # Maybe retry command when aggregate process not found on a remote node
+        maybe_retry(pipeline, payload, context)
+
+      result ->
+        respond(pipeline, payload, result)
+    end
+  end
+
+  # A decision runs as an aggregate command does, in a task, with no aggregate process.
+  defp execute(%Pipeline{} = pipeline, %Payload{} = payload, %ExecutionContext{} = context) do
+    %Pipeline{application: application, assigns: %{aggregate_uuid: stream_uuid}} = pipeline
+
+    %Payload{decision_module: decision, identity_prefix: identity_prefix, timeout: timeout} =
+      payload
+
+    task_dispatcher_name = Module.concat([application, Decree.Commands.TaskDispatcher])
+
+    task =
+      Task.Supervisor.async_nolink(task_dispatcher_name, Dispatch, :execute, [
+        application,
+        decision,
+        stream_uuid,
+        identity_prefix,
+        context
+      ])
+
+    result =
+      case Task.yield(task, timeout) || Task.shutdown(task) do
+        {:ok, result} -> result
+        {:exit, _reason} -> {:error, :decision_execution_failed}
+        nil -> {:error, :decision_execution_timeout}
+      end
+
+    case result do
+      {:decided, outcome, reply} ->
+        pipeline
+        |> Pipeline.assign(:aggregate_uuid, outcome.aggregate_uuid)
+        |> Pipeline.assign(:position, outcome.position)
+        |> Pipeline.assign(:stream_versions, outcome.stream_versions)
+        |> respond(payload, reply)
+
+      result ->
+        respond(pipeline, payload, result)
+    end
+  end
+
+  defp respond(%Pipeline{} = pipeline, %Payload{} = payload, result) do
+    case result do
       {:ok, aggregate_version, events, aggregate_state} ->
         pipeline
         |> Pipeline.assign(:aggregate_version, aggregate_version)
@@ -136,14 +195,6 @@ defmodule Decree.Commands.Dispatcher do
         |> Pipeline.assign(:aggregate_state, aggregate_state)
         |> after_dispatch(payload)
         |> Pipeline.respond({:ok, reply})
-
-      {:exit, {:normal, :aggregate_stopped}} ->
-        # Maybe retry command when aggregate process stopped by lifespan timeout
-        maybe_retry(pipeline, payload, context)
-
-      {:error, :remote_node_down} ->
-        # Maybe retry command when aggregate process not found on a remote node
-        maybe_retry(pipeline, payload, context)
 
       {:error, error} ->
         pipeline

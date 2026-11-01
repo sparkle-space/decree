@@ -36,6 +36,9 @@ defmodule Decree.EventStore.Adapter do
   `:retryable` or `:rejected`, and the aggregate returns it as the command's
   error. After an `:unavailable` one the aggregate stops, so the next command
   rebuilds its state from the stream (see `Decree.Store.AppendError`).
+
+  With `returning: :append_result` in `opts`, success answers
+  `{:ok, %Decree.Store.AppendResult{}}` instead of `:ok`.
   """
   @callback append_to_stream(
               adapter_meta,
@@ -45,9 +48,47 @@ defmodule Decree.EventStore.Adapter do
               opts :: Keyword.t()
             ) ::
               :ok
+              | {:ok, Decree.Store.AppendResult.t()}
               | {:error, :wrong_expected_version}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, error}
+
+  @doc """
+  Append events to several streams atomically, in one statement.
+
+  `appends` is a list of `{stream_uuid, expected_version, events}`, one per stream. The
+  options and answers are those of `c:Decree.Store.append_to_streams/2`: with `condition:`
+  an event past its `after` matching its `items` answers
+  `{:error, :append_condition_failed}`, and with `returning: :append_result` success
+  answers `{:ok, %Decree.Store.AppendResult{}}`.
+  """
+  @callback append_to_streams(
+              adapter_meta,
+              appends :: [{stream_uuid, expected_version, list(EventData.t())}],
+              opts :: Keyword.t()
+            ) ::
+              :ok
+              | {:ok, Decree.Store.AppendResult.t()}
+              | {:error, Decree.Store.AppendError.t()}
+              | {:error, error}
+
+  @doc """
+  Reads the events matching a query across every stream, in one statement.
+
+  The options and answers are those of `c:Decree.Store.read_query/2`, except that the
+  `Decree.Store.ReadResult`'s events are `Decree.EventStore.RecordedEvent`s.
+  """
+  @callback read_query(adapter_meta, items :: [Decree.Store.Query.item()], opts :: Keyword.t()) ::
+              {:ok, Decree.Store.ReadResult.t()} | {:error, error}
+
+  @doc """
+  Reads the tags of the events at the given `$all` positions, in one statement.
+
+  Answers as `c:Decree.Store.read_tags/2` does: a position with no row is absent, and so
+  are tags of a kind the store declares deletable.
+  """
+  @callback read_tags(adapter_meta, positions :: [non_neg_integer()], opts :: Keyword.t()) ::
+              {:ok, %{non_neg_integer() => [String.t()]}} | {:error, error}
 
   @doc """
   Streams events from the given stream, in the order in which they were

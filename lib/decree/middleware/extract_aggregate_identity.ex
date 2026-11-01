@@ -22,7 +22,7 @@ defmodule Decree.Middleware.ExtractAggregateIdentity do
       |> assign(:aggregate_identity, identity)
       |> assign(:aggregate_uuid, aggregate_uuid)
     else
-      nil ->
+      none when none in [nil, ""] ->
         pipeline
         |> respond({:error, :invalid_aggregate_identity})
         |> halt()
