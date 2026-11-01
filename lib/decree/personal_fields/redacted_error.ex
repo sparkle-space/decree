@@ -59,7 +59,7 @@ defmodule Decree.PersonalFields.RedactedError do
   """
   @spec reduce(term) :: atom | {atom, :redacted}
   def reduce(reason) when is_atom(reason), do: reason
-  def reduce(%{__exception__: true, __struct__: type}), do: type
+  def reduce(%{__exception__: true, __struct__: type}) when is_atom(type), do: type
 
   def reduce(reason) when is_tuple(reason) and is_atom(elem(reason, 0)),
     do: {elem(reason, 0), :redacted}

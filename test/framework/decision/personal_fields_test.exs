@@ -771,6 +771,30 @@ defmodule Decree.Decision.PersonalFieldsTest do
       end
     end
 
+    for callback <- [:followup, :admit, :decide] do
+      test "from `#{callback}` holds no value for a malformed exception map", %{tag: tag} do
+        secret = email("struct-" <> UUID.uuid4())
+        malformed = %{__exception__: true, __struct__: secret}
+        script = refusing(unquote(callback), {:error, malformed}, tag)
+
+        assert {:error, :redacted} = PersonalApp.dispatch(scripted(script, Personal))
+
+        pipeline = after_failure()
+
+        assert pipeline.response == {:error, :redacted}
+        assert pipeline.assigns.error == :redacted
+        refute leaks?(pipeline, secret)
+
+        assert_received {:telemetry, @stop, _, %{error: :redacted} = metadata}
+        refute leaks?(metadata, secret)
+
+        assert_received {:telemetry, @dispatch_stop, _, %{error: :redacted} = metadata}
+        refute leaks?(metadata, secret)
+
+        refute leaks?(flush_telemetry(), secret)
+      end
+    end
+
     test "from `query/2` stands, which holds nothing decrypted" do
       reason = {:invalid, "kept-" <> UUID.uuid4()}
       query = fn _command, _tag_context -> {:error, reason} end
