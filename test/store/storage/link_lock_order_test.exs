@@ -5,6 +5,7 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
   import ExUnit.CaptureLog
 
   alias Decree.Store.{AppendError, EventFactory, LockSession, Storage, UUID}
+  alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.CreateStream
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
@@ -21,6 +22,16 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
     linker = LockSession.connect(postgrex_config)
     deleter = LockSession.connect(postgrex_config)
     second_deleter = LockSession.connect(postgrex_config)
+
+    # A btree scan sorts the keys of `= ANY` itself, and a merge join sorts its rows too, so on
+    # tables this small either hands back `event_id` order with or without a lock's `ORDER BY`,
+    # and a missing one would pass by plan. These sessions read in physical order instead, which
+    # runs against `event_id` here. `second_deleter` follows its stream's rows, not `events`':
+    # two sessions walking one table in one order could not cycle, sorted or not.
+    # `HardDeletePlanTest` pins the statements' own plans.
+    read_in_physical_order(linker)
+    read_in_physical_order(deleter, ["mergejoin"])
+    read_in_physical_order(second_deleter, ["mergejoin", "hashjoin", "material"])
 
     [
       observer: observer,
@@ -403,6 +414,20 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
   end
 
   describe "a link's own lock order" do
+    test "is left to the statement: without it the linker's rows come back unsorted", context do
+      ids = source(context, "source", 1, 5)
+
+      plan =
+        plan_without_order(
+          context.linker,
+          Statements.lock_link_events(context.schema),
+          "ORDER BY event_id",
+          [Enum.map(ids, &UUID.string_to_binary!/1)]
+        )
+
+      assert_unsorted(plan)
+    end
+
     for {name, order} <- [{"the sorted order", :asc}, {"the reverse of it", :desc}] do
       @order order
 
@@ -469,6 +494,16 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
   end
 
   describe "a hard delete's lock order" do
+    test "is left to the statement: without it `deleter` follows `events`", context do
+      assert plan_of_delete(context, :deleter) =~
+               ~r/Seq Scan on events e.*Seq Scan on stream_events/s
+    end
+
+    test "is left to the statement: without it `second_deleter` follows its stream", context do
+      assert plan_of_delete(context, :second_deleter) =~
+               ~r/Seq Scan on stream_events.*Seq Scan on events e/s
+    end
+
     test "is `event_id` order, with the stream's scan the reverse of it", context do
       ids = source(context, "stream", 1, 5)
       [lowest, low, median, high, highest] = Enum.sort(ids)
@@ -552,18 +587,25 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
       delete = async_delete(context, :deleter, "stream")
       LockSession.wait_until_blocked(context.observer, context.deleter_backend, holder.backend)
 
-      link = async_link(context, "link-stream", :any_version, ids)
+      # A link retries its one deadlock, and its retry answers this same `:not_found`, so only
+      # the log can show that there was none.
+      log =
+        capture_log(fn ->
+          link = async_link(context, "link-stream", :any_version, ids)
 
-      LockSession.wait_until_blocked(
-        context.observer,
-        context.linker_backend,
-        context.deleter_backend
-      )
+          LockSession.wait_until_blocked(
+            context.observer,
+            context.linker_backend,
+            context.deleter_backend
+          )
 
-      assert {:ok, :ok} = LockSession.commit(holder)
+          assert {:ok, :ok} = LockSession.commit(holder)
 
-      assert :ok = Task.await(delete)
-      assert {:error, :not_found} = Task.await(link)
+          assert :ok = Task.await(delete)
+          assert {:error, :not_found} = Task.await(link)
+        end)
+
+      refute log =~ "deadlock_detected"
 
       assert stream_id(context, "link-stream") == nil
       assert_all_gone(context)
@@ -630,8 +672,9 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
       ids = source(context, "stream", 1, 5)
       [_lowest, _low, median, _high, _highest] = sorted = Enum.sort(ids)
 
-      # Listed the other way, so each delete's own scan runs against the other's.
-      :ok = EventStore.link_to_stream("link-stream", :any_version, sorted)
+      # One at a time, as one link's insert does not write its rows in version order, so that
+      # this stream's rows run against the events' and each delete's walk against the other's.
+      for id <- sorted, do: :ok = EventStore.link_to_stream("link-stream", :any_version, [id])
 
       holder = hold_event(context, median, "FOR KEY SHARE")
 
@@ -657,18 +700,20 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
     end
 
     test "each holding a link of the other's, with no deadlock", context do
-      [left_low, left_high] = Enum.sort(source(context, "left", 1, 2))
+      # `right` first, so `left`'s own rows are the last `deleter` would come to, and the first
+      # `second_deleter` would.
       [right_low, right_high] = Enum.sort(source(context, "right", 2, 2))
+      [left_low, left_high] = Enum.sort(source(context, "left", 1, 2))
 
       :ok = EventStore.link_to_stream("left", :any_version, [right_low, right_high])
       :ok = EventStore.link_to_stream("right", :any_version, [left_low, left_high])
 
       holder = hold_event(context, right_low, "FOR KEY SHARE")
 
-      first = async_delete(context, :deleter, "left")
+      first = async_delete(context, :deleter, "right")
       LockSession.wait_until_blocked(context.observer, context.deleter_backend, holder.backend)
 
-      second = async_delete(context, :second_deleter, "right")
+      second = async_delete(context, :second_deleter, "left")
 
       LockSession.wait_until_blocked(
         context.observer,
@@ -683,6 +728,43 @@ defmodule Decree.Store.Storage.LinkLockOrderTest do
 
       assert_all_gone(context)
     end
+  end
+
+  defp read_in_physical_order(conn, more \\ []) do
+    for setting <- ["indexscan", "indexonlyscan", "bitmapscan" | more] do
+      Postgrex.query!(conn, "SET enable_#{setting} TO off", [])
+    end
+  end
+
+  # The plan a mutation that drops the `ORDER BY` would get, in this session.
+  defp plan_without_order(conn, statement, order_by, params) do
+    statement = IO.iodata_to_binary(statement)
+
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(conn, "EXPLAIN " <> String.replace(statement, order_by, ""), params)
+
+    Enum.map_join(rows, "\n", &hd/1)
+  end
+
+  defp plan_of_delete(context, session) do
+    source(context, "stream", 1, 5)
+
+    plan =
+      plan_without_order(
+        Map.fetch!(context, session),
+        Statements.lock_deleted_events(context.schema),
+        "ORDER BY e.event_id",
+        [stream_id(context, "stream")]
+      )
+
+    assert_unsorted(plan)
+
+    plan
+  end
+
+  defp assert_unsorted(plan) do
+    assert plan =~ ~r/Seq Scan on \S*events\b/, plan
+    refute plan =~ ~r/Index|Bitmap|Sort|Merge|Unique/, plan
   end
 
   # A stream of `count` events, committed, whose ids fall as its versions rise. Answers the

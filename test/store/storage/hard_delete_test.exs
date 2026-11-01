@@ -193,7 +193,9 @@ defmodule Decree.Store.Storage.HardDeleteTest do
 
   # The event ids fall as the versions rise, so the link's list and the delete's scan both run
   # against the sorted order, which is the one they share. The delete waits on the lowest id,
-  # holding no other event, and the link then takes every row from the session it waits on.
+  # holding no other event, and the link then takes every row from the session it waits on. So
+  # this stages the delete's order alone: the delete holds nothing a link's order could meet,
+  # and `Decree.Store.Storage.LinkLockOrderTest` stages the link's.
   describe "against a link of several of the stream's events" do
     setup context do
       events =
