@@ -208,10 +208,15 @@ defmodule Decree.Decision do
     - An event of a deletable type, or a scope tag of a deletable kind, reads as reused and
       fails closed, because the one tag fetch leaves them out.
     - A hard delete takes a stream's `command:` rows, so a resend after it is a new command.
+      A hard delete of a stream linking a decision's events takes those events too, with their
+      `command:` rows, wherever they were appended, so a resend after that is a new command
+      as well.
 
   The scope is the route's stream tag and `c:scope_tags/1`, deduplicated. Each tag must be on
   some event of the matches inside the window, so a batch whose reply was lost is a duplicate
   though no event of it carries every tag, and a batch that lands must carry them the same way.
+  A route entity that was a member of an earlier batch under the same id reads as that batch's
+  duplicate, since its tag is on an event in the window, and nothing commits.
 
   ## Personal fields
 
@@ -285,8 +290,9 @@ defmodule Decree.Decision do
     - `:decision_batch_too_large` - more new events than `max_batch_events`.
     - `:too_many_attempts` - retries are spent.
     - `:reused_command_id` - this `command_id` already left events inside the window, for
-      another kind or entity. A handler's in-place retry resends the same id, so it stops or
-      parks here instead of spinning.
+      another kind or entity, or a genuine resend's fold has moved past its gate and
+      `c:decide/2` answers events on the replay exit. A handler's in-place retry resends the
+      same id, so it stops or parks here instead of spinning.
     - `:key_unknown` - a personal value it reads or writes has no key to hand. Only the key
       coming back changes that.
 

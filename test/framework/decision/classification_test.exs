@@ -469,6 +469,50 @@ defmodule Decree.Decision.ClassificationTest do
       assert [_one] = stored(stream(one))
       assert stored(stream(other)) == []
     end
+
+    test "a condition failure crossing the edge decides from the new read, as a new command" do
+      test = self()
+      calls = :counters.new(1, [])
+
+      # The count crosses into the dispatch's task, so the retry's `query` is what holds.
+      query = fn command, _context ->
+        :counters.add(calls, 1, 1)
+
+        if :counters.get(calls, 1) == 2, do: hold(test, :retrying)
+
+        [claimed_item(command.scope)]
+      end
+
+      decide = fn _state, command ->
+        if :counters.get(calls, 1) == 1, do: hold(test, :deciding)
+
+        claimed(command)
+      end
+
+      held = scripted(query: query, decide: decide)
+      winner = scripted(command_id: held.command_id)
+
+      task = dispatch_async(held)
+
+      assert_receive {:deciding, pid}, 5_000
+
+      # Another entity, so only the unscoped command item fails `held`'s condition.
+      assert :ok = App.dispatch(winner)
+      send(pid, :go)
+
+      assert_receive {:retrying, ^pid}, 5_000
+
+      age_stamps(winner.command_id, @an_hour)
+      send(pid, :go)
+
+      assert :ok = Task.await(task, :infinity)
+
+      assert_received {:telemetry, @retry, %{attempt: 1}, %{reason: :append_condition_failed}}
+      refute_received {:telemetry, @retry, _, _}
+
+      assert [_one] = stored(stream(held))
+      assert [_one] = stored(stream(winner))
+    end
   end
 
   describe "admission" do
