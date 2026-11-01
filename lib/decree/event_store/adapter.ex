@@ -106,6 +106,27 @@ defmodule Decree.EventStore.Adapter do
               | {:error, error}
 
   @doc """
+  Reads the last event of the given stream.
+
+  Answers `{:error, :stream_not_found}` for a stream with no events, which is also what a
+  hard delete landing during the read gives, and `{:error, reason}` for a read that failed.
+  A failed read never answers `:stream_not_found`.
+  """
+  @callback read_stream_head(adapter_meta, stream_uuid) ::
+              {:ok, RecordedEvent.t()}
+              | {:error, :stream_not_found}
+              | {:error, :stream_deleted}
+              | {:error, error}
+
+  @doc """
+  The stream prefixes the event store declares as deletable, or `[]` if it declares none.
+
+  A store without `enable_hard_deletes` answers `[]`, whatever it declares: no delete can reach
+  a stream there.
+  """
+  @callback deletable_stream_prefixes(adapter_meta) :: [String.t()]
+
+  @doc """
   Create a transient subscription to a single event stream.
 
   The event store will publish any events appended to the given stream to the

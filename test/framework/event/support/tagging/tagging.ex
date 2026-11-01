@@ -65,6 +65,12 @@ defmodule Decree.Event.Tagging.Adapter do
     to: Adapter
 
   @impl Decree.EventStore.Adapter
+  defdelegate read_stream_head(adapter_meta, stream_uuid), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate deletable_stream_prefixes(adapter_meta), to: Adapter
+
+  @impl Decree.EventStore.Adapter
   defdelegate subscribe_to(adapter_meta, stream, name, subscriber, start_from, opts),
     to: Adapter
 
