@@ -284,12 +284,86 @@ defmodule Decree.Store.Storage.HardDeleteTest do
       assert_fenced(context)
     end
 
+    # A nested transaction is the caller's, so only the close can shut the fence here. The
+    # savepoint keeps that transaction alive past each refusal, and the commit shows the close
+    # took nothing with it.
+    test "is closed again inside a caller's transaction after a hard delete", context do
+      assert {:ok, :ok} =
+               Postgrex.transaction(context.deleter, fn tx ->
+                 assert :ok = Stream.delete(tx, "stream", :any_version, :hard, opts(context))
+
+                 assert_fenced_in(context, tx)
+               end)
+
+      assert stream_versions(context, "stream") == []
+      assert tag_rows(context) == [[2, "email:x"]]
+    end
+
+    test "is closed again inside a caller's transaction after `delete_stream_tags`", context do
+      assert {:ok, :ok} =
+               Postgrex.transaction(context.deleter, fn tx ->
+                 assert {:ok, 1} = Stream.delete_tags(tx, "subject", ["email"], opts(context))
+
+                 assert_fenced_in(context, tx)
+               end)
+
+      assert tag_rows(context) == [[1, "tenant:a"]]
+    end
+
+    # The stream's version moves between the delete's read and its lock, so this is the error
+    # arm with the fence open, and there is no close on it. The rollback is what stands in.
+    test "a failed delete leaves a caller's transaction rolled back, with nothing run after",
+         context do
+      %{deleter: deleter, deleter_backend: deleter_backend, observer: observer} = context
+
+      appender = LockSession.start(context.postgrex_config)
+
+      LockSession.run(appender, fn tx ->
+        assert :ok =
+                 EventStore.append_to_stream("stream", :any_version, [event(["tenant:b"])],
+                   conn: tx
+                 )
+      end)
+
+      delete =
+        Task.async(fn ->
+          Postgrex.transaction(deleter, fn tx ->
+            assert {:error, :wrong_expected_version} =
+                     Stream.delete(tx, "stream", 1, :hard, opts(context))
+
+            assert {:error, %DBConnection.ConnectionError{message: "transaction rolling back"}} =
+                     Postgrex.query(tx, raw_delete_sql(context, "event_tags"), [])
+          end)
+        end)
+
+      LockSession.wait_until_blocked(observer, deleter_backend, appender.backend)
+
+      assert {:ok, :ok} = LockSession.commit(appender)
+      assert {:error, :rollback} = Task.await(delete)
+
+      assert stream_versions(context, "stream") == [1, 2]
+      assert tag_rows(context) == [[1, "tenant:a"], [2, "email:x"], [3, "tenant:b"]]
+    end
+
     defp assert_fenced(%{raw_delete: raw_delete}) do
       for table <- ["event_tags", "event_types"] do
         assert {:error, %Postgrex.Error{postgres: %{code: :feature_not_supported}}} =
                  raw_delete.(table)
       end
     end
+
+    defp assert_fenced_in(context, tx) do
+      for table <- ["event_tags", "event_types"] do
+        assert {:error, %Postgrex.Error{postgres: %{code: :feature_not_supported}}} =
+                 Postgrex.query(tx, raw_delete_sql(context, table), [], mode: :savepoint)
+      end
+
+      :ok
+    end
+
+    defp raw_delete_sql(context, table), do: ~s(DELETE FROM "#{context.schema}".#{table})
+
+    defp opts(context), do: [schema: context.schema, enable_hard_deletes: true]
 
     test "answers `:not_supported` with `enable_hard_deletes` off" do
       assert {:error, :not_supported} = EventStore.delete_stream("stream", :any_version, :hard)

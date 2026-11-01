@@ -87,11 +87,13 @@ defmodule Decree.Store.Storage.DeleteStream do
   # after both. This is an append's lock order, the stream's row and then `$all`, and a holder
   # of `$all` never waits on a stream's row, so neither lock can cycle with an append.
   #
-  # The subject's row is there so this and a hard delete of the same stream serialise,
-  # instead of meeting on tag rows in opposite orders. `$all` is the append lock (TM-6): with
-  # it held, a conditional append either saw these rows before this began, or starts after
-  # the commit and cannot see them. It is a lock and never an UPDATE, because
-  # `event_notification` fires on UPDATE and would broadcast a phantom `$all` notification.
+  # The subject's row is there so this and a hard delete of the same stream serialise. A hard
+  # delete of a link stream holding the subject's events takes no such row and meets this on
+  # tag rows, and the shared `position, tag` lock order keeps that from a cycle. `$all` is the
+  # append lock (TM-6): with it held, a conditional append either saw these rows before this
+  # began, or starts after the commit and cannot see them. It is a lock and never an UPDATE,
+  # because `event_notification` fires on UPDATE and would broadcast a phantom `$all`
+  # notification.
   def delete_tags(conn, stream_id, tag_kinds, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
 

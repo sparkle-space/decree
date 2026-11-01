@@ -9,7 +9,8 @@
 
   The `stream_events` check sits before the limit on purpose: a tag or type row with no `$all`
   row must neither be returned nor use up the limit. A hard delete removes both together, but
-  an old pod's hard delete and a store's own sweep of events can still leave such a row behind.
+  an old pod's hard delete, or a raw delete of events outside the store, as an application's
+  orphan sweep is, can still leave such a row behind.
 
   `OFFSET 0` keeps each check a per-row index probe: it stops the planner flattening the check
   into a join or hashing the whole table, which a probe under the `$all` lock must never do.

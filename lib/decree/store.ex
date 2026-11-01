@@ -231,8 +231,9 @@ defmodule Decree.Store do
 
   What a read sees is `$all`:
 
-    - A hard-deleted event is gone. Its tag and type rows are left behind and ignored,
-      so they use up no `count`, and `after` does not fall.
+    - A hard-deleted event is gone, and a hard delete removes its tag and type rows. A
+      row left by an old pod's hard delete, or by a raw delete of events, is ignored, so
+      it uses up no `count`. `after` does not fall.
     - A soft-deleted stream's events are still returned.
     - A link is not seen. The original event is, once, with its original stream.
 

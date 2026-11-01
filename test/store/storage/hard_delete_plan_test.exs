@@ -45,6 +45,7 @@ defmodule Decree.Store.Storage.HardDeletePlanTest do
 
       assert plan =~ "ix_event_tags_position", plan
       assert plan =~ "event_types_pkey", plan
+      assert_tag_rows_locked_in_order(plan)
       refute plan =~ ~r/Seq Scan on \S*event_tags\b/, plan
       refute plan =~ ~r/Seq Scan on \S*event_types\b/, plan
     end
@@ -55,8 +56,16 @@ defmodule Decree.Store.Storage.HardDeletePlanTest do
       plan = explain(conn, Statements.delete_stream_tags(schema), [stream_id, ["email"]])
 
       assert plan =~ "ix_event_tags_position", plan
+      assert_tag_rows_locked_in_order(plan)
       refute plan =~ ~r/Seq Scan on \S*(event_tags|stream_events)\b/, plan
     end
+  end
+
+  # `LockRows` over the sort, or the locks follow the scan and the two statements can cycle.
+  defp assert_tag_rows_locked_in_order(plan) do
+    assert plan =~
+             ~r/LockRows[^\n]*\n\s*->  (?:Incremental )?Sort [^\n]*\n\s*Sort Key: \S+"position", \S+\.tag /,
+           plan
   end
 
   defp explain(conn, statement, params) do

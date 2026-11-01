@@ -190,7 +190,8 @@ defmodule Decree.Store.Streams.Stream do
         fn transaction ->
           with :ok <- set_enable_hard_deletes(transaction),
                {:ok, _count} = reply <-
-                 Storage.delete_stream_tags(transaction, stream_id, tag_kinds, opts) do
+                 Storage.delete_stream_tags(transaction, stream_id, tag_kinds, opts),
+               :ok <- close_hard_deletes(transaction) do
             reply
           else
             {:error, error} -> Postgrex.rollback(transaction, error)
@@ -649,7 +650,8 @@ defmodule Decree.Store.Streams.Stream do
         conn,
         fn transaction ->
           with :ok <- set_enable_hard_deletes(transaction),
-               :ok <- Storage.hard_delete_stream(transaction, stream_id, delete_opts) do
+               :ok <- Storage.hard_delete_stream(transaction, stream_id, delete_opts),
+               :ok <- close_hard_deletes(transaction) do
             :ok
           else
             {:error, error} -> Postgrex.rollback(transaction, error)
@@ -660,10 +662,25 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  # LOCAL, so the fence closes when the transaction ends: a SET SESSION would outlive the
-  # commit and leave this pooled connection able to delete anything.
+  # LOCAL, so the setting cannot outlive the transaction: a SET SESSION would outlive the
+  # commit and leave this pooled connection able to delete anything. `close_hard_deletes/1`
+  # closes it again before the call returns, so a caller's transaction does not keep it.
   defp set_enable_hard_deletes(conn) do
     query = "SET LOCAL eventstore.enable_hard_deletes TO 'on';"
+
+    with {:ok, %Postgrex.Result{}} <- Postgrex.query(conn, query, []) do
+      :ok
+    end
+  end
+
+  # A nested `Postgrex.transaction/3` is the caller's transaction, with no savepoint, and a
+  # released savepoint would keep a SET LOCAL anyway. So this is the transaction function's
+  # last statement on success. It closes the fence and does not restore a prior value: a
+  # caller wanting its own fence sets it again. A failure needs no close, because an SQL error
+  # aborts the transaction and `Postgrex.rollback/2` marks it rolled back, so nothing further
+  # runs in it.
+  defp close_hard_deletes(conn) do
+    query = "SET LOCAL eventstore.enable_hard_deletes TO 'off';"
 
     with {:ok, %Postgrex.Result{}} <- Postgrex.query(conn, query, []) do
       :ok
