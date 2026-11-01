@@ -20,13 +20,12 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
   # other test's backend can move that counter. A backend flushes the counter when it
   # exits, so every session closes, and is seen gone, before the counter is read.
   #
-  # Hard deletes run here over `doomed-` streams of their own, with links of one of their
-  # events at a time. A link of several of a stream's events stays out: it can deadlock with
-  # a hard delete, because the two lock event rows in different orders. That cycle is a
-  # measured residual, which `Decree.Store.Storage.HardDeleteTest` pins, and it would move
-  # this counter. So links of several events keep to `link-source`, which nothing deletes. No
-  # doomed stream is a link's target, because two hard deletes meeting only through a link
-  # stream can cycle the same way.
+  # Hard deletes run here over `doomed-` streams of their own, with links of up to three of a
+  # doomed stream's events, in no order. A link and a hard delete take event rows in one order,
+  # so these cannot cycle, and a doomed stream can be a link's target, so two hard deletes
+  # meet here through a link stream on the same rows. `Decree.Store.Storage.LinkLockOrderTest`
+  # stages each of these. Nothing but `doomed-` streams' own events is linked into them, so
+  # that `link-source` and the pool keep every event.
   setup do
     config =
       TestEventStore
@@ -94,15 +93,11 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
       {:error, {:already_retried_once, :duplicate_stream_uuid}},
       # A link of an event already in the target.
       {:error, :duplicate_event},
-      # A link that lost the race to create its target.
-      {:error, :stream_exists},
       :hard_deleted,
       # An append, or a link, that a hard delete got to first.
       {:error, :not_found},
       # A hard delete another one, or the stream's absence, got to first.
-      {:error, :stream_not_found},
-      # A hard delete that a committed link of one of its events got to first.
-      {:error, :foreign_key_violation}
+      {:error, :stream_not_found}
     ]
   end
 
@@ -192,23 +187,34 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     %{answer: answer, event_ids: []}
   end
 
-  # One event, and into a stream of its own: see the note at the top.
+  # One to three events, into a stream of its own or into a doomed stream: see the note at the
+  # top.
   defp doomed_link(conn, operation) do
-    target = "linked-doomed-#{rem(operation, @doomed_streams)}"
+    target =
+      case :rand.uniform(2) do
+        1 -> "linked-doomed-#{rem(operation, @doomed_streams)}"
+        2 -> doomed_name()
+      end
 
-    case doomed_event_id(conn) do
-      nil ->
+    case doomed_event_ids(conn, :rand.uniform(3)) do
+      [] ->
         %{answer: :ok, event_ids: []}
 
-      event_id ->
+      event_ids ->
         answer =
-          Stream.link_to_stream(conn, target, :any_version, [event_id], @append_opts)
+          Stream.link_to_stream(
+            conn,
+            target,
+            :any_version,
+            Enum.shuffle(event_ids),
+            @append_opts
+          )
 
         %{answer: answer, event_ids: []}
     end
   end
 
-  defp doomed_event_id(conn) do
+  defp doomed_event_ids(conn, count) do
     %Postgrex.Result{rows: rows} =
       Postgrex.query!(
         conn,
@@ -218,15 +224,12 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
         JOIN streams s USING (stream_id)
         WHERE s.stream_uuid = $1
         ORDER BY se.stream_version DESC
-        LIMIT 1
+        LIMIT $2
         """,
-        [doomed_name()]
+        [doomed_name(), count]
       )
 
-    case rows do
-      [[event_id]] -> UUID.binary_to_string!(event_id)
-      [] -> nil
-    end
+    Enum.map(rows, fn [event_id] -> UUID.binary_to_string!(event_id) end)
   end
 
   defp hard_delete(conn) do

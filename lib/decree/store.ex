@@ -377,7 +377,14 @@ defmodule Decree.Store do
   **Completeness.** An append to a stream starting with a declared prefix, of an event whose
   type is not in `event_types`, answers `{:error, :undeclared_deletable_event_type}` before
   any statement is sent. Without this a forgotten type would stay queryable and vanish under
-  a decision. A link is not an append and is not checked.
+  a decision.
+
+  **Links.** A hard delete of a stream holding links removes those events from every stream,
+  the streams they were appended to included, so a stream that can be deleted must hold
+  nothing but its own events. A `c:link_to_stream/4` into a stream starting with a declared
+  prefix answers `{:error, :link_into_deletable_stream}` before any statement is sent, at
+  every expected version. A link out of a deletable stream passes, and that link goes with
+  the event when a hard delete takes it.
 
   **The limit.** The refusal is by name. An item of tags alone, naming a kind that is not
   declared, can still match a deletable event. So the declaration must list every kind a
@@ -1118,16 +1125,37 @@ defmodule Decree.Store do
       from the provided expected version, or another writer linked or appended
       at the same stream version first.
     * `{:error, :stream_exists}` when the stream exists, but expected version
-      was `:no_stream`, or another writer created the stream first.
+      was `:no_stream`.
     * `{:error, :stream_not_found}` when the stream does not exist, but
       expected version was `:stream_exists`.
     * `{:error, :stream_deleted}` when the stream was soft deleted.
     * `{:error, :cannot_append_to_all_stream}` for the `$all` stream.
-    * `{:error, :duplicate_event}` when an event is already linked to the stream.
-    * `{:error, :not_found}` when an event id does not exist.
-    * `{:error, %Decree.Store.AppendError{}}` for any other failure of the link
-      statement, classified `:unavailable`, `:retryable` or `:rejected` (see
-      `Decree.Store.AppendError`).
+    * `{:error, :link_into_deletable_stream}` when the stream starts with a
+      declared deletable prefix, at every expected version and before any
+      statement is sent. See "Deletable streams" in `Decree.Store`.
+    * `{:error, :duplicate_event}` when an event is already linked to the
+      stream, or is listed twice.
+    * `{:error, :not_found}` when an event id does not exist, or when a hard
+      delete removed one of the events or the stream first. Nothing is written.
+    * `{:error, :duplicate_stream_uuid}` inside a caller's transaction, when
+      another writer created the stream first. The race aborted that transaction,
+      so this does not retry.
+    * `{:error, {:already_retried_once, :duplicate_stream_uuid}}` when the one
+      retry lost the race too.
+    * `{:error, %Decree.Store.AppendError{}}` for any other failure of the link's
+      locks or its inserts, classified `:unavailable`, `:retryable` or `:rejected`
+      (see `Decree.Store.AppendError`).
+
+  The link takes the stream's row and checks the expected version again on what
+  that returns, so a writer that got there first is answered as if it had been
+  seen from the start, whichever expected version was given. It then takes the
+  events' rows in `event_id` order, in one statement at any size, which is the
+  order a hard delete takes them in, so the two cannot deadlock. The stream's
+  order stays the caller's: events are numbered as listed, however they are locked.
+
+  Losing a race to create the stream and a `deadlock_detected` are each retried
+  once, the whole transaction from its first read, as `c:append_to_stream/4` does.
+  Neither is retried inside a caller's transaction, which it aborted.
 
   A failure of the queries that read the stream's version or create the stream
   is returned as the raw error `{:error, reason}` (for example a
@@ -1149,8 +1177,11 @@ defmodule Decree.Store do
               | {:error, :stream_not_found}
               | {:error, :wrong_expected_version}
               | {:error, :stream_deleted}
+              | {:error, :link_into_deletable_stream}
               | {:error, :duplicate_event}
               | {:error, :not_found}
+              | {:error, :duplicate_stream_uuid}
+              | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
               | {:error, :rollback}
               | {:error, reason :: term}
@@ -1454,11 +1485,12 @@ defmodule Decree.Store do
   The expected version is checked again under the stream's row lock, so an append that
   lands after the first read answers `{:error, :wrong_expected_version}` to an integer
   expected version, and is deleted with the rest under `:any_version` or `:stream_exists`.
-  An append waiting on that lock answers `{:error, :not_found}`. A link to one of the
-  events, in flight as the delete runs, can fail the delete with a `foreign_key_violation`.
-  A link of several of the stream's events can deadlock with a hard delete, because they
-  lock event rows in different orders: the delete then answers the raw `deadlock_detected`
-  error, rolls back whole and can be retried.
+  An append or a link into the stream waiting on that lock answers `{:error, :not_found}`.
+
+  The delete then takes its events' rows in `event_id` order, the order a link takes them
+  in, so the two wait for each other and cannot deadlock. A link in flight when the delete
+  takes a row commits first, and is removed with the event, wherever it was going. A link
+  behind the delete answers `{:error, :not_found}`, and writes nothing.
 
   After being hard deleted, a stream can later be appended to and read as if it
   had never existed.

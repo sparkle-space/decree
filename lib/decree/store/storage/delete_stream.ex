@@ -4,7 +4,7 @@ defmodule Decree.Store.Storage.DeleteStream do
   require Logger
 
   alias Decree.Store.Sql.Statements
-  alias Decree.Store.Streams.StreamInfo
+  alias Decree.Store.Storage.Stream, as: StreamStorage
 
   @all_stream_id 0
 
@@ -35,29 +35,31 @@ defmodule Decree.Store.Storage.DeleteStream do
     end
   end
 
-  # Three statements in the caller's transaction, each with a snapshot of its own.
+  # Four statements in the caller's transaction, each with a snapshot of its own.
   #
-  # The lock comes first and alone, so the delete's snapshot starts after it is granted and
-  # sees everything an append committed while holding the row. NO KEY UPDATE, as an append
-  # takes it, serialises against appends and leaves a link's KEY SHARE on this row alone. The
-  # expected version is checked again here: `Stream.delete/5` read it before this transaction,
-  # and an append that landed in between would otherwise be erased unseen.
+  # The stream's row comes first and alone, so everything after it sees what an append or a
+  # link committed while holding the row. NO KEY UPDATE, as an append takes it, serialises
+  # against appends and links into this stream. The expected version is checked again here:
+  # `Stream.delete/5` read it before this transaction, and an append that landed in between
+  # would otherwise be erased unseen.
   #
-  # The stream's row goes last, and on its own because the order of a statement's CTEs is
-  # undocumented. A link takes KEY SHARE on an event's row and then on the original stream's,
-  # so a key-level delete of the stream's row before the event rows would be a cycle.
+  # The event rows come next and alone, in `event_id` order, FOR UPDATE because NO KEY UPDATE
+  # does not conflict with a link's KEY SHARE. A link takes the same rows in the same order
+  # after its own stream's row, so the two cannot cycle, and neither can two hard deletes that
+  # meet on events through a link stream. An event a concurrent delete removed is skipped.
   #
-  # One cycle stays. A link of several of this stream's events locks event rows in its own
-  # row order, and the delete in its scan's, so each can hold a row the other wants. Only one
-  # order on both sides would remove that, and it is the link's to take. The victim's
-  # transaction rolls back whole, and the delete answers the raw `deadlock_detected` error
-  # and can be retried. `hard_delete_test.exs` pins this. Two deletes that meet only through a
-  # link stream can cycle on event rows the same way.
+  # The delete's snapshot then starts after that wait, so a link that committed during it is
+  # seen and removed with the event, and every `stream_events` row of an event is touched only
+  # while that event's row is held. With the event rows held no link of them is in flight, so
+  # the stream's row, last and on its own because the order of a statement's CTEs is
+  # undocumented, finds no writer's KEY SHARE on it and nothing still referencing it.
   def hard_delete(conn, stream_id, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {expected_version, opts} = Keyword.pop(opts, :expected_version, :any_version)
 
-    with :ok <- lock_at_version(conn, stream_id, expected_version, schema, opts),
+    with :ok <- StreamStorage.lock_at_version(conn, stream_id, expected_version, schema, opts),
+         {:ok, %Postgrex.Result{}} <-
+           Postgrex.query(conn, Statements.lock_deleted_events(schema), [stream_id], opts),
          {:ok, %Postgrex.Result{}} <-
            Postgrex.query(conn, Statements.hard_delete_stream(schema), [stream_id], opts),
          {:ok, %Postgrex.Result{num_rows: 1, rows: [[^stream_id]]}} <-
@@ -120,27 +122,6 @@ defmodule Decree.Store.Storage.DeleteStream do
           "Failed to delete tags of stream #{inspect(stream_id)} due to: " <> inspect(error)
         )
 
-        reply
-    end
-  end
-
-  # A row that is gone is `stream_not_found` before any version check, because a `StreamInfo`
-  # with no id passes one for `:any_version` and for 0.
-  defp lock_at_version(conn, stream_id, expected_version, schema, opts) do
-    case Postgrex.query(conn, Statements.lock_stream(schema), [stream_id], opts) do
-      {:ok, %Postgrex.Result{rows: [[stream_version, deleted_at]]}} ->
-        stream = %StreamInfo{
-          stream_id: stream_id,
-          stream_version: stream_version,
-          status: if(is_nil(deleted_at), do: :created, else: :deleted)
-        }
-
-        StreamInfo.validate_expected_version(stream, expected_version)
-
-      {:ok, %Postgrex.Result{num_rows: 0}} ->
-        {:error, :stream_not_found}
-
-      {:error, _error} = reply ->
         reply
     end
   end

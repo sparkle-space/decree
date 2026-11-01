@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.DeletableStreamsTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{Config, EventData, LockSession, ReadResult}
+  alias Decree.Store.{Config, EventData, LockSession, ReadResult, UUID}
   alias TestEventStore, as: EventStore
 
   defmodule Captured do
@@ -288,18 +288,92 @@ defmodule Decree.Store.Storage.DeletableStreamsTest do
       assert :ok = EventStore.append_to_streams([{"Post-2", 0, [event("forgotten", [])]}])
     end
 
-    test "a link is not an append" do
-      :ok = EventStore.append_to_stream("plain", 0, [event("forgotten", [])])
-
-      {:ok, linked} = EventStore.read_stream_forward("plain")
-
-      assert :ok = EventStore.link_to_stream("XPost-1", :any_version, linked)
-    end
-
     test "does not make a hard delete refuse a stream outside the prefixes" do
       :ok = EventStore.append_to_stream("plain", 0, [event("forgotten", [])])
 
       assert :ok = EventStore.delete_stream("plain", :any_version, :hard)
+    end
+  end
+
+  # A hard delete of a stream holding links removes those events from every stream, so a link
+  # into a deletable stream would hand it an event of another stream.
+  describe "a link into a declared prefix" do
+    test "is refused before any statement, at every expected version" do
+      for expected_version <- [:any_version, :no_stream, :stream_exists, 0, 7] do
+        for event_ids <- [[UUID.uuid4()], []] do
+          assert EventStore.link_to_stream("XPost-1", expected_version, event_ids, conn: @no_conn) ==
+                   {:error, :link_into_deletable_stream}
+        end
+      end
+    end
+
+    test "of a declared type is refused too" do
+      :ok = EventStore.append_to_stream("XPost-1", 0, [event(@type_name, [])])
+
+      {:ok, linked} = EventStore.read_stream_forward("XPost-1")
+
+      assert EventStore.link_to_stream("XPost-2", :any_version, linked) ==
+               {:error, :link_into_deletable_stream}
+
+      assert {:error, :stream_not_found} = EventStore.read_stream_forward("XPost-2")
+    end
+
+    test "cannot be let through by a caller" do
+      assert EventStore.link_to_stream("XPost-1", :any_version, [UUID.uuid4()],
+               conn: @no_conn,
+               deletable: []
+             ) == {:error, :link_into_deletable_stream}
+    end
+
+    test "leaves a caller's transaction usable", %{conn: conn} do
+      assert {:ok, :usable} =
+               Postgrex.transaction(conn, fn tx ->
+                 assert {:error, :link_into_deletable_stream} =
+                          EventStore.link_to_stream("XPost-1", :any_version, [UUID.uuid4()],
+                            conn: tx
+                          )
+
+                 assert %Postgrex.Result{rows: [[1]]} = Postgrex.query!(tx, "SELECT 1", [])
+
+                 :usable
+               end)
+    end
+
+    test "out of one passes, into a stream outside the prefixes" do
+      :ok = EventStore.append_to_stream("XPost-1", 0, [event(@type_name, [])])
+
+      {:ok, linked} = EventStore.read_stream_forward("XPost-1")
+
+      assert :ok = EventStore.link_to_stream("Post-1", :any_version, linked)
+    end
+
+    test "passes for a name that only resembles a prefix" do
+      :ok = EventStore.append_to_stream("plain", 0, [event("forgotten", [])])
+
+      {:ok, linked} = EventStore.read_stream_forward("plain")
+
+      for stream_uuid <- ["XPost", "xpost-1", "Post-XPost-1"] do
+        assert :ok = EventStore.link_to_stream(stream_uuid, :any_version, linked)
+      end
+    end
+
+    test "passes on a store that declares nothing, or no prefix" do
+      :ok = EventStore.append_to_stream("plain", 0, [event("forgotten", [])])
+
+      {:ok, linked} = EventStore.read_stream_forward("plain")
+
+      start_supervised!({TestEventStore, name: :undeclared_store, serializer: Serializer})
+
+      start_supervised!(
+        {TestEventStore,
+         name: :no_prefix_store, deletable: [event_types: [@type_name]], serializer: Serializer}
+      )
+
+      assert :ok =
+               EventStore.link_to_stream("XPost-1", :any_version, linked, name: :undeclared_store)
+
+      assert :ok =
+               EventStore.link_to_stream("XPost-2", :any_version, linked, name: :no_prefix_store)
     end
   end
 

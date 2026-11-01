@@ -16,7 +16,8 @@ defmodule Decree.Store.Storage.StreamPersistenceTest do
 
     {:ok, _stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
 
-    assert {:error, :stream_exists} = CreateStream.execute(conn, stream_uuid, schema: schema)
+    assert {:error, :duplicate_stream_uuid} =
+             CreateStream.execute(conn, stream_uuid, schema: schema)
   end
 
   test "stream info for stream with no events", %{conn: conn, schema: schema} do

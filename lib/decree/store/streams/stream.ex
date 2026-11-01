@@ -81,20 +81,38 @@ defmodule Decree.Store.Streams.Stream do
     |> maybe_retry_once(conn, opts, &append_to_streams(conn, appends, &1))
   end
 
+  # The read here decides whether to create the stream and may be stale: `Appender.link/4`
+  # checks the expected version again under the stream's row lock. Losing the race to create
+  # the stream or a deadlock aborts this transaction, so a retry runs all of it again, from
+  # the read.
   def link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, opts) do
-    transaction(
-      conn,
-      fn transaction ->
-        with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, opts),
-             {:ok, stream} <- prepare_stream(transaction, stream, opts),
-             :ok <- do_link_to_storage(transaction, stream, events_or_event_ids, opts) do
-          :ok
-        else
-          {:error, error} -> Postgrex.rollback(transaction, error)
-        end
-      end,
-      opts
-    )
+    with :ok <- validate_link_target(stream_uuid, opts) do
+      transaction(
+        conn,
+        fn transaction ->
+          with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, opts),
+               {:ok, stream} <- prepare_stream(transaction, stream, opts),
+               :ok <-
+                 do_link_to_storage(
+                   transaction,
+                   stream,
+                   events_or_event_ids,
+                   expected_version,
+                   opts
+                 ) do
+            :ok
+          else
+            {:error, error} -> Postgrex.rollback(transaction, error)
+          end
+        end,
+        opts
+      )
+      |> maybe_retry_once(
+        conn,
+        opts,
+        &link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, &1)
+      )
+    end
   end
 
   def paginate_streams(conn, opts), do: Storage.paginate_streams(conn, opts)
@@ -391,6 +409,24 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  # A hard delete of a stream holding links removes those events from every stream, so a
+  # link into a stream that can be deleted would put an event of another stream in its way.
+  # Runs where `validate_deletable_types/2` does, for the same reason: a refusal sends no
+  # statement.
+  defp validate_link_target(stream_uuid, opts) do
+    case Keyword.get(opts, :deletable) do
+      nil ->
+        :ok
+
+      deletable ->
+        if String.starts_with?(stream_uuid, Keyword.get(deletable, :stream_prefixes, [])) do
+          {:error, :link_into_deletable_stream}
+        else
+          :ok
+        end
+    end
+  end
+
   defp prepare_events(events, %StreamInfo{} = stream, serializer, opts) do
     %StreamInfo{stream_uuid: stream_uuid, stream_version: stream_version} = stream
 
@@ -432,10 +468,17 @@ defmodule Decree.Store.Streams.Stream do
     }
   end
 
-  defp do_link_to_storage(conn, %StreamInfo{} = stream, events_or_event_ids, opts) do
+  defp do_link_to_storage(
+         conn,
+         %StreamInfo{} = stream,
+         events_or_event_ids,
+         expected_version,
+         opts
+       ) do
     %StreamInfo{stream_id: stream_id} = stream
 
     event_ids = Enum.map(events_or_event_ids, &extract_event_id/1)
+    opts = Keyword.put(opts, :expected_version, expected_version)
 
     Storage.link_to_stream(conn, stream_id, event_ids, opts)
   end
@@ -691,7 +734,7 @@ defmodule Decree.Store.Streams.Stream do
     &append_to_stream(conn, stream_uuid, expected_version, events, &1)
   end
 
-  # `retry` runs the whole append again with the given opts, from its stream-info reads.
+  # `retry` runs the whole append or link again with the given opts, from its stream-info reads.
   # Not inside a caller's transaction: the unique violation aborted it, so the read would
   # answer `in_failed_sql_transaction`, and the caller decides. A `DBConnection.run/3`
   # checkout is not one, and retries. `Decree.Store` takes no `mode: :savepoint`, which would
@@ -713,11 +756,11 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  # A deadlock victim's transaction rolled back, so nothing was written and the append
-  # can run again, from its stream-info read. Not inside a caller's transaction, a
+  # A deadlock victim's transaction rolled back, so nothing was written and the append or
+  # link can run again, from its stream-info read. Not inside a caller's transaction, a
   # `%DBConnection{}` that `conn_mode: :transaction` marks: that transaction is aborted
   # and the caller decides. A `DBConnection.run/3` checkout is not one, and retries.
-  # The path for 1,000 or more events retries around its own whole transaction.
+  # The path for 1,000 or more events and a link retry around their own whole transaction.
   defp maybe_retry_once(
          {:error, %AppendError{code: :deadlock_detected}} = error,
          %DBConnection{conn_mode: :transaction},
