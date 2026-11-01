@@ -29,7 +29,9 @@ defmodule Decree.Event.RequiredTags do
       `__required_tag_kinds__/2` answers its kind, and only then. So a tag is present if and
       only if what it comes from is.
     - `__tag_kinds__()` lists every kind the module's `Decree.Event.Tags` implementation can
-      produce. Nothing reads it at runtime. `Decree.Decision.AppenderMap` does.
+      produce. A kind that comes only from the route, as the stream's entity tag does, is
+      listed here too, because a build check cannot know a route. Nothing reads it at runtime.
+      `Decree.Decision.AppenderMap` does.
 
   An event is opted in by exporting `__required_tag_kinds__/2`, and its list is `always/0`
   followed by its answer. So a command with no usable `command_id` cannot append one, on any
@@ -55,7 +57,8 @@ defmodule Decree.Event.RequiredTags do
   `always/0`, and the kinds of the tags on the condition's items naming the event's type, less
   the module's `__conditional_tag_kinds__/0`. That takes kinds from what the items ask and from
   nothing else, so a conditional kind `__required_tag_kinds__/2` answers stays required. See
-  step 8 of `Decree.Decision`.
+  step 8 of `Decree.Decision`. Every item naming the type counts, so a kind only some events of
+  a type carry, one member's stream kind on a batch for example, belongs in that list.
 
   That holds on a decision's own append and nowhere else. A plain aggregate appending a type
   a decision queries has no condition to take kinds from, so it gets only what the event
@@ -104,8 +107,9 @@ defmodule Decree.Event.RequiredTags do
   end
 
   @doc """
-  The kinds an event of this module can carry: its `__tag_kinds__/0` and the framework's. The
-  framework's alone for a module without the export.
+  The kinds an event of this module can carry: its `__tag_kinds__/0`, and `command`,
+  `command_kind` and `correlation`, which need no listing. Those three alone for a module
+  without the export.
   """
   @spec producible_kinds(module()) :: [String.t()]
   def producible_kinds(module) do
