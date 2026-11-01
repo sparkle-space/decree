@@ -146,6 +146,21 @@ defmodule Decree.RequiredTagsFixtures.Digested do
   end
 end
 
+defmodule Decree.RequiredTagsFixtures.TwoDigested do
+  @moduledoc false
+
+  # Answers the tags it carries, and may lack either family of `TwoFamiliesDecision`, so a
+  # kind it lacks is F7's to answer and not the required list's.
+  @derive Jason.Encoder
+  defstruct tags: []
+
+  def __conditional_tag_kinds__, do: ["email", "oauth_uid"]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{tags: tags}, _context), do: {:ok, tags}
+  end
+end
+
 defmodule Decree.RequiredTagsFixtures.Emit do
   @moduledoc false
   defstruct [:ledger_id, :command_id, events: []]
@@ -171,6 +186,11 @@ defmodule Decree.RequiredTagsFixtures.Indexed do
   defstruct [:command_id, :claim_id, :scope, script: %{}]
 end
 
+defmodule Decree.RequiredTagsFixtures.TwoFamilies do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
 defmodule Decree.RequiredTagsFixtures.Unindexed do
   @moduledoc false
   defstruct [:command_id, :claim_id, :scope, script: %{}]
@@ -181,6 +201,13 @@ defmodule Decree.RequiredTagsFixtures.IndexedDecision do
   use Decree.DecisionFixtures.Scripting
 
   def index_families, do: %{"email" => :digest, "label" => :plain}
+end
+
+defmodule Decree.RequiredTagsFixtures.TwoFamiliesDecision do
+  @moduledoc false
+  use Decree.DecisionFixtures.Scripting
+
+  def index_families, do: %{"email" => :digest, "oauth_uid" => :digest}
 end
 
 defmodule Decree.RequiredTagsFixtures.UnindexedDecision do
@@ -234,12 +261,15 @@ defmodule Decree.RequiredTagsFixtures.DecisionRouter do
     IndexedDecision,
     Injected,
     InjectedDecision,
+    TwoFamilies,
+    TwoFamiliesDecision,
     Unindexed,
     UnindexedDecision
   }
 
   decide(Indexed, to: IndexedDecision, identity: :claim_id, identity_prefix: "indexed-")
   decide(Injected, to: InjectedDecision, identity: :claim_id, identity_prefix: "injected-")
+  decide(TwoFamilies, to: TwoFamiliesDecision, identity: :claim_id, identity_prefix: "two-")
   decide(Unindexed, to: UnindexedDecision, identity: :claim_id, identity_prefix: "unindexed-")
 end
 
@@ -266,7 +296,7 @@ defmodule Decree.RequiredTagsFixtures.DecisionApp do
     key_source: Decree.PersonalFields.Fixtures.Keys,
     event_store:
       Decree.FrameworkStorage.event_store_config(
-        conditional_appends: [stream_prefixes: ["indexed-", "injected-", "unindexed-"]]
+        conditional_appends: [stream_prefixes: ["indexed-", "injected-", "two-", "unindexed-"]]
       ),
     pubsub: :local,
     registry: :local

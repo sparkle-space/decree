@@ -73,6 +73,21 @@ defmodule Decree.Decision.UseTest do
     """
   end
 
+  # `visibility` is what the two sides of the private `index_families/0` tests differ in.
+  defp declaring(name, visibility) do
+    """
+    defmodule #{name} do
+      use Decree.Decision
+
+      def query(_command, _context), do: []
+      def initial_state, do: nil
+      def evolve(state, _event), do: state
+      def decide(_state, _command), do: nil
+      #{visibility} index_families, do: %{"email" => :digest}
+    end
+    """
+  end
+
   describe "bounds" do
     test "default to what was measured" do
       assert %{max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100} =
@@ -282,6 +297,28 @@ defmodule Decree.Decision.UseTest do
 
         assert message =~ "#{name} has an invalid `index_families/0`"
       end)
+    end
+
+    test "fails the build when it is a `defp`, and writes no module" do
+      name = "Decree.Decision.UseTest.Private#{System.unique_integer([:positive])}"
+
+      capture_io(:stderr, fn ->
+        assert {dir, {:error, errors, _warnings}} = build(name, declaring(name, "defp"))
+
+        assert Enum.any?(
+                 errors,
+                 &(&1.message =~ "index_families/0" and &1.message =~ ~r/\bdefp\b/)
+               )
+
+        assert File.ls!(dir) == ["decision.ex"]
+      end)
+    end
+
+    test "the same module with a `def` builds, so it is the `defp` that fails" do
+      name = "Decree.Decision.UseTest.Public#{System.unique_integer([:positive])}"
+
+      assert {dir, {:ok, _modules, _warnings}} = build(name, declaring(name, "def"))
+      assert "Elixir.#{name}.beam" in File.ls!(dir)
     end
 
     test "a valid map compiles" do

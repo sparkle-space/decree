@@ -27,6 +27,8 @@ defmodule Decree.Decision.RequiredTagsTest do
     Malformed,
     MockedDecisionApp,
     PlainRaising,
+    TwoDigested,
+    TwoFamilies,
     Unindexed,
     Unlisted,
     Unopted
@@ -38,6 +40,7 @@ defmodule Decree.Decision.RequiredTagsTest do
   @addressed Atom.to_string(Addressed)
   @contact Atom.to_string(Contact)
   @digested Atom.to_string(Digested)
+  @two_digested Atom.to_string(TwoDigested)
   @unopted Atom.to_string(Unopted)
 
   @not_lists [nil, :address, %{}]
@@ -79,6 +82,7 @@ defmodule Decree.Decision.RequiredTagsTest do
   end
 
   defp stream_of(%Indexed{claim_id: claim_id}), do: "indexed-" <> claim_id
+  defp stream_of(%TwoFamilies{claim_id: claim_id}), do: "two-" <> claim_id
   defp stream_of(%Unindexed{claim_id: claim_id}), do: "unindexed-" <> claim_id
 
   defp stored_decided(command), do: stored(stream_of(command), DecisionApp)
@@ -532,6 +536,81 @@ defmodule Decree.Decision.RequiredTagsTest do
       command = deciding(Indexed, items, %Unopted{tags: ["email:b"]})
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+    end
+
+    defp two_digested(tags), do: %TwoDigested{tags: tags}
+
+    defp items_of(type, tags), do: Enum.map(tags, &item(type, [&1]))
+
+    test "two families, each matching its items, pass" do
+      items = items_of(@two_digested, ["email:a", "oauth_uid:u"])
+      command = deciding(TwoFamilies, items, two_digested(["email:a", "oauth_uid:u"]))
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{}] = stored_decided(command)
+    end
+
+    test "two families on the one item are each compared" do
+      items = [item(@two_digested, ["email:a", "oauth_uid:u"])]
+      command = deciding(TwoFamilies, items, two_digested(["email:a", "oauth_uid:u"]))
+
+      assert :ok = DecisionApp.dispatch(command)
+
+      command = deciding(TwoFamilies, items, two_digested(["email:a", "oauth_uid:v"]))
+
+      assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+    end
+
+    test "a digest answering for the other family's refuses" do
+      items = items_of(@two_digested, ["email:a", "oauth_uid:b"])
+      command = deciding(TwoFamilies, items, two_digested(["email:b", "oauth_uid:a"]))
+
+      assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+    end
+
+    for {kind, other} <- [{"email", "oauth_uid"}, {"oauth_uid", "email"}] do
+      test "#{kind} differing with #{other} matching refuses, and stores nothing" do
+        kind = unquote(kind) <> ":"
+        other = unquote(other) <> ":"
+        items = items_of(@two_digested, [kind <> "a", other <> "o"])
+        command = deciding(TwoFamilies, items, two_digested([kind <> "b", other <> "o"]))
+
+        assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+        assert stored_decided(command) == []
+      end
+
+      test "#{kind} off the batch with #{other} matching is F7's empty side, and passes" do
+        kind = unquote(kind) <> ":"
+        other = unquote(other) <> ":"
+        items = items_of(@two_digested, [kind <> "a", other <> "o"])
+        command = deciding(TwoFamilies, items, two_digested([other <> "o"]))
+
+        assert :ok = DecisionApp.dispatch(command)
+        assert [%RecordedEvent{}] = stored_decided(command)
+
+        # On the batch, the same kind and the same items are compared.
+        command = deciding(TwoFamilies, items, two_digested([kind <> "b", other <> "o"]))
+
+        assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+
+        # Not conditional, the same batch gets past F7 and the required list refuses it.
+        unopted = items_of(@unopted, [kind <> "a", other <> "o"])
+        command = deciding(TwoFamilies, unopted, %Unopted{tags: [other <> "o"]})
+
+        assert {:error, :missing_required_tag} = DecisionApp.dispatch(command)
+      end
+
+      test "#{kind} on the batch with no item, #{other} matching, refuses" do
+        kind = unquote(kind) <> ":"
+        other = unquote(other) <> ":"
+        items = items_of(@two_digested, [other <> "o"])
+        command = deciding(TwoFamilies, items, two_digested([kind <> "a", other <> "o"]))
+
+        assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+        assert stored_decided(command) == []
+      end
     end
   end
 
