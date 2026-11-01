@@ -314,8 +314,16 @@ defmodule Decree.Store do
   expected version, unless the stream also starts with a prefix of `deletable`: a store that
   declares both has said so, and "Deletable streams" states that cost. A store without
   `enable_hard_deletes` keeps its own answer, and a soft delete is unchanged. The refusal goes
-  by the stream's name, so it does not reach a hard delete of another stream holding a link
-  to such an event, which removes that event as "Deletable streams" says.
+  by the stream's name, and a hard delete of another stream holding a link to such an event
+  would remove that event as "Deletable streams" says. So no such link is made: a
+  `c:link_to_stream/4` of an event appended to a stream starting with a declared prefix
+  answers `{:error, :link_of_conditional_event}`, whatever the target and even if a `deletable`
+  prefix also covers that stream, and a store declaring a prefix refuses a bare event id with
+  `{:error, :link_by_id_with_conditional_prefixes}`, because which stream it came from can't be
+  known without a statement. Pass the `%Decree.Store.RecordedEvent{}`, read from any stream: it
+  names the stream it was appended to. Both are answered before any statement is sent, and
+  after the target's own refusals. A store that declares no prefix keeps what it did. A link
+  made before the prefix was declared, or by a store that declares none, is not found by this.
 
   **What the append wrote.** With `returning: :append_result`, an append answers
   `{:ok, %Decree.Store.AppendResult{}}` in place of `:ok`, with the last position it wrote and
@@ -435,8 +443,9 @@ defmodule Decree.Store do
   the streams they were appended to included, so a stream that can be deleted must hold
   nothing but its own events. A `c:link_to_stream/4` into a stream starting with a declared
   prefix answers `{:error, :link_into_deletable_stream}` before any statement is sent, at
-  every expected version. A link out of a deletable stream passes, and that link goes with
-  the event when a hard delete takes it.
+  every expected version. A link out of a deletable stream passes, unless a
+  `conditional_appends` prefix also covers that stream, and that link goes with the event when
+  a hard delete takes it.
 
   **The limit.** The refusal is by name. An item of tags alone, naming a kind that is not
   declared, can still match a deletable event. So the declaration must list every kind a
@@ -1033,6 +1042,10 @@ defmodule Decree.Store do
       these is over 512 bytes. Each is answered before any statement is sent, so it wins
       over every answer above that reads the stream, and a caller's transaction stays
       usable.
+    * `{:error, :invalid_required_tag_kinds}` when an event's `required_tag_kinds` are not
+      kinds, and `{:error, :missing_required_tag}` when an event lacks a kind on that list.
+      See `Decree.Store.EventData`. Each is answered as a tag that is too long is, after
+      one, at every expected version.
     * `{:error, :undeclared_deletable_event_type}` when the stream starts with a
       declared deletable prefix and an event's type is not declared. See "Deletable
       streams" in `Decree.Store`. It is answered as a tag that is too long is, and after
@@ -1082,6 +1095,8 @@ defmodule Decree.Store do
               | {:error, :append_condition_failed}
               | {:error, :invalid_tag}
               | {:error, :tag_too_long}
+              | {:error, :invalid_required_tag_kinds}
+              | {:error, :missing_required_tag}
               | {:error, :query_names_deletable}
               | {:error, :undeclared_deletable_event_type}
               | {:error, :invalid_condition}
@@ -1128,8 +1143,9 @@ defmodule Decree.Store do
   With no `condition`, one member starting with a declared prefix refuses the batch with
   `{:error, :plain_append_to_conditional_prefix}`.
 
-  These, like a tag that is invalid or too long and a condition that cannot run, are
-  answered before any statement is sent, so a caller's transaction stays usable.
+  These, like a tag that is invalid or too long, a required tag kind one member's event lacks
+  and a condition that cannot run, are answered before any statement is sent, so a caller's
+  transaction stays usable.
 
   A member's row gone by the time the function locks it answers `{:error, :not_found}`,
   and aborts a caller's transaction, as a stale append does. Outside a caller's
@@ -1161,6 +1177,8 @@ defmodule Decree.Store do
               | {:error, :append_condition_failed}
               | {:error, :invalid_tag}
               | {:error, :tag_too_long}
+              | {:error, :invalid_required_tag_kinds}
+              | {:error, :missing_required_tag}
               | {:error, :query_names_deletable}
               | {:error, :undeclared_deletable_event_type}
               | {:error, :invalid_condition}
@@ -1195,8 +1213,8 @@ defmodule Decree.Store do
       - `:no_stream` - Ensure the stream does not exist.
       - `:stream_exists` - Ensure the stream exists.
 
-    - `events_or_event_ids` is a list of `%Decree.Store.EventData{}` structs or
-      event ids.
+    - `events_or_event_ids` is a list of `%Decree.Store.RecordedEvent{}` structs or
+      event ids. A store declaring a `conditional_appends` prefix takes only the structs.
 
     - `opts` an optional keyword list containing:
       - `name` the name of the event store if provided to `start_link/1`.
@@ -1221,6 +1239,12 @@ defmodule Decree.Store do
       `conditional_appends` prefix, at every expected version and before any statement is
       sent. See "Conditional appends" in `Decree.Store`. A stream both declare answers
       `:link_into_deletable_stream`.
+    * `{:error, :link_of_conditional_event}` when an event was appended to a stream
+      starting with a declared `conditional_appends` prefix, whatever the target and
+      before any statement is sent, and `{:error, :link_by_id_with_conditional_prefixes}`
+      when the store declares such a prefix and an event is given by its bare id, or as a
+      recorded event naming no stream. Both come after the two above. See "Conditional
+      appends" in `Decree.Store`.
     * `{:error, :duplicate_event}` when an event is already linked to the
       stream, or is listed twice.
     * `{:error, :not_found}` when an event id does not exist, or when a hard
@@ -1267,6 +1291,8 @@ defmodule Decree.Store do
               | {:error, :stream_deleted}
               | {:error, :link_into_deletable_stream}
               | {:error, :link_into_conditional_prefix}
+              | {:error, :link_of_conditional_event}
+              | {:error, :link_by_id_with_conditional_prefixes}
               | {:error, :duplicate_event}
               | {:error, :not_found}
               | {:error, :duplicate_stream_uuid}

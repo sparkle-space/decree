@@ -8,8 +8,9 @@ defmodule Decree.Decision.Dispatch do
   alias Decree.Commands.Router
   alias Decree.Decision.Read
   alias Decree.Decision.Read.Merged
-  alias Decree.Event.{Append, TagContext}
+  alias Decree.Event.{Append, RequiredTags, TagContext}
   alias Decree.EventStore
+  alias Decree.EventStore.EventData
   alias Decree.PersonalFields
   alias Decree.PersonalFields.RedactedError
   alias Decree.Store.{AppendResult, ReadResult}
@@ -511,19 +512,60 @@ defmodule Decree.Decision.Dispatch do
   end
 
   defp append(%__MODULE__{} = dispatch, appends, %Merged{} = merged, reads, events, state) do
-    condition = [items: Read.condition_items(reads), after: merged.after]
+    items = Read.condition_items(reads)
+    condition = [items: items, after: merged.after]
     opts = [condition: condition, returning: :append_result]
 
-    case EventStore.append_to_streams(dispatch.application, appends, opts) do
-      {:ok, %AppendResult{} = result} ->
-        decided(dispatch, appends, result, events, state)
+    with :ok <- check_digests(dispatch, appends, items) do
+      case EventStore.append_to_streams(dispatch.application, required(appends, items), opts) do
+        {:ok, %AppendResult{} = result} ->
+          decided(dispatch, appends, result, events, state)
 
-      {:error, :append_condition_failed} ->
-        {:retry, :append_condition_failed}
+        {:error, :append_condition_failed} ->
+          {:retry, :append_condition_failed}
 
-      {:error, _reason} = error ->
-        error
+        {:error, _reason} = error ->
+          error
+      end
     end
+  end
+
+  # A condition on a digest says nothing about an event carrying another. An empty batch side
+  # is an erased subject's dropped value. The answer is an atom, because a reason goes to logs
+  # and telemetry and a digest may not.
+  defp check_digests(%__MODULE__{bounds: %{index_families: families}}, appends, items) do
+    batch =
+      for {_stream, _version, prepared} <- appends, data <- prepared, tag <- data.tags, do: tag
+
+    read = Enum.flat_map(items, &Read.item_tags/1)
+
+    digests_match? = fn {kind, _family} ->
+      batch_tags = Read.tags_of_kind(batch, kind)
+
+      MapSet.size(batch_tags) == 0 or batch_tags == Read.tags_of_kind(read, kind)
+    end
+
+    if families |> Enum.filter(&(elem(&1, 1) == :digest)) |> Enum.all?(digests_match?) do
+      :ok
+    else
+      {:error, :digest_tag_mismatch}
+    end
+  end
+
+  defp required(appends, items) do
+    for {stream_uuid, expected_version, prepared} <- appends do
+      {stream_uuid, expected_version, Enum.map(prepared, &require_kinds(&1, items))}
+    end
+  end
+
+  # The `--` takes conditional kinds from what the items ask, and from nothing else: a
+  # conditional kind the event answers stays required, which is its "if and only if". The
+  # event's own list comes last, because the store refuses it if it is not a proper list.
+  defp require_kinds(%EventData{data: %module{}} = data, items) do
+    %EventData{event_type: type, required_tag_kinds: own} = data
+    asked = Read.kinds_naming(items, type) -- RequiredTags.conditional_kinds(module)
+
+    %EventData{data | required_tag_kinds: RequiredTags.always() ++ asked ++ own}
   end
 
   defp decided(%__MODULE__{}, [{stream_uuid, _, _} | _], result, events, state) do

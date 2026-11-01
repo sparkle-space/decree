@@ -4,7 +4,7 @@ defmodule Decree.Event.Append do
   """
 
   alias Decree.Aggregates.ExecutionContext
-  alias Decree.Event.{Mapper, TagContext, Tags}
+  alias Decree.Event.{Mapper, RequiredTags, TagContext, Tags}
   alias Decree.EventStore.EventData
   alias Decree.PersonalFields
   alias Decree.PersonalFields.RedactedError
@@ -27,7 +27,9 @@ defmodule Decree.Event.Append do
 
     3. **Tags.** `Decree.Event.Tags.tags/2`, followed by the framework's. An implementation
        sees the plaintext that will be stored, so an erased subject gets no tag derived from
-       its value, and no tag holds ciphertext.
+       its value, and no tag holds ciphertext. Then the kinds the event requires, from
+       `Decree.Event.RequiredTags.required/2`, on the same copy and the same tag context, so an
+       erased value reads as absent. They go in `required_tag_kinds`, for the store to refuse.
 
     4. **Encrypt.** Declared fields and metadata entries become envelopes.
 
@@ -41,7 +43,8 @@ defmodule Decree.Event.Append do
   rescued here: the aggregate or the decision answers it, having written nothing. On an event
   with a declaration anything leaving an implementation can carry the value it failed on, so
   its error reason, exit and throw are reduced by `Decree.PersonalFields.RedactedError.reduce/1`,
-  and a raise becomes a `Decree.PersonalFields.RedactedError`.
+  and a raise becomes a `Decree.PersonalFields.RedactedError`. An event's
+  `__required_tag_kinds__/2` is treated the same way, because it sees the same plaintext.
 
   ## Framework tags
 
@@ -76,10 +79,16 @@ defmodule Decree.Event.Append do
     event_data
     |> Enum.reduce_while([], fn %EventData{} = data, prepared ->
       with {:ok, resolved, plan} <- PersonalFields.resolve_append(application, data, fence),
-           {:ok, tags} <- event_tags(resolved, plan, context),
+           {:ok, tags, required_tag_kinds} <- event_tags(resolved, plan, context),
            {:ok, %EventData{} = protected} <-
              PersonalFields.encrypt_append(resolved, plan, stream_uuid) do
-        {:cont, [%EventData{protected | tags: tags ++ framework_tags} | prepared]}
+        ready = %EventData{
+          protected
+          | tags: tags ++ framework_tags,
+            required_tag_kinds: required_tag_kinds
+        }
+
+        {:cont, [ready | prepared]}
       else
         {:error, _reason} = error -> {:halt, error}
       end
@@ -151,7 +160,7 @@ defmodule Decree.Event.Append do
   defp event_tags(%EventData{} = data, _plan, %ExecutionContext{} = context) do
     case tags(data, context) do
       {:error, reason} -> {:error, RedactedError.reduce(reason)}
-      {:ok, tags} -> {:ok, tags}
+      {:ok, _tags, _required_tag_kinds} = tagged -> tagged
     end
   rescue
     error ->
@@ -163,9 +172,16 @@ defmodule Decree.Event.Append do
 
   # The tag context's metadata is this event's copy, after the drop and before the encrypt.
   defp tags(%EventData{data: event, metadata: metadata}, %ExecutionContext{command: command}) do
-    case Tags.tags(event, %TagContext{metadata: metadata, command: command}) do
-      {:ok, tags} when is_list(tags) -> {:ok, tags}
-      {:error, _reason} = error -> error
+    tag_context = %TagContext{metadata: metadata, command: command}
+
+    case Tags.tags(event, tag_context) do
+      {:ok, tags} when is_list(tags) ->
+        with {:ok, required_tag_kinds} <- RequiredTags.required(event, tag_context) do
+          {:ok, tags, required_tag_kinds}
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

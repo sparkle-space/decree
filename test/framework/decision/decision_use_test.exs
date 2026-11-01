@@ -1,6 +1,8 @@
 defmodule Decree.Decision.UseTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
+
   alias Decree.DecisionFixtures.{ClaimDecision, TightDecision}
 
   # A decision the build takes, but for what a test adds.
@@ -153,6 +155,85 @@ defmodule Decree.Decision.UseTest do
       assert %{followup_query?: true} =
                compile("", "def followup_query(_c, _t, _e), do: []").__decision__()
     end
+
+    test "`index_families/0` is read when it is defined" do
+      assert %{index_families: families} = compile("").__decision__()
+      assert families == %{}
+
+      assert %{index_families: %{"email" => :digest}} =
+               compile("", ~s(def index_families, do: %{"email" => :digest})).__decision__()
+    end
+  end
+
+  describe "a bad `index_families/0`" do
+    for {name, answer} <- [
+          {"an atom key", ~s(%{email: :digest})},
+          {"an empty-string key", ~s(%{"" => :digest})},
+          {"a key with a colon", ~s(%{"email:x" => :digest})},
+          {"an unknown family", ~s(%{"email" => :digests})},
+          {"a map that is good but for one family", ~s(%{"a" => :digest, "b" => :plan})},
+          {"something other than a map", ~s([{"email", :digest}])},
+          {"nil", ~s(nil)}
+        ] do
+      test "fails the build for #{name}" do
+        body = "def index_families, do: #{unquote(answer)}"
+
+        assert_raise ArgumentError, ~r/UseTest\.Fixture\d+ has an invalid `index_families/, fn ->
+          compile("", body)
+        end
+      end
+    end
+
+    test "fails the build when the callback raises" do
+      assert_raise RuntimeError, "no families", fn ->
+        compile("", ~s[def index_families, do: raise("no families")])
+      end
+    end
+
+    # `Code.eval_string/1` is not what a build runs. `compile_to_path/3` is what `mix compile`
+    # calls, and under it the module is not loaded when the check runs, which is where an
+    # export test would pass every bad declaration.
+    test "fails under the compiler too, where the module is not loaded yet" do
+      name = "Decree.Decision.UseTest.Compiled#{System.unique_integer([:positive])}"
+      dir = Path.join(System.tmp_dir!(), name)
+      path = Path.join(dir, "decision.ex")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      File.write!(path, """
+      defmodule #{name} do
+        use Decree.Decision
+
+        def query(_command, _context), do: []
+        def initial_state, do: nil
+        def evolve(state, _event), do: state
+        def decide(_state, _command), do: nil
+        def index_families, do: %{email: :digest}
+      end
+      """)
+
+      capture_io(:stderr, fn ->
+        assert {:error, [%{message: message}], _warnings} =
+                 Kernel.ParallelCompiler.compile_to_path([path], dir, return_diagnostics: true)
+
+        assert message =~ "#{name} has an invalid `index_families/0`"
+      end)
+    end
+
+    test "a valid map compiles" do
+      body = ~s(def index_families, do: %{"email" => :digest, "label" => :plain})
+
+      assert %{index_families: %{"email" => :digest, "label" => :plain}} =
+               compile("", body).__decision__()
+    end
+
+    test "an empty map compiles" do
+      assert %{index_families: families} =
+               compile("", "def index_families, do: %{}").__decision__()
+
+      assert families == %{}
+    end
   end
 
   describe "a decision reacts to no event" do
@@ -188,6 +269,7 @@ defmodule Decree.Decision.UseTest do
                decide: 2,
                evolve: 2,
                followup_query: 3,
+               index_families: 0,
                initial_state: 0,
                query: 2,
                scope_tags: 1

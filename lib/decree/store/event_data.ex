@@ -5,6 +5,12 @@ defmodule Decree.Store.EventData do
   `tags` are stored with the event, in the same transaction. A repeated tag is stored
   once. A tag that is not a string Postgres can hold refuses the append with
   `{:error, :invalid_tag}`, and one over 512 bytes with `{:error, :tag_too_long}`.
+
+  `required_tag_kinds` are the kinds this event may not be stored without. They are checked
+  and not stored. An event lacking one refuses the append with
+  `{:error, :missing_required_tag}`, and a list that is not kinds with
+  `{:error, :invalid_required_tag_kinds}`. A kind is carried by a tag equal to it, or by a tag
+  `<kind>:<value>` with a value, so `"email:"` does not carry `"email"`.
   """
 
   defstruct [
@@ -14,7 +20,8 @@ defmodule Decree.Store.EventData do
     :event_type,
     :data,
     :metadata,
-    tags: []
+    tags: [],
+    required_tag_kinds: []
   ]
 
   alias Decree.Store.EventData
@@ -31,7 +38,8 @@ defmodule Decree.Store.EventData do
           event_type: String.t(),
           data: term,
           metadata: term | nil,
-          tags: [String.t()]
+          tags: [String.t()],
+          required_tag_kinds: list()
         }
 
   @doc """

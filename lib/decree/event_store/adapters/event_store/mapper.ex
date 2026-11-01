@@ -8,7 +8,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       event_type: event_type,
       data: data,
       metadata: metadata,
-      tags: tags
+      tags: tags,
+      required_tag_kinds: required_tag_kinds
     } = event_data
 
     %Decree.Store.EventData{
@@ -17,7 +18,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       event_type: event_type,
       data: data,
       metadata: metadata,
-      tags: tags
+      tags: tags,
+      required_tag_kinds: required_tag_kinds
     }
   end
 

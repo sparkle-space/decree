@@ -121,15 +121,168 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
       assert stream_id(context, "decision-1") == nil
     end
 
-    test "out of one passes, into a stream outside the prefixes", context do
-      condition = [items: [[tags: ["never"]]], after: 2]
+    test "out of one is refused with no statement, whatever the target", context do
+      linked = decided_events("decision-1")
 
-      :ok = EventStore.append_to_stream("decision-1", 0, events(1), condition: condition)
+      for stream_uuid <- ["plain", "decision", "no-decision-1"],
+          expected_version <- @expected_versions do
+        assert EventStore.link_to_stream(stream_uuid, expected_version, linked, conn: @no_conn) ==
+                 {:error, :link_of_conditional_event},
+               inspect({stream_uuid, expected_version})
+      end
 
-      {:ok, linked} = EventStore.read_stream_forward("decision-1")
+      assert stream_id(context, "plain") == nil
+    end
 
-      assert :ok = EventStore.link_to_stream("plain", :any_version, linked)
-      assert stream_versions(context, "plain") == [1]
+    test "out of one is refused however few of the events come from one", context do
+      linked = context.linked ++ decided_events("ruling-1")
+
+      assert EventStore.link_to_stream("plain", :any_version, linked, conn: @no_conn) ==
+               {:error, :link_of_conditional_event}
+
+      assert EventStore.link_to_stream("plain", :any_version, Enum.reverse(linked),
+               conn: @no_conn
+             ) == {:error, :link_of_conditional_event}
+    end
+
+    test "a RecordedEvent read back from a linking stream names the stream it came from",
+         context do
+      :ok = EventStore.link_to_stream("linking", :any_version, context.linked)
+
+      {:ok, forward} = EventStore.read_stream_forward("linking")
+      {:ok, backward} = EventStore.read_stream_backward("linking")
+
+      assert Enum.map(forward, & &1.stream_uuid) == ["source", "source"]
+      assert Enum.map(backward, & &1.stream_uuid) == ["source", "source"]
+    end
+
+    test "out of a linking stream goes by where the event came from" do
+      :ok = EventStore.append_to_stream("decision-1", 0, events(1), condition: condition())
+
+      {:ok, decided} = EventStore.read_stream_forward("decision-1")
+
+      # Only a store that declared nothing could have made this link.
+      start_supervised!(
+        {TestEventStore, name: :undeclared_linker, serializer: PassThroughSerializer}
+      )
+
+      :ok = EventStore.link_to_stream("linking", :any_version, decided, name: :undeclared_linker)
+
+      {:ok, read_back} = EventStore.read_stream_forward("linking")
+
+      assert EventStore.link_to_stream("plain", :any_version, read_back, conn: @no_conn) ==
+               {:error, :link_of_conditional_event}
+    end
+
+    test "a bare id is refused with no statement, whatever the target", context do
+      ids = Enum.map(context.linked, & &1.event_id)
+
+      for stream_uuid <- ["plain", "decision", "no-decision-1"],
+          expected_version <- @expected_versions do
+        assert EventStore.link_to_stream(stream_uuid, expected_version, ids, conn: @no_conn) ==
+                 {:error, :link_by_id_with_conditional_prefixes},
+               inspect({stream_uuid, expected_version})
+      end
+    end
+
+    test "a bare id among RecordedEvents is refused", context do
+      [event, other] = context.linked
+
+      assert EventStore.link_to_stream("plain", :any_version, [event, other.event_id],
+               conn: @no_conn
+             ) == {:error, :link_by_id_with_conditional_prefixes}
+    end
+
+    test "a RecordedEvent that names no stream is taken as a bare id", context do
+      [event | _events] = context.linked
+
+      for stream_uuid <- [nil, :source] do
+        assert EventStore.link_to_stream(
+                 "plain",
+                 :any_version,
+                 [%{event | stream_uuid: stream_uuid}],
+                 conn: @no_conn
+               ) == {:error, :link_by_id_with_conditional_prefixes},
+               inspect(stream_uuid)
+      end
+    end
+
+    test "a RecordedEvent out of a stream outside the prefixes passes", context do
+      assert :ok = EventStore.link_to_stream("plain", :any_version, context.linked)
+
+      assert stream_versions(context, "plain") == [1, 2]
+    end
+
+    test "no events pass, as they do on any store" do
+      assert :ok = EventStore.link_to_stream("plain", :any_version, [])
+    end
+
+    test "the target's arms keep their order and win", context do
+      ids = Enum.map(context.linked, & &1.event_id)
+      decided = decided_events("decision-1")
+
+      for linked <- [ids, decided] do
+        assert EventStore.link_to_stream("decision-2", :any_version, linked, conn: @no_conn) ==
+                 {:error, :link_into_conditional_prefix}
+      end
+
+      start_supervised!(
+        {TestEventStore,
+         name: :both_target_store,
+         conditional_appends: [stream_prefixes: ["decision-"]],
+         deletable: [stream_prefixes: ["XPost-", "decision-"], event_types: ["typed"]],
+         serializer: PassThroughSerializer}
+      )
+
+      for linked <- [ids, decided] do
+        assert EventStore.link_to_stream("XPost-1", :any_version, linked,
+                 conn: @no_conn,
+                 name: :both_target_store
+               ) == {:error, :link_into_deletable_stream}
+      end
+    end
+
+    test "a stream a `deletable` prefix also covers is still refused", context do
+      start_supervised!(
+        {TestEventStore,
+         name: :both_source_store,
+         conditional_appends: [stream_prefixes: ["decision-"]],
+         deletable: [stream_prefixes: ["decision-"], event_types: ["typed"]],
+         serializer: PassThroughSerializer}
+      )
+
+      assert EventStore.link_to_stream("plain", :any_version, decided_events("decision-1"),
+               conn: @no_conn,
+               name: :both_source_store
+             ) == {:error, :link_of_conditional_event}
+
+      assert stream_id(context, "plain") == nil
+    end
+
+    test "a store with no declared prefix links bare ids as it did", context do
+      ids = Enum.map(context.linked, & &1.event_id)
+
+      for declared <- [[], [targets: [:declared_target]]] do
+        name = :"no_prefix_store_#{length(declared)}"
+
+        start_supervised!(
+          {TestEventStore,
+           name: name, conditional_appends: declared, serializer: PassThroughSerializer}
+        )
+
+        stream_uuid = "bare-#{name}"
+
+        assert :ok = EventStore.link_to_stream(stream_uuid, :any_version, ids, name: name)
+        assert stream_versions(context, stream_uuid) == [1, 2]
+      end
+    end
+
+    defp decided_events(stream_uuid) do
+      :ok = EventStore.append_to_stream(stream_uuid, 0, events(1), condition: condition())
+
+      {:ok, decided} = EventStore.read_stream_forward(stream_uuid)
+
+      decided
     end
 
     test "into a name that only resembles a prefix passes", context do
