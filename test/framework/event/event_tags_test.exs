@@ -5,6 +5,8 @@ defmodule Decree.Event.EventTagsTest do
   alias Decree.Commands.ExecutionResult
 
   alias Decree.Event.Tagging.Commands.{
+    Attempt,
+    AttemptMulti,
     Emit,
     EmitAsRequester,
     EmitByFunction,
@@ -13,10 +15,15 @@ defmodule Decree.Event.EventTagsTest do
     EmitIdentified,
     EmitMulti,
     EmitPrefixed,
-    Race
+    EmitRewritten,
+    Race,
+    RaceByFunction
   }
 
+  alias Decree.Event.Tagging.EntityRef
+
   alias Decree.Event.Tagging.Events.{
+    Answering,
     Counted,
     FromContext,
     MemberAddSkipped,
@@ -30,6 +37,8 @@ defmodule Decree.Event.EventTagsTest do
   alias Decree.EventStore
   alias Decree.EventStore.EventData
   alias Decree.FrameworkStorage
+  alias Decree.Registration
+  alias Decree.Store.AppendError
   alias Decree.Store.Config
   alias Decree.UUID
 
@@ -319,6 +328,63 @@ defmodule Decree.Event.EventTagsTest do
     end
   end
 
+  describe "the stream tag describes the identity the stream was routed by" do
+    test "for a `String.Chars` value rendering a canonical UUID", context do
+      %{user_id: user_id} = context
+
+      :ok =
+        App.dispatch(%Emit{user_id: %EntityRef{uuid: user_id}, events: [%Unimplemented{}]})
+
+      assert [_event] = App |> EventStore.stream_forward(user_id) |> Enum.to_list()
+      assert stored_tags(context) == [Enum.sort([@emit_kind, "user:" <> user_id])]
+    end
+
+    test "for a function answering differently, across a retry", context do
+      [routed, _second, _third] = keys = [UUID.uuid4(), UUID.uuid4(), UUID.uuid4()]
+
+      assert :ok = App.dispatch(%RaceByFunction{keys: keys, events: [%Unimplemented{}]})
+
+      assert [first, second] = attempts()
+      assert first.version == 0
+      assert second.version == 1
+
+      tag = "user:" <> routed
+      assert tags_of(first) == [[race_by_function_kind(), tag]]
+      assert tags_of(second) == [[race_by_function_kind(), tag]]
+
+      # The concurrent append and the command's own, which is the only one tagged.
+      assert [_concurrent, _own] = App |> EventStore.stream_forward(routed) |> Enum.to_list()
+      assert stored_tags(context) == [Enum.sort([race_by_function_kind(), tag])]
+    end
+
+    test "for a command a middleware rewrote before the extraction", context do
+      %{user_id: rewritten} = context
+      original = UUID.uuid4()
+
+      :ok =
+        App.dispatch(%EmitRewritten{
+          user_id: original,
+          rewrite_to: rewritten,
+          events: [%Unimplemented{}]
+        })
+
+      assert [_event] = App |> EventStore.stream_forward(rewritten) |> Enum.to_list()
+
+      assert stored_tags(context) == [
+               Enum.sort(["command_kind:#{inspect(EmitRewritten)}", "user:" <> rewritten])
+             ]
+    end
+
+    test "with the identity function called once, by the dispatching process" do
+      keys = [UUID.uuid4(), UUID.uuid4(), UUID.uuid4()]
+
+      assert :ok = App.dispatch(%RaceByFunction{keys: keys, events: [%Unimplemented{}]})
+
+      assert [_first, _second] = attempts()
+      assert Recorder.all(:identity_call) == [self()]
+    end
+  end
+
   describe "a `:wrong_expected_version` retry" do
     test "derives the same tags afresh, and leaves the metadata alone", context do
       %{user_id: user_id, command_id: command_id} = context
@@ -372,6 +438,88 @@ defmodule Decree.Event.EventTagsTest do
       # The aggregate is alive and its version is right: the next command appends.
       assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
       assert [_kept, _next] = stored(context)
+    end
+  end
+
+  describe "an implementation answering `:wrong_expected_version`" do
+    for {name, command} <- [
+          {"an event list", Attempt},
+          {"a `Decree.Aggregate.Multi`", AttemptMulti}
+        ] do
+      test "is answered as it stands for #{name}, with no retry", context do
+        %{user_id: user_id} = context
+
+        :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+
+        event = %Answering{reason: :wrong_expected_version}
+
+        assert {:error, :wrong_expected_version} =
+                 App.dispatch(%unquote(command){user_id: user_id, events: [event]})
+
+        assert_answered_once(context)
+      end
+
+      test "is answered as it stands for #{name} of several events", context do
+        %{user_id: user_id} = context
+
+        :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+
+        events = [
+          %Counted{note: "tagged once"},
+          %Answering{reason: :wrong_expected_version},
+          %Tagged{note: "never reached"}
+        ]
+
+        assert {:error, :wrong_expected_version} =
+                 App.dispatch(%unquote(command){user_id: user_id, events: events})
+
+        assert Recorder.all(:counted) == ["tagged once"]
+        assert_answered_once(context)
+      end
+    end
+
+    defp assert_answered_once(%{user_id: user_id} = context) do
+      assert Recorder.all(:before_execute) == [:called]
+      assert length(attempts()) == 1
+      assert [_kept] = stored(context)
+      assert_state_holds_only_the_kept_event(user_id)
+
+      assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+      assert [_kept, _next] = stored(context)
+    end
+  end
+
+  describe "an implementation answering a reason the framework acts on" do
+    test "an `:unavailable` append error stops the aggregate", context do
+      %{user_id: user_id} = context
+
+      :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+
+      pid = Registration.whereis_name(App, {App, Ledger, user_id})
+      ref = Process.monitor(pid)
+
+      error = %AppendError{class: :unavailable, reason: :from_an_implementation}
+      event = %Answering{reason: error}
+
+      assert {:error, ^error} = App.dispatch(%Attempt{user_id: user_id, events: [event]})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :append_outcome_unknown}}
+      assert Recorder.all(:before_execute) == [:called]
+
+      assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+      assert [_kept, _next] = stored(context)
+    end
+
+    test "`:remote_node_down` makes the dispatcher try the command again", context do
+      %{user_id: user_id} = context
+
+      event = %Answering{reason: :remote_node_down}
+
+      assert {:error, :too_many_attempts} =
+               App.dispatch(%Attempt{user_id: user_id, events: [event]}, retry_attempts: 1)
+
+      assert Recorder.all(:before_execute) == [:called, :called]
+      assert stored(context) == []
     end
   end
 
@@ -435,6 +583,8 @@ defmodule Decree.Event.EventTagsTest do
   defp attempts do
     :append |> Recorder.all() |> Enum.filter(&is_integer(&1.version))
   end
+
+  defp race_by_function_kind, do: "command_kind:#{inspect(RaceByFunction)}"
 
   defp tags_of(%{events: events}), do: Enum.map(events, & &1.tags)
 

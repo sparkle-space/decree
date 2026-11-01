@@ -35,9 +35,10 @@ defmodule Decree.Event.Append do
       non-empty binary. `ExecutionContext.correlation_id` is a different value, by default
       a fresh UUID per dispatch, and is never read.
 
-    - `<kind>:<id>`, the stream's entity tag, when the route's identity value is a
-      lowercase canonical UUID (`Decree.UUID.canonical?/1`). The value is the raw identity,
-      never the prefixed stream name. See `Decree.Commands.Router.dispatch/2` for its kind.
+    - `<kind>:<id>`, the stream's entity tag, when `ExecutionContext.aggregate_identity`,
+      the identity the stream was routed by, is a lowercase canonical UUID
+      (`Decree.UUID.canonical?/1`). It is never read from the command again, and never the
+      prefixed stream name. See `Decree.Commands.Router.dispatch/2` for its kind.
 
   The store removes a repeat, so a domain tag equal to a framework tag is stored once.
   """
@@ -78,29 +79,23 @@ defmodule Decree.Event.Append do
   defp key_tag(kind, key) when is_binary(key) and key != "", do: kind <> ":" <> key
   defp key_tag(_kind, _key), do: nil
 
-  defp stream_tag(%ExecutionContext{identity: nil}), do: nil
+  defp stream_tag(%ExecutionContext{aggregate_identity: nil}), do: nil
 
-  defp stream_tag(%ExecutionContext{identity: identity} = context) when is_atom(identity) do
-    %ExecutionContext{command: command, stream_tag: kind} = context
-
-    entity_tag(kind || stem(identity), Map.get(command, identity))
+  defp stream_tag(%ExecutionContext{aggregate_identity: identity} = context) do
+    entity_tag(kind(context), identity)
   end
 
+  defp kind(%ExecutionContext{stream_tag: kind}) when not is_nil(kind), do: kind
+  defp kind(%ExecutionContext{identity: nil}), do: nil
+  defp kind(%ExecutionContext{identity: field}) when is_atom(field), do: stem(field)
   # A function has no field name to take a kind from.
-  defp stream_tag(%ExecutionContext{stream_tag: nil}), do: nil
-
-  defp stream_tag(%ExecutionContext{identity: identity} = context)
-       when is_function(identity, 1) do
-    %ExecutionContext{command: command, stream_tag: kind} = context
-
-    entity_tag(kind, identity.(command))
-  end
+  defp kind(%ExecutionContext{}), do: nil
 
   defp stem(field), do: field |> Atom.to_string() |> String.replace_suffix("_id", "")
 
-  defp entity_tag("", _value), do: nil
+  defp entity_tag(kind, _identity) when kind in [nil, ""], do: nil
 
-  defp entity_tag(kind, value) do
-    if UUID.canonical?(value), do: "#{kind}:#{value}"
+  defp entity_tag(kind, identity) do
+    if UUID.canonical?(identity), do: "#{kind}:#{identity}"
   end
 end

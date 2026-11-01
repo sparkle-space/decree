@@ -125,6 +125,24 @@ defmodule Decree.Event.Tagging.Events do
     @derive Jason.Encoder
     defstruct [:note]
   end
+
+  defmodule Answering do
+    @moduledoc false
+    # Its implementation fails the append with the bare `reason`.
+    @derive Jason.Encoder
+    defstruct [:reason]
+  end
+end
+
+defmodule Decree.Event.Tagging.EntityRef do
+  @moduledoc false
+
+  # An identity that is no string and renders as one.
+  defstruct [:uuid]
+
+  defimpl String.Chars do
+    def to_string(%Decree.Event.Tagging.EntityRef{uuid: uuid}), do: uuid
+  end
 end
 
 alias Decree.Event.Tagging.Events
@@ -162,6 +180,10 @@ end
 
 defimpl Decree.Event.Tags, for: Events.Raising do
   def tags(%Events.Raising{}, _context), do: raise("a raising implementation")
+end
+
+defimpl Decree.Event.Tags, for: Events.Answering do
+  def tags(%Events.Answering{reason: reason}, _context), do: {:error, reason}
 end
 
 defmodule Decree.Event.Tagging.Commands do
@@ -210,6 +232,28 @@ defmodule Decree.Event.Tagging.Commands do
   defmodule Race do
     @moduledoc false
     defstruct [:user_id, :command_id, events: []]
+  end
+
+  defmodule RaceByFunction do
+    @moduledoc false
+    # `keys` are the answers the identity function gives, one per call.
+    defstruct [:keys, events: []]
+  end
+
+  defmodule EmitRewritten do
+    @moduledoc false
+    # A middleware moves `rewrite_to` into `user_id` before the identity is extracted.
+    defstruct [:user_id, :rewrite_to, events: []]
+  end
+
+  defmodule Attempt do
+    @moduledoc false
+    defstruct [:user_id, events: []]
+  end
+
+  defmodule AttemptMulti do
+    @moduledoc false
+    defstruct [:user_id, events: []]
   end
 end
 
@@ -268,6 +312,13 @@ defmodule Decree.Event.Tagging.FunctionTaggedLedger do
   def apply(%__MODULE__{} = ledger, _event), do: ledger
 end
 
+defmodule Decree.Event.Tagging.FunctionRaceLedger do
+  @moduledoc false
+  defstruct [:unused]
+
+  def apply(%__MODULE__{} = ledger, _event), do: ledger
+end
+
 defmodule Decree.Event.Tagging.RaceHandler do
   @moduledoc false
   @behaviour Decree.Commands.Handler
@@ -278,9 +329,9 @@ defmodule Decree.Event.Tagging.RaceHandler do
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.Mapper
-  alias Decree.Event.Tagging.Commands.Race
+  alias Decree.Event.Tagging.Commands.{Race, RaceByFunction}
   alias Decree.Event.Tagging.Events.Tagged
-  alias Decree.Event.Tagging.{App, Ledger, Recorder}
+  alias Decree.Event.Tagging.{App, FunctionRaceLedger, Ledger, Recorder}
   alias Decree.EventStore
 
   def race(%Ledger{}, %ExecutionContext{metadata: metadata} = context) do
@@ -288,16 +339,72 @@ defmodule Decree.Event.Tagging.RaceHandler do
 
     Recorder.record(:attempt_metadata, metadata)
 
+    race_first_attempt(user_id)
+  end
+
+  def race_by_function(%FunctionRaceLedger{}, %ExecutionContext{metadata: metadata} = context) do
+    %ExecutionContext{command: %RaceByFunction{keys: [routed | _others]}} = context
+
+    Recorder.record(:attempt_metadata, metadata)
+
+    race_first_attempt(routed)
+  end
+
+  def handle(%Ledger{}, %Race{events: events}), do: events
+  def handle(%FunctionRaceLedger{}, %RaceByFunction{events: events}), do: events
+
+  defp race_first_attempt(stream_uuid) do
     if length(Recorder.all(:attempt_metadata)) == 1 do
       event_data = Mapper.map_to_event_data([%Tagged{note: "concurrent"}], metadata: %{})
 
-      :ok = EventStore.append_to_stream(App, user_id, :any_version, event_data)
+      :ok = EventStore.append_to_stream(App, stream_uuid, :any_version, event_data)
     end
 
     :ok
   end
+end
 
-  def handle(%Ledger{}, %Race{events: events}), do: events
+defmodule Decree.Event.Tagging.AttemptHandler do
+  @moduledoc false
+  @behaviour Decree.Commands.Handler
+
+  # Counts how often a command starts executing, by its `before_execute`.
+
+  alias Decree.Aggregates.ExecutionContext
+  alias Decree.Event.Tagging.Commands.{Attempt, AttemptMulti, EmitMulti}
+  alias Decree.Event.Tagging.{Ledger, Recorder}
+
+  def count(%Ledger{}, %ExecutionContext{}) do
+    Recorder.record(:before_execute, :called)
+
+    :ok
+  end
+
+  def handle(%Ledger{}, %Attempt{events: events}), do: events
+
+  def handle(%Ledger{} = ledger, %AttemptMulti{events: events}) do
+    Ledger.execute(ledger, %EmitMulti{events: events})
+  end
+end
+
+defmodule Decree.Event.Tagging.RewriteIdentity do
+  @moduledoc false
+  @behaviour Decree.Middleware
+
+  alias Decree.Event.Tagging.Commands.EmitRewritten
+  alias Decree.Middleware.Pipeline
+
+  def before_dispatch(%Pipeline{command: %EmitRewritten{} = command} = pipeline) do
+    %EmitRewritten{rewrite_to: rewrite_to} = command
+
+    %Pipeline{pipeline | command: %EmitRewritten{command | user_id: rewrite_to}}
+  end
+
+  def before_dispatch(%Pipeline{} = pipeline), do: pipeline
+
+  def after_dispatch(%Pipeline{} = pipeline), do: pipeline
+
+  def after_failure(%Pipeline{} = pipeline), do: pipeline
 end
 
 defmodule Decree.Event.Tagging.Router do
@@ -305,6 +412,8 @@ defmodule Decree.Event.Tagging.Router do
   use Decree.Commands.Router
 
   alias Decree.Event.Tagging.Commands.{
+    Attempt,
+    AttemptMulti,
     Emit,
     EmitAsRequester,
     EmitByFunction,
@@ -313,22 +422,30 @@ defmodule Decree.Event.Tagging.Router do
     EmitIdentified,
     EmitMulti,
     EmitPrefixed,
-    Race
+    EmitRewritten,
+    Race,
+    RaceByFunction
   }
 
   alias Decree.Event.Tagging.{
+    AttemptHandler,
     FunctionLedger,
+    FunctionRaceLedger,
     FunctionTaggedLedger,
     IdentifiedLedger,
     Ledger,
     PrefixedLedger,
-    RaceHandler
+    RaceHandler,
+    Recorder
   }
+
+  middleware Decree.Event.Tagging.RewriteIdentity
 
   identify PrefixedLedger, by: :user_id, prefix: "ledger-"
   identify IdentifiedLedger, by: :user_id
   identify FunctionLedger, by: &__MODULE__.key/1
   identify FunctionTaggedLedger, by: &__MODULE__.key/1
+  identify FunctionRaceLedger, by: &__MODULE__.next_key/1
 
   dispatch Emit, to: Ledger, identity: :user_id
   dispatch EmitAsRequester, to: Ledger, identity: :requester_user_id, stream_tag: :user
@@ -345,7 +462,28 @@ defmodule Decree.Event.Tagging.Router do
     identity: :user_id,
     before_execute: :race
 
+  dispatch RaceByFunction,
+    to: RaceHandler,
+    aggregate: FunctionRaceLedger,
+    stream_tag: :user,
+    before_execute: :race_by_function
+
+  dispatch EmitRewritten, to: Ledger, identity: :user_id
+
+  dispatch [Attempt, AttemptMulti],
+    to: AttemptHandler,
+    aggregate: Ledger,
+    identity: :user_id,
+    before_execute: :count
+
   def key(%{key: key}), do: key
+
+  # Answers differently at each call, and records the process that called it.
+  def next_key(%RaceByFunction{keys: keys}) do
+    Recorder.record(:identity_call, self())
+
+    Enum.at(keys, length(Recorder.all(:identity_call)) - 1)
+  end
 end
 
 defmodule Decree.Event.Tagging.App do

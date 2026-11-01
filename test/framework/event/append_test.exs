@@ -36,7 +36,7 @@ defmodule Decree.Event.AppendTest do
     assert {:ok, [%EventData{tags: tags}]} =
              Append.prepare(
                [data(%Tagged{tags: ["a:1"]})],
-               context(command, identity: :user_id)
+               context(command, identity: :user_id, aggregate_identity: command.user_id)
              )
 
     assert tags == ["a:1", "command:" <> command_id, @kind, "user:" <> command.user_id]
@@ -62,7 +62,15 @@ defmodule Decree.Event.AppendTest do
 
   test "is pure: the same input gives the same answer, and the input is untouched" do
     metadata = %{"who" => "alice"}
-    context = context(%Emit{user_id: UUID.uuid4()}, identity: :user_id, metadata: metadata)
+    user_id = UUID.uuid4()
+
+    context =
+      context(%Emit{user_id: user_id},
+        identity: :user_id,
+        aggregate_identity: user_id,
+        metadata: metadata
+      )
+
     event_data = [data(%Tagged{tags: ["a:1"]}, metadata)]
 
     assert {:ok, prepared} = Append.prepare(event_data, context)
@@ -127,16 +135,75 @@ defmodule Decree.Event.AppendTest do
                Append.prepare([data(%Unimplemented{})], context(command))
     end
 
+    test "is absent with no resolved identity, whatever the command's field holds" do
+      context = context(%Emit{user_id: UUID.uuid4()}, identity: :user_id)
+
+      assert {:ok, [%EventData{tags: [@kind]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+    end
+
+    test "is the resolved identity, not the command's field" do
+      resolved = UUID.uuid4()
+
+      context =
+        context(%Emit{user_id: UUID.uuid4()}, identity: :user_id, aggregate_identity: resolved)
+
+      assert {:ok, [%EventData{tags: [@kind, tag]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+
+      assert tag == "user:" <> resolved
+    end
+
+    test "never calls an identity function" do
+      resolved = UUID.uuid4()
+
+      context =
+        context(%Emit{},
+          identity: fn _command -> flunk("the identity function was called") end,
+          aggregate_identity: resolved,
+          stream_tag: :user
+        )
+
+      assert {:ok, [%EventData{tags: [@kind, tag]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+
+      assert tag == "user:" <> resolved
+    end
+
+    test "is absent for an identity function with no `stream_tag`" do
+      context =
+        context(%Emit{}, identity: fn _command -> nil end, aggregate_identity: UUID.uuid4())
+
+      assert {:ok, [%EventData{tags: [@kind]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+    end
+
+    test "is absent for a context with a resolved identity and no way to name its kind" do
+      context = context(%Emit{}, aggregate_identity: UUID.uuid4())
+
+      assert {:ok, [%EventData{tags: [@kind]}]} =
+               Append.prepare([data(%Unimplemented{})], context)
+    end
+
     test "is absent for a field whose stem is empty" do
-      command = %Bare{_id: UUID.uuid4()}
+      id = UUID.uuid4()
 
       assert {:ok, [%EventData{tags: ["command_kind:Decree.Event.AppendTest.Bare"]}]} =
-               Append.prepare([data(%Unimplemented{})], context(command, identity: :_id))
+               Append.prepare(
+                 [data(%Unimplemented{})],
+                 context(%Bare{_id: id}, identity: :_id, aggregate_identity: id)
+               )
     end
 
     test "takes its kind from `stream_tag`, over the field's stem" do
       user_id = UUID.uuid4()
-      context = context(%Emit{user_id: user_id}, identity: :user_id, stream_tag: :member)
+
+      context =
+        context(%Emit{user_id: user_id},
+          identity: :user_id,
+          aggregate_identity: user_id,
+          stream_tag: :member
+        )
 
       assert {:ok, [%EventData{tags: [@kind, tag]}]} =
                Append.prepare([data(%Unimplemented{})], context)

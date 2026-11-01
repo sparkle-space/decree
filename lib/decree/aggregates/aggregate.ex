@@ -578,10 +578,40 @@ defmodule Decree.Aggregates.Aggregate do
     Enum.reduce(events, aggregate_state, &aggregate_module.apply(&2, &1))
   end
 
+  # An error from preparing the events is answered here, ahead of the arms below: those
+  # read the event store's answer, and a `Decree.Event.Tags` implementation's is not one.
   defp persist_events(pending_events, aggregate_state, context, %Aggregate{} = state) do
+    case prepare_events(pending_events, context) do
+      {:ok, event_data} ->
+        store_events(pending_events, event_data, aggregate_state, context, state)
+
+      {:error, _error} = reply ->
+        {reply, state}
+    end
+  end
+
+  defp prepare_events([], _context), do: {:ok, []}
+
+  defp prepare_events(pending_events, %ExecutionContext{} = context) do
+    %ExecutionContext{
+      causation_id: causation_id,
+      correlation_id: correlation_id,
+      metadata: metadata
+    } = context
+
+    pending_events
+    |> Mapper.map_to_event_data(
+      causation_id: causation_id,
+      correlation_id: correlation_id,
+      metadata: metadata
+    )
+    |> Append.prepare(context)
+  end
+
+  defp store_events(pending_events, event_data, aggregate_state, context, %Aggregate{} = state) do
     %Aggregate{aggregate_version: expected_version} = state
 
-    with :ok <- append_to_stream(pending_events, context, state) do
+    with :ok <- append_to_stream(event_data, state) do
       aggregate_version = expected_version + length(pending_events)
 
       state = %Aggregate{
@@ -614,31 +644,16 @@ defmodule Decree.Aggregates.Aggregate do
     end
   end
 
-  defp append_to_stream([], _context, _state), do: :ok
+  defp append_to_stream([], _state), do: :ok
 
-  defp append_to_stream(pending_events, %ExecutionContext{} = context, %Aggregate{} = state) do
+  defp append_to_stream(event_data, %Aggregate{} = state) do
     %Aggregate{
       application: application,
       aggregate_uuid: aggregate_uuid,
       aggregate_version: expected_version
     } = state
 
-    %ExecutionContext{
-      causation_id: causation_id,
-      correlation_id: correlation_id,
-      metadata: metadata
-    } = context
-
-    event_data =
-      Mapper.map_to_event_data(pending_events,
-        causation_id: causation_id,
-        correlation_id: correlation_id,
-        metadata: metadata
-      )
-
-    with {:ok, event_data} <- Append.prepare(event_data, context) do
-      EventStore.append_to_stream(application, aggregate_uuid, expected_version, event_data)
-    end
+    EventStore.append_to_stream(application, aggregate_uuid, expected_version, event_data)
   end
 
   defp do_take_snapshot(%Aggregate{} = state) do

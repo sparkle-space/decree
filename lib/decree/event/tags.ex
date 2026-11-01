@@ -34,11 +34,17 @@ defprotocol Decree.Event.Tags do
 
   ## Failing an append
 
-  `{:error, reason}` fails the append and is the command's answer. Nothing is appended and
-  the aggregate's state is unchanged. A raise is answered the same way, as a raise from
-  `execute/2` is. `reason` reaches the aggregate as an event store error would, so it must
-  not be one the aggregate acts on: `:wrong_expected_version` retries the command, and an
-  `:unavailable` `Decree.Store.AppendError` stops the aggregate.
+  `{:error, reason}` fails the append and is the command's answer, as it stands. Nothing is
+  appended and the aggregate's state is unchanged. A raise is answered the same way, as a
+  raise from `execute/2` is.
+
+  Every event is prepared before the event store is called, so an implementation's error
+  never reads as the store's: `:wrong_expected_version` is answered with no retry. `reason`
+  still leaves the aggregate as a command's answer, and two reasons are acted on there, as
+  they are from `execute/2`. An `:unavailable` `Decree.Store.AppendError` stops the
+  aggregate, which is harmless: the next command rebuilds it from the stream.
+  `:remote_node_down` makes the dispatcher try the command again. Neither is a reason an
+  implementation has cause to answer.
 
   ## What an application must do to adopt it
 
@@ -48,8 +54,9 @@ defprotocol Decree.Event.Tags do
     3. Give each command a `command_id` field, and a `correlation_id` field where it
        carries a key. The framework reads those two names from the command, and from
        nowhere else. A command without one gets no tag of that kind.
-    4. Route each stream by a field holding a lowercase canonical UUID, or name its
-       kind with `stream_tag:` on `dispatch`. See `Decree.Commands.Router.dispatch/2`.
+    4. Route each stream by an identity that is a lowercase canonical UUID, or renders
+       as one, and name its kind with `stream_tag:` on `dispatch` where the field's name
+       does not give it. See `Decree.Commands.Router.dispatch/2`.
 
   A tag must be a string of valid UTF-8 with no NUL byte, 512 bytes at most. The store
   answers `{:error, :invalid_tag}` or `{:error, :tag_too_long}` otherwise. See

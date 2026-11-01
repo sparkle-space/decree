@@ -376,8 +376,9 @@ defmodule Decree.Commands.Router do
   ## Stream tag
 
   Every event a route appends carries an entity tag for its stream, `<kind>:<id>`, as long
-  as the identity is a lowercase canonical UUID. Anything else, such as a Stripe id, gives
-  no tag. The id is the raw identity, never the stream name with its `identify` prefix.
+  as the identity the stream was routed by is a lowercase canonical UUID. Anything else,
+  such as a Stripe id, gives no tag. The id is that identity as a string, never the stream
+  name with its `identify` prefix.
 
   The kind is the identity field's name without a trailing `_id`, so `user_id` gives
   `user:` and `content_ref` gives `content_ref:`. A route names it with `stream_tag:`,
@@ -389,7 +390,7 @@ defmodule Decree.Commands.Router do
 
   A function identity (`by: &Module.function/1`) has no field name, so it has a stream
   tag only when the route declares `stream_tag:`. The id is then what the function
-  answers, and the function runs again at each append attempt, so it must be pure.
+  answered when the dispatch resolved the identity, once, before the aggregate is called.
 
   """
   defmacro dispatch(command_module_or_modules, opts) do
