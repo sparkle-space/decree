@@ -215,20 +215,20 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
 
     test "a member of several refuses the batch" do
-      first = UUID.uuid4()
       second = UUID.uuid4()
 
-      decided =
+      decide = fn _state, %{claim_id: route} ->
         {:streams,
          [
-           {:claim, first, %Unopted{tags: ["scope:s"]}},
+           {:claim, route, %Unopted{tags: ["scope:s"]}},
            {:claim, second, %Unopted{}}
          ]}
+      end
 
-      command = deciding(Unindexed, [item(@unopted, ["scope:s"])], decided)
+      command = deciding(Unindexed, [item(@unopted, ["scope:s"])], decide)
 
       assert {:error, :missing_required_tag} = DecisionApp.dispatch(command)
-      assert stored("unindexed-" <> first, DecisionApp) == []
+      assert stored_decided(command) == []
       assert stored("unindexed-" <> second, DecisionApp) == []
     end
 
@@ -485,18 +485,18 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
 
     test "a batch digest across two members is one set" do
-      first = UUID.uuid4()
       second = UUID.uuid4()
       items = [item(@digested, ["email:a"]), item(@digested, ["email:b"])]
 
-      decided =
+      decide = fn _state, %{claim_id: route} ->
         {:streams,
          [
-           {:claim, first, digested(["email:a"])},
+           {:claim, route, digested(["email:a"])},
            {:claim, second, digested(["email:b"])}
          ]}
+      end
 
-      assert :ok = DecisionApp.dispatch(deciding(Indexed, items, decided))
+      assert :ok = DecisionApp.dispatch(deciding(Indexed, items, decide))
     end
 
     test "a kind marked `:plain` is not compared" do

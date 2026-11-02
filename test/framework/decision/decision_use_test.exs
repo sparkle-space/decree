@@ -62,9 +62,10 @@ defmodule Decree.Decision.UseTest do
     end
 
     defmodule #{name} do
-      use Decree.Decision
+      use Decree.Decision, create: false
       use #{name}.Families
 
+      def command_window_ms, do: 1
       def query(_command, _context), do: []
       def initial_state, do: nil
       def evolve(state, _event), do: state
@@ -77,8 +78,9 @@ defmodule Decree.Decision.UseTest do
   defp declaring(name, visibility) do
     """
     defmodule #{name} do
-      use Decree.Decision
+      use Decree.Decision, create: false
 
+      def command_window_ms, do: 1
       def query(_command, _context), do: []
       def initial_state, do: nil
       def evolve(state, _event), do: state
@@ -271,8 +273,9 @@ defmodule Decree.Decision.UseTest do
 
       source = """
       defmodule #{name} do
-        use Decree.Decision
+        use Decree.Decision, create: false
 
+        def command_window_ms, do: 1
         def query(_command, _context), do: []
         def initial_state, do: nil
         def evolve(state, _event), do: state

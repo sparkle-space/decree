@@ -116,9 +116,6 @@ defmodule Decree.Decision.Read do
 
   defp replay_shape(true, _tags), do: :error
 
-  defp item_tags(item) when is_list(item), do: Keyword.get(item, :tags)
-  defp item_tags(item), do: Map.get(item, :tags)
-
   @doc """
   Whether a `replay: true` item names `tag`.
   """
