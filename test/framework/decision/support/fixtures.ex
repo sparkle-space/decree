@@ -16,6 +16,9 @@ defmodule Decree.DecisionFixtures.Claimed do
   @derive Jason.Encoder
   defstruct [:claim_id, :scope, :note]
 
+  # Its implementation answers no tag for no scope.
+  def __conditional_tag_kinds__, do: ["scope"]
+
   defimpl Decree.Event.Tags do
     def tags(%{scope: nil}, _context), do: {:ok, []}
     def tags(%{scope: scope}, _context), do: {:ok, ["scope:" <> scope]}
@@ -329,6 +332,10 @@ defmodule Decree.DecisionFixtures.ParityEvent do
   @moduledoc false
   @derive Jason.Encoder
   defstruct [:id, :scope]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{scope: scope}, _context), do: {:ok, ["parity:" <> scope]}
+  end
 end
 
 defmodule Decree.DecisionFixtures.ParityCommand do

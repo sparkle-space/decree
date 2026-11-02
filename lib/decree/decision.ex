@@ -49,6 +49,7 @@ defmodule Decree.Decision do
       "The command window".
     - `c:scope_tags/1`, optional, names the tags a command's events must carry besides the
       route's stream tag. See "The command window".
+    - `c:index_families/0`, optional, says which tag kinds hold digests. See "Digest tags".
 
   The state comes first, as in an aggregate's `execute/2` and `apply/2`. These callbacks
   receive the command, the tag context, which holds the dispatch metadata, and what the
@@ -108,8 +109,14 @@ defmodule Decree.Decision do
        events to the state and prepare them, per member, which takes their tags from the
        plaintext and encrypts what they declare. Its error is the answer. Refuse a batch
        lacking a scope tag, `{:error, :batch_lacks_scope_tag}`, and on a create a batch with
-       no event of a declared type on the stream tag, `{:error, :batch_lacks_fact}`. Append
-       them at `:any_version` under the condition.
+       no event of a declared type on the stream tag, `{:error, :batch_lacks_fact}`. Compare
+       the digest kinds with the condition's items (see "Digest tags"), and refuse on a
+       mismatch. Require of each event, whether or not it opted in,
+       `Decree.Event.RequiredTags.always/0` and the kinds of the tags on the condition's
+       items naming its type, a create's fact item left out, less those its module lists in
+       `__conditional_tag_kinds__/0`, and of an event that opted in its own answer as well.
+       Append them at `:any_version` under the condition, and the store refuses an event
+       lacking a kind on its list.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
@@ -161,6 +168,10 @@ defmodule Decree.Decision do
   type on another member and the stream tag on another event add up to nothing the item finds.
   A create that records a refusal as an event lists that type in `create:` too, so a later
   create folds it, and is otherwise refused the same way: the rule fails closed.
+
+  Step 8 asks no event for the fact item's kinds, because the decision never wrote that item
+  and the route's member carries the stream tag anyway. So a declared type on another member
+  need not carry the route's kind. The digest comparison does read the item.
 
   Anything else says `create: false`. The item cannot be `replay: true`, which fails the build,
   and a `replay: true` item of `c:query/2` or `c:followup_query/3` naming the stream tag on a
@@ -217,6 +228,25 @@ defmodule Decree.Decision do
   though no event of it carries every tag, and a batch that lands must carry them the same way.
   A route entity that was a member of an earlier batch under the same id reads as that batch's
   duplicate, since its tag is on an event in the window, and nothing commits.
+
+  ## Digest tags
+
+  A condition on a digest holds only if the event it lets through carries that same digest:
+  one derived with another key, or from another value, would land where the next read does
+  not look. So a decision says which kinds hold digests:
+
+      def index_families, do: %{"email" => :digest}
+
+  For each kind marked `:digest`, the set of that kind's tags across every event of the
+  batch must equal the set of that kind's tags on the condition's items, from both reads.
+  Each kind is compared on its own. An empty batch side passes, because that is what an erased
+  subject's dropped value leaves. That side is this comparison's alone: a scope tag has to land
+  whatever it says, so a digest kind in `c:scope_tags/1` whose value dropped answers
+  `{:error, :batch_lacks_scope_tag}`. A non-empty side with no such item is unequal. Otherwise
+  the answer is `{:error, :digest_tag_mismatch}`, an atom and never the digest, with nothing
+  appended and no retry. A kind marked `:plain` is not compared, and a decision with no
+  `c:index_families/0` compares nothing. An answer that is not a map of tag kinds to `:digest`
+  or `:plain` fails the build, because it would compare nothing and say nothing.
 
   ## Personal fields
 
@@ -303,8 +333,11 @@ defmodule Decree.Decision do
   `:invalid_decision_identity`, `:invalid_query`, `:decision_returned_no_events` for `[]`,
   `:ok` or `nil` from `c:decide/2` and `[]` for a member, `:invalid_decision_return` for
   anything else it may not answer, `:invalid_decision_stream` for a malformed member,
-  `:batch_lacks_scope_tag`, `:batch_lacks_fact`, `:invalid_scope_tags` and
-  `:invalid_command_window`.
+  `:batch_lacks_scope_tag`, `:batch_lacks_fact`, `:invalid_scope_tags`,
+  `:invalid_command_window`, `:digest_tag_mismatch` for an event whose digest is not the one
+  the decision read, `:missing_required_tag` for an event lacking a kind it requires, and
+  `:invalid_required_tag_kinds` for an event answering what is not a list, which preparing
+  answers, or a list that is not kinds, which the store answers.
 
   ## Bounds
 
@@ -370,6 +403,7 @@ defmodule Decree.Decision do
   """
 
   alias Decree.Event.TagContext
+  alias Decree.Store.Query
 
   @type state :: term()
   @type command :: struct()
@@ -428,7 +462,14 @@ defmodule Decree.Decision do
   """
   @callback scope_tags(command()) :: [String.t()]
 
-  @optional_callbacks followup_query: 3, admit: 2, scope_tags: 1
+  @doc """
+  What each tag kind this decision indexes holds, for example `%{"email" => :digest}`. See
+  "Digest tags". Defaults to `%{}`. A static map: the build calls this as the module closes,
+  so it can lean on nothing compiled later.
+  """
+  @callback index_families() :: %{String.t() => :digest | :plain}
+
+  @optional_callbacks followup_query: 3, admit: 2, scope_tags: 1, index_families: 0
 
   @bounds [max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100]
   @options [:bound_reason, :create | Keyword.keys(@bounds)]
@@ -438,6 +479,7 @@ defmodule Decree.Decision do
     quote bind_quoted: [opts: opts] do
       @behaviour Decree.Decision
       @before_compile Decree.Decision
+      @after_compile Decree.Decision
 
       @decree_decision_bounds Decree.Decision.__bounds__!(__MODULE__, opts)
       @decree_decision_create Decree.Decision.__create__!(__MODULE__, opts)
@@ -470,16 +512,55 @@ defmodule Decree.Decision do
 
     followup_query? = Module.defines?(module, {:followup_query, 3}, :def)
 
+    # Here and not in `__using__/1`: a default from the module body is final before any
+    # `@before_compile` runs, so a later hook's `def` would be a second clause that never
+    # matches. One made overridable here gives way to it.
+    index_families =
+      if not Module.defines?(module, {:index_families, 0}, :def) do
+        quote do
+          @doc false
+          def index_families, do: %{}
+
+          defoverridable index_families: 0
+        end
+      end
+
     quote do
+      unquote(index_families)
+
       @doc false
       def __decision__ do
         Map.merge(@decree_decision_bounds, %{
           create: @decree_decision_create,
-          followup_query?: unquote(followup_query?)
+          followup_query?: unquote(followup_query?),
+          index_families: index_families()
         })
       end
     end
   end
+
+  # A key no tag can have, or a family no comparison reads, compares nothing and says so
+  # nowhere: a digest check that passes because it never ran. A raise from the callback
+  # leaves through here and fails the build too. Called with no export test, because under the
+  # compiler the module is not loaded here, so `function_exported?/3` would answer no and let
+  # every bad declaration through.
+  @doc false
+  def __after_compile__(%Macro.Env{module: module}, _bytecode) do
+    families = module.index_families()
+
+    if not index_families?(families) do
+      raise ArgumentError,
+            "#{inspect(module)} has an invalid `index_families/0`: #{inspect(families)}, " <>
+              "expected a map of tag kinds to `:digest` or `:plain`"
+    end
+  end
+
+  defp index_families?(families) when is_map(families) do
+    Query.tag_kinds?(Map.keys(families)) and
+      Enum.all?(Map.values(families), &(&1 in [:digest, :plain]))
+  end
+
+  defp index_families?(_families), do: false
 
   @doc false
   def __bounds__!(module, opts) do

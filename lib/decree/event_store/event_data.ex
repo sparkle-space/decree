@@ -12,7 +12,8 @@ defmodule Decree.EventStore.EventData do
           event_type: String.t(),
           data: struct(),
           metadata: map(),
-          tags: [String.t()]
+          tags: [String.t()],
+          required_tag_kinds: list()
         }
 
   defstruct [
@@ -21,6 +22,7 @@ defmodule Decree.EventStore.EventData do
     :event_type,
     :data,
     :metadata,
-    tags: []
+    tags: [],
+    required_tag_kinds: []
   ]
 end

@@ -25,6 +25,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         :ok <- validate_required_tags(events),
          :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
          :ok <- validate_returning(new_opts),
          {:ok, new_opts} <- compile_condition([stream_uuid], new_opts),
@@ -38,6 +39,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         :ok <- validate_required_tags(events),
          :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
          :ok <- validate_returning(new_opts),
          {:ok, new_opts} <- compile_condition([stream_uuid], new_opts) do
@@ -70,8 +72,9 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_appends(appends),
-         :ok <-
-           validate_tags(Enum.flat_map(appends, fn {_stream, _version, events} -> events end)),
+         events = Enum.flat_map(appends, fn {_stream, _version, events} -> events end),
+         :ok <- validate_tags(events),
+         :ok <- validate_required_tags(events),
          :ok <- validate_deletable_types(appends, new_opts),
          :ok <- validate_returning(new_opts),
          {:ok, new_opts} <- compile_condition(stream_uuids(appends), new_opts),
@@ -89,7 +92,8 @@ defmodule Decree.Store.Streams.Stream do
   # the stream or a deadlock aborts this transaction, so a retry runs all of it again, from
   # the read.
   def link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, opts) do
-    with :ok <- validate_link_target(stream_uuid, opts) do
+    with :ok <- validate_link_target(stream_uuid, opts),
+         :ok <- validate_link_source(events_or_event_ids, opts) do
       transaction(
         conn,
         fn transaction ->
@@ -351,6 +355,38 @@ defmodule Decree.Store.Streams.Stream do
 
   defp any_tag?(events, fun), do: Enum.any?(events, &Enum.any?(&1.tags, fun))
 
+  # Runs straight after `validate_tags/1`, for the same reason, and on what that let through:
+  # every tag is a valid binary. The kinds are checked in this function because a condition
+  # is only as good as the tags: nothing past here could tell an absent tag from no match.
+  defp validate_required_tags(events) do
+    cond do
+      not Enum.all?(events, &Query.tag_kinds?(&1.required_tag_kinds)) ->
+        {:error, :invalid_required_tag_kinds}
+
+      Enum.all?(events, &carries_required?/1) ->
+        :ok
+
+      true ->
+        {:error, :missing_required_tag}
+    end
+  end
+
+  defp carries_required?(%EventData{tags: tags, required_tag_kinds: kinds}) do
+    Enum.all?(kinds, fn kind -> Enum.any?(tags, &carries?(&1, kind)) end)
+  end
+
+  # This runs per event, so it matches on the bytes rather than split the tag. A tag with no
+  # colon is its own kind, and `<kind>:` with no value carries nothing.
+  defp carries?(tag, kind) do
+    size = byte_size(kind)
+
+    case tag do
+      ^kind -> true
+      <<^kind::binary-size(^size), ":", _value, _rest::binary>> -> true
+      _other -> false
+    end
+  end
+
   # Runs where `validate_tags/1` does, for the same reason: a refusal sends no statement.
   # `Keyword.get_values/2` for what `compile_condition/2` says of it.
   defp validate_returning(opts) do
@@ -470,6 +506,42 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  # A hard delete of a stream holding a link removes the event from every stream, so a link
+  # to a decision's event would put it within reach of a stream no prefix protects. That
+  # goes by the stream the event was appended to, whatever the target and whatever a
+  # `deletable` prefix says of it. A bare id can't say which stream that is without a
+  # statement, so a store that declares a prefix takes no bare ids. Runs where
+  # `validate_link_target/2` does, after it, for the same reason. This reads what a
+  # `RecordedEvent` says and a caller can change that, so it is an early answer: the store's
+  # own rows decide in `Appender.link/4`, before anything is written.
+  defp validate_link_source(events_or_event_ids, opts) do
+    case conditional_prefixes(opts) do
+      [] ->
+        :ok
+
+      prefixes ->
+        cond do
+          Enum.any?(events_or_event_ids, &conditional_event?(&1, prefixes)) ->
+            {:error, :link_of_conditional_event}
+
+          Enum.all?(events_or_event_ids, &known_source?/1) ->
+            :ok
+
+          true ->
+            {:error, :link_by_id_with_conditional_prefixes}
+        end
+    end
+  end
+
+  defp conditional_event?(%RecordedEvent{stream_uuid: stream_uuid}, prefixes)
+       when is_binary(stream_uuid),
+       do: String.starts_with?(stream_uuid, prefixes)
+
+  defp conditional_event?(_event_or_event_id, _prefixes), do: false
+
+  defp known_source?(%RecordedEvent{stream_uuid: stream_uuid}), do: is_binary(stream_uuid)
+  defp known_source?(_event_id), do: false
+
   # A stream under a declared prefix is what later decisions rest on, its `command:` tags
   # included. One a `deletable` prefix also covers has been declared as both, and "Deletable
   # streams" states that cost. Runs where `validate_tags/1` does, for the same reason: a
@@ -540,7 +612,12 @@ defmodule Decree.Store.Streams.Stream do
     %StreamInfo{stream_id: stream_id} = stream
 
     event_ids = Enum.map(events_or_event_ids, &extract_event_id/1)
-    opts = Keyword.put(opts, :expected_version, expected_version)
+
+    opts =
+      Keyword.merge(opts,
+        expected_version: expected_version,
+        conditional_prefixes: conditional_prefixes(opts)
+      )
 
     Storage.link_to_stream(conn, stream_id, event_ids, opts)
   end

@@ -101,7 +101,13 @@ defmodule Decree.Store.Query do
 
   # `<kind>:<value>`, where the kind has no colon and the value may. A tag with no colon is
   # its own kind. The same split as `split_part(tag, ':', 1)` in `delete_stream_tags`.
-  defp tag_kind(tag), do: tag |> String.split(":", parts: 2) |> hd()
+  @doc false
+  def tag_kind(tag) do
+    case :binary.match(tag, ":") do
+      {colon, _length} -> binary_part(tag, 0, colon)
+      :nomatch -> tag
+    end
+  end
 
   defp compile_parsed(parsed) do
     cond do

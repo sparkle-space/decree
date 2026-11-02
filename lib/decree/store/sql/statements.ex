@@ -13,6 +13,7 @@ defmodule Decree.Store.Sql.Statements do
         {:create_stream, [:schema]},
         {:append_events, [:schema]},
         {:lock_link_events, [:schema]},
+        {:query_link_sources, [:schema]},
         {:insert_link_events, [:schema, :number_of_events]},
         {:soft_delete_stream, [:schema]},
         {:lock_stream, [:schema]},

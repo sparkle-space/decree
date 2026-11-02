@@ -146,12 +146,18 @@ defmodule Decree.Store.Storage.Appender do
        event already in the stream would cycle with its hard delete. An event that does
        not exist, or that a hard delete has removed, answers `{:error, :not_found}` here,
        before anything is written. A repeated id is one row, and reaches the insert.
-    3. The inserts, in batches of 1,000, which number the events in the caller's order:
+    3. With a non-empty `:conditional_prefixes` option, the streams the events were appended
+       to, from the store's own rows, which the locks above hold still. One starting with a
+       prefix answers `{:error, :link_of_conditional_event}`, before anything is written. A
+       `Decree.Store.RecordedEvent` says the same, but a caller can change that. An empty
+       or absent option sends no statement.
+    4. The inserts, in batches of 1,000, which number the events in the caller's order:
        locking is sorted, numbering is not.
 
   Returns `:ok` on success, or one of `{:error, :not_found}`,
   `{:error, :duplicate_event}`, `{:error, :wrong_expected_version}`,
-  `{:error, :stream_exists}`, `{:error, :stream_deleted}` and
+  `{:error, :stream_exists}`, `{:error, :stream_deleted}`,
+  `{:error, :link_of_conditional_event}` and
   `{:error, %Decree.Store.AppendError{}}` for every other failure of these statements,
   a `deadlock_detected` included.
   """
@@ -160,11 +166,13 @@ defmodule Decree.Store.Storage.Appender do
   def link(conn, stream_id, event_ids, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {expected_version, opts} = Keyword.pop(opts, :expected_version, :any_version)
+    {conditional_prefixes, opts} = Keyword.pop(opts, :conditional_prefixes, [])
 
     event_ids = Enum.map(event_ids, &encode_uuid/1)
 
     with :ok <- lock_link_target(conn, stream_id, expected_version, schema, opts),
          :ok <- lock_link_events(conn, event_ids, schema, opts),
+         :ok <- check_link_sources(conn, event_ids, conditional_prefixes, schema, opts),
          :ok <- insert_link_batches(conn, stream_id, event_ids, schema, opts) do
       :ok
     else
@@ -348,6 +356,23 @@ defmodule Decree.Store.Storage.Appender do
       {:ok, %Postgrex.Result{num_rows: ^distinct}} -> :ok
       {:ok, %Postgrex.Result{}} -> {:error, :not_found}
       {:error, error} -> handle_error(error)
+    end
+  end
+
+  # A store declaring no prefix has nothing to check, so it sends no statement.
+  defp check_link_sources(_conn, _event_ids, [], _schema, _opts), do: :ok
+
+  defp check_link_sources(conn, event_ids, prefixes, schema, opts) do
+    case Postgrex.query(conn, Statements.query_link_sources(schema), [event_ids], opts) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        if Enum.any?(rows, fn [stream_uuid] -> String.starts_with?(stream_uuid, prefixes) end) do
+          {:error, :link_of_conditional_event}
+        else
+          :ok
+        end
+
+      {:error, error} ->
+        handle_error(error)
     end
   end
 

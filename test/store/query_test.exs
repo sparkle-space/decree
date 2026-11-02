@@ -3,6 +3,16 @@ defmodule Decree.Store.QueryTest do
 
   alias Decree.Store.Query
 
+  describe "tag_kind/1" do
+    test "is what precedes the first colon, and a tag with no colon is its own kind" do
+      assert Query.tag_kind("a:b") == "a"
+      assert Query.tag_kind("a:b:c") == "a"
+      assert Query.tag_kind("a") == "a"
+      assert Query.tag_kind(":x") == ""
+      assert Query.tag_kind("") == ""
+    end
+  end
+
   describe "compile/1" do
     test "gives a tag and type item one probe per type" do
       assert {:ok, query} = Query.compile([[types: ["a", "b"], tags: ["x"]]])

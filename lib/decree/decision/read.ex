@@ -116,9 +116,6 @@ defmodule Decree.Decision.Read do
 
   defp replay_shape(true, _tags), do: :error
 
-  defp item_tags(item) when is_list(item), do: Keyword.get(item, :tags)
-  defp item_tags(item), do: Map.get(item, :tags)
-
   @doc """
   Whether a `replay: true` item names `tag`.
   """
@@ -168,6 +165,48 @@ defmodule Decree.Decision.Read do
   @spec condition_items([%__MODULE__{}]) :: [keyword() | map()]
   def condition_items([%__MODULE__{framework: framework} | _reads] = reads) do
     Enum.flat_map(reads, & &1.own) ++ framework
+  end
+
+  @doc """
+  The types an item names. The command item names none.
+  """
+  @spec item_types(keyword() | map()) :: [String.t()]
+  def item_types(item), do: item_field(item, :types)
+
+  @doc """
+  The tags on an item.
+  """
+  @spec item_tags(keyword() | map()) :: [String.t()]
+  def item_tags(item), do: item_field(item, :tags)
+
+  defp item_field(item, field) when is_list(item), do: Keyword.get(item, field, [])
+  defp item_field(item, field) when is_map(item), do: Map.get(item, field, [])
+
+  @doc """
+  The types `items` name, each once.
+  """
+  @spec named_types([keyword() | map()]) :: [String.t()]
+  def named_types(items), do: items |> Enum.flat_map(&item_types/1) |> Enum.uniq()
+
+  @doc """
+  The kinds of the tags on the items naming `type`, each once, so a `--` takes a kind out
+  however many items name it.
+  """
+  @spec kinds_naming([keyword() | map()], String.t()) :: [String.t()]
+  def kinds_naming(items, type) do
+    items
+    |> Enum.filter(&(type in item_types(&1)))
+    |> Enum.flat_map(&item_tags/1)
+    |> Enum.map(&Query.tag_kind/1)
+    |> Enum.uniq()
+  end
+
+  @doc """
+  The tags of `kind`, as a set. Anything that is not a binary is the store's to refuse.
+  """
+  @spec tags_of_kind(list(), String.t()) :: MapSet.t(String.t())
+  def tags_of_kind(tags, kind) do
+    MapSet.new(for tag <- tags, is_binary(tag), Query.tag_kind(tag) == kind, do: tag)
   end
 
   @doc """

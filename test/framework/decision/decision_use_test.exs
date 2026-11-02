@@ -1,6 +1,8 @@
 defmodule Decree.Decision.UseTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
+
   alias Decree.DecisionFixtures.{ClaimDecision, TightDecision}
 
   # A decision the build takes, but for what a test adds.
@@ -25,6 +27,67 @@ defmodule Decree.Decision.UseTest do
     """)
 
     Module.concat([name])
+  end
+
+  # `Code.eval_string/1` is not what a build runs. `compile_to_path/3` is what `mix compile`
+  # calls, and under it the module is not loaded when the check runs, which is where an export
+  # test would pass every bad declaration.
+  defp build(name, source) do
+    dir = Path.join(System.tmp_dir!(), name)
+    path = Path.join(dir, "decision.ex")
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    File.write!(path, source)
+
+    {dir, Kernel.ParallelCompiler.compile_to_path([path], dir, return_diagnostics: true)}
+  end
+
+  # A `use` after `use Decree.Decision`, so its `@before_compile` runs after that one's.
+  defp injecting(name, families) do
+    """
+    defmodule #{name}.Families do
+      defmacro __using__(_opts) do
+        quote do
+          @before_compile #{name}.Families
+        end
+      end
+
+      defmacro __before_compile__(_env) do
+        quote do
+          def index_families, do: #{families}
+        end
+      end
+    end
+
+    defmodule #{name} do
+      use Decree.Decision, create: false
+      use #{name}.Families
+
+      def command_window_ms, do: 1
+      def query(_command, _context), do: []
+      def initial_state, do: nil
+      def evolve(state, _event), do: state
+      def decide(_state, _command), do: nil
+    end
+    """
+  end
+
+  # `visibility` is what the two sides of the private `index_families/0` tests differ in.
+  defp declaring(name, visibility) do
+    """
+    defmodule #{name} do
+      use Decree.Decision, create: false
+
+      def command_window_ms, do: 1
+      def query(_command, _context), do: []
+      def initial_state, do: nil
+      def evolve(state, _event), do: state
+      def decide(_state, _command), do: nil
+      #{visibility} index_families, do: %{"email" => :digest}
+    end
+    """
   end
 
   describe "bounds" do
@@ -153,6 +216,127 @@ defmodule Decree.Decision.UseTest do
       assert %{followup_query?: true} =
                compile("", "def followup_query(_c, _t, _e), do: []").__decision__()
     end
+
+    test "`index_families/0` is read when it is defined" do
+      assert %{index_families: families} = compile("").__decision__()
+      assert families == %{}
+
+      assert %{index_families: %{"email" => :digest}} =
+               compile("", ~s(def index_families, do: %{"email" => :digest})).__decision__()
+    end
+
+    test "`index_families/0` a later `use` injects is read" do
+      name = "Decree.Decision.UseTest.Injected#{System.unique_integer([:positive])}"
+      decision = Module.concat([name])
+
+      assert {dir, {:ok, _modules, _warnings}} =
+               build(name, injecting(name, ~s(%{"email" => :digest})))
+
+      assert {:module, ^decision} = :code.load_abs(~c"#{Path.join(dir, "Elixir." <> name)}")
+
+      on_exit(fn ->
+        :code.purge(decision)
+        :code.delete(decision)
+      end)
+
+      assert %{index_families: %{"email" => :digest}} = decision.__decision__()
+    end
+  end
+
+  describe "a bad `index_families/0`" do
+    for {name, answer} <- [
+          {"an atom key", ~s(%{email: :digest})},
+          {"an empty-string key", ~s(%{"" => :digest})},
+          {"a key with a colon", ~s(%{"email:x" => :digest})},
+          {"an unknown family", ~s(%{"email" => :digests})},
+          {"a map that is good but for one family", ~s(%{"a" => :digest, "b" => :plan})},
+          {"something other than a map", ~s([{"email", :digest}])},
+          {"nil", ~s(nil)}
+        ] do
+      test "fails the build for #{name}" do
+        body = "def index_families, do: #{unquote(answer)}"
+
+        assert_raise ArgumentError, ~r/UseTest\.Fixture\d+ has an invalid `index_families/, fn ->
+          compile("", body)
+        end
+      end
+    end
+
+    test "fails the build when the callback raises" do
+      assert_raise RuntimeError, "no families", fn ->
+        compile("", ~s[def index_families, do: raise("no families")])
+      end
+    end
+
+    test "fails under the compiler too, where the module is not loaded yet" do
+      name = "Decree.Decision.UseTest.Compiled#{System.unique_integer([:positive])}"
+
+      source = """
+      defmodule #{name} do
+        use Decree.Decision, create: false
+
+        def command_window_ms, do: 1
+        def query(_command, _context), do: []
+        def initial_state, do: nil
+        def evolve(state, _event), do: state
+        def decide(_state, _command), do: nil
+        def index_families, do: %{email: :digest}
+      end
+      """
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} = build(name, source)
+
+        assert message =~ "#{name} has an invalid `index_families/0`"
+      end)
+    end
+
+    test "fails the build when a later `use` injects it" do
+      name = "Decree.Decision.UseTest.Injected#{System.unique_integer([:positive])}"
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} =
+                 build(name, injecting(name, "%{email: :digest}"))
+
+        assert message =~ "#{name} has an invalid `index_families/0`"
+      end)
+    end
+
+    test "fails the build when it is a `defp`, and writes no module" do
+      name = "Decree.Decision.UseTest.Private#{System.unique_integer([:positive])}"
+
+      capture_io(:stderr, fn ->
+        assert {dir, {:error, errors, _warnings}} = build(name, declaring(name, "defp"))
+
+        assert Enum.any?(
+                 errors,
+                 &(&1.message =~ "index_families/0" and &1.message =~ ~r/\bdefp\b/)
+               )
+
+        assert File.ls!(dir) == ["decision.ex"]
+      end)
+    end
+
+    test "the same module with a `def` builds, so it is the `defp` that fails" do
+      name = "Decree.Decision.UseTest.Public#{System.unique_integer([:positive])}"
+
+      assert {dir, {:ok, _modules, _warnings}} = build(name, declaring(name, "def"))
+      assert "Elixir.#{name}.beam" in File.ls!(dir)
+    end
+
+    test "a valid map compiles" do
+      body = ~s(def index_families, do: %{"email" => :digest, "label" => :plain})
+
+      assert %{index_families: %{"email" => :digest, "label" => :plain}} =
+               compile("", body).__decision__()
+    end
+
+    test "an empty map compiles" do
+      assert %{index_families: families} =
+               compile("", "def index_families, do: %{}").__decision__()
+
+      assert families == %{}
+    end
   end
 
   describe "a decision reacts to no event" do
@@ -188,6 +372,7 @@ defmodule Decree.Decision.UseTest do
                decide: 2,
                evolve: 2,
                followup_query: 3,
+               index_families: 0,
                initial_state: 0,
                query: 2,
                scope_tags: 1

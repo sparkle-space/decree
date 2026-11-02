@@ -126,6 +126,9 @@ defmodule Decree.PersonalFields.Fixtures.Events do
        personal: [email: :user_id], personal_metadata: [email: :user_id, password_hash: :user_id]}
     ]
     defstruct [:user_id, :email, :note]
+
+    # A decision's tests read it by a `scope:` item, and only a seeded one carries that tag.
+    def __conditional_tag_kinds__, do: ["scope"]
   end
 
   defmodule Invited do
@@ -170,6 +173,9 @@ defmodule Decree.PersonalFields.Fixtures.Events do
   defmodule Plain do
     @derive Jason.Encoder
     defstruct [:user_id, :note]
+
+    # As `Registered`.
+    def __conditional_tag_kinds__, do: ["scope"]
   end
 
   defmodule Linked do
@@ -193,6 +199,9 @@ defmodule Decree.PersonalFields.Fixtures.Events do
   defmodule Tagged do
     @derive [Jason.Encoder, {Decree.Event.PersonalFields, personal: [email: :user_id]}]
     defstruct [:user_id, :email, :mode]
+
+    # As `Registered`.
+    def __conditional_tag_kinds__, do: ["scope"]
 
     defimpl Tags do
       def tags(%{mode: "raise", email: email}, _context) do

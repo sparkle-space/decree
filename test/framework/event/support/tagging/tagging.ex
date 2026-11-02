@@ -147,6 +147,17 @@ defmodule Decree.Event.Tagging.Events do
     @derive Jason.Encoder
     defstruct [:reason]
   end
+
+  defmodule Reloaded do
+    @moduledoc false
+    # Opted in. One test unloads it, so nothing else may use it.
+    @derive Jason.Encoder
+    defstruct [:note]
+
+    def __required_tag_kinds__(%__MODULE__{}, _tag_context), do: ["reloaded"]
+    def __conditional_tag_kinds__, do: ["reloaded"]
+    def __tag_kinds__, do: ["reloaded"]
+  end
 end
 
 defmodule Decree.Event.Tagging.EntityRef do

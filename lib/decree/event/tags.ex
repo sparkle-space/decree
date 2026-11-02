@@ -68,6 +68,12 @@ defprotocol Decree.Event.Tags do
   A tag must be a string of valid UTF-8 with no NUL byte, 512 bytes at most. The store
   answers `{:error, :invalid_tag}` or `{:error, :tag_too_long}` otherwise. See
   `Decree.Store.EventData`.
+
+  ## Required tags
+
+  A forgotten tag is an event a condition misses. An event can opt in to having that refused
+  by exporting three functions from its own module, none of them on this protocol. See
+  `Decree.Event.RequiredTags`.
   """
 
   # `Any` has no `__deriving__`, so `@derive` builds an implementation that delegates to it.
