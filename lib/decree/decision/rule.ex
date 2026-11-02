@@ -100,8 +100,12 @@ defmodule Decree.Decision.Rule do
   value there is overwritten. A route with no rule leaves the field as sent.
 
   It is set on a copy, for one call. `Decree.Aggregates.ExecutionContext` keeps the plain
-  command, so what follows the call never holds a read: no reply, no event, no metadata, no
-  state, no snapshot. `Inspect` shows nothing of a result, and writing one into an event raises.
+  command, so nothing the framework does after the call holds a read: no reply, no metadata, no
+  state, no snapshot. `execute/2` is the application's own code, and the framework does not
+  look inside what it returns. So it must not copy the result, or anything in it, into an
+  event, or into the state it seeds a `Decree.Aggregate.Multi` with: either would keep it.
+  `Inspect` shows nothing of a result, and with the JSON serializer an event holding one
+  raises before it is stored. Another serializer has no such fence.
 
   **`[]`** from `c:query/2` means this command has nothing to check, as a registration with no
   address has not. `execute/2` gets an empty result, and the append is the plain one a route
@@ -258,8 +262,8 @@ defmodule Decree.Decision.Rule do
 
       - `events` - the data of the events the rule's own items matched, in position order.
 
-    `Inspect` shows nothing of them, and JSON refuses it, so it can reach neither a log nor an
-    event by accident.
+    `Inspect` shows nothing of them, and JSON refuses it, so it cannot reach a log by accident,
+    nor an event while the serializer is JSON.
     """
 
     @derive {Inspect, only: []}
