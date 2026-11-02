@@ -5,6 +5,7 @@ defmodule Decree.Decision.RuleLeaksTest do
 
   alias Decree.Aggregates.Aggregate
   alias Decree.Aggregates.Supervisor, as: AggregateSupervisor
+  alias Decree.DecisionFixtures.Unreadable
   alias Decree.PersonalFields.RedactedError
   alias Decree.Registration
   alias Decree.RuleFixtures.{Adopted, AdoptedAggregate, Picky, PickyAggregate}
@@ -219,6 +220,28 @@ defmodule Decree.Decision.RuleLeaksTest do
         command = unquote(:"command_#{stream_of}")(context, followup: followup)
 
         assert {:error, {:bad, :redacted}} = assert_no_leak(command, @prefix <> command.id)
+      end
+    end
+  end
+
+  # The read's span covers the store's answer and not the upcast, so an upcaster failing on a
+  # stored event leaves through the aggregate, which redacts it, and through no span.
+  for mode <- ["raise", "exit", "throw"] do
+    test "an upcaster's #{mode} on an event a rule reads shows nothing", %{scope: scope} do
+      seed(%Unreadable{secret: @marker, mode: unquote(mode)}, ["scope:" <> scope], App)
+
+      query = fn command, _tag_context ->
+        [[types: [Atom.to_string(Unreadable)], tags: ["scope:" <> command.scope]]]
+      end
+
+      command = ruled(scope: scope, query: query)
+
+      assert {:error, reason} = assert_no_leak(command, ruled_stream(command))
+
+      if unquote(mode) == "raise" do
+        assert %RedactedError{type: RuntimeError} = reason
+      else
+        assert reason == :aggregate_execution_failed
       end
     end
   end

@@ -666,7 +666,28 @@ end
 defmodule Decree.RuleFixtures.StrayTargetApp do
   @moduledoc false
 
-  # A store target no route here names.
+  # Its rule routes' targets, and a store target no route here names.
+  use Decree.Application,
+    otp_app: :decree,
+    event_store:
+      Decree.FrameworkStorage.event_store_config(
+        conditional_appends: [
+          targets:
+            Decree.RuleFixtures.Stores.targets() ++ [Decree.RuleFixtures.OutsideRouter.Target]
+        ]
+      ),
+    pubsub: :local,
+    registry: :local
+
+  router Decree.RuleFixtures.Router
+
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
+defmodule Decree.RuleFixtures.PlainDeclaringApp do
+  @moduledoc false
+
+  # A store target, and no rule route at all.
   use Decree.Application,
     otp_app: :decree,
     event_store:
@@ -684,10 +705,37 @@ end
 defmodule Decree.RuleFixtures.DeclaringStore do
   @moduledoc false
 
-  # Declares on its `use` line, for what an adapter reads before the store has started.
+  # Declares on its `use` line. Its connection is the framework store's.
   use Decree.Store,
     otp_app: :decree,
     conditional_appends: [targets: [Decree.RuleFixtures.User]]
+
+  def init(config) do
+    {:ok, Keyword.merge(Application.fetch_env!(:decree, Decree.FrameworkEventStore), config)}
+  end
+end
+
+defmodule Decree.RuleFixtures.CountingStore do
+  @moduledoc false
+
+  # Counts its `init/1` calls in the `:counters` its config carries as `init_calls`, and
+  # declares `first_targets` on the first call only, so a second call disagrees with the first.
+  # Its connection is the framework store's.
+  use Decree.Store, otp_app: :decree
+
+  def init(config) do
+    {counter, config} = Keyword.pop!(config, :init_calls)
+    {first_targets, config} = Keyword.pop(config, :first_targets, [])
+
+    :ok = :counters.add(counter, 1, 1)
+    targets = if :counters.get(counter, 1) == 1, do: first_targets, else: []
+
+    {:ok,
+     :decree
+     |> Application.fetch_env!(Decree.FrameworkEventStore)
+     |> Keyword.merge(config)
+     |> Keyword.put(:conditional_appends, targets: targets)}
+  end
 end
 
 defmodule Decree.RuleCase do

@@ -413,8 +413,8 @@ defmodule Decree.Commands.Router do
   The aggregate reads what the rule names, `execute/2` finds the events in the command's
   `:rule_result` field, and the append goes in under a condition on what was read. The event
   store's `conditional_appends` must name the route's aggregate in `targets:`, and an application
-  that includes the route will not start without it. See "Two declarations" in
-  `Decree.Decision.Rule`.
+  that includes the route fails to start without it: a check started right after its store
+  raises an `ArgumentError`. See "Two declarations" in `Decree.Decision.Rule`.
 
   `dispatch` refuses, with an `ArgumentError` when the router compiles, a `rule:` that is not a
   compiled `Decree.Decision.Rule`, and a command with no `:rule_result` field. `decide/2` takes

@@ -35,11 +35,12 @@ defmodule Decree.PersonalFields.Aggregate do
   a snapshot, whatever `@personal_fold` lists. So on every `apply/2`, listed event or not, and
   on `execute/2` and `before_execute`, a raise reaches logs and telemetry as a
   `Decree.PersonalFields.RedactedError`, and an exit or a throw leaves reduced by
-  `Decree.PersonalFields.RedactedError.reduce/1`. While a command executes, a throw leaves as an
-  exit, `{:nocatch, reduced}`, never as what `handle_call/3` returned: a reduced `{:noreply, _}`
-  would otherwise keep the aggregate running on a state of `:redacted`. The aggregate stops, and
-  the caller gets `{:error, :aggregate_execution_failed}`. An aggregate that doesn't use it is
-  untouched.
+  `Decree.PersonalFields.RedactedError.reduce/1`. A throw leaves as an exit, `{:nocatch, reduced}`,
+  never as what a `gen_server` callback returned: a reduced `{:noreply, _}` would otherwise keep
+  the aggregate running on a state of `:redacted`. The aggregate stops, and a caller waiting on a
+  command gets `{:error, :aggregate_execution_failed}`. An aggregate that doesn't use it is
+  untouched, except that a throw from a `Decree.Event.Tags` implementation on an event with a
+  declaration leaves the same way on any aggregate: see `Decree.Event.Append.prepare/4`.
 
   A `Decree.Decision` uses this module too, for what `evolve/2` and `followup_query/3` read:
   `@personal_fold` means there what it means here, and a raise from a decision that uses it is

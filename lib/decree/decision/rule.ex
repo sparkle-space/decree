@@ -148,14 +148,18 @@ defmodule Decree.Decision.Rule do
 
   A rule route is redacted whether or not the aggregate uses `Decree.PersonalFields.Aggregate`,
   because a read can bring in another subject's plaintext. A raise from a callback, from
-  `execute/2`, `apply/2` or `before_execute`, or from preparing, reaches logs, telemetry,
-  `after_failure` and the answer as a `Decree.PersonalFields.RedactedError` with a scrubbed
-  stacktrace. An exit leaves reduced by `Decree.PersonalFields.RedactedError.reduce/1`. A throw
-  is reduced the same way and leaves as an exit, `{:nocatch, reduced}`, because `gen_server`
-  reads a term thrown from `handle_call/3` as its return, and a reduced `{:noreply, _}` is a
-  valid one. Either takes the aggregate with it, and the caller gets
-  `{:error, :aggregate_execution_failed}`. An `{:error, reason}` from `c:followup_query/3` is
-  reduced the same way. `c:query/2` has read nothing, so its reason stands.
+  `execute/2`, `apply/2` or `before_execute`, from preparing, or from an upcaster on an event
+  the rule reads, reaches logs, telemetry, `after_failure` and the answer as a
+  `Decree.PersonalFields.RedactedError` with a scrubbed stacktrace. An exit leaves reduced by
+  `Decree.PersonalFields.RedactedError.reduce/1`. A throw is reduced the same way and leaves as
+  an exit, `{:nocatch, reduced}`, because `gen_server` reads a term thrown from a callback as its
+  return, and a reduced `{:noreply, _}` is a valid one. Either takes the aggregate with it, and
+  the caller gets `{:error, :aggregate_execution_failed}`. An `{:error, reason}` from
+  `c:followup_query/3` is reduced the same way. `c:query/2` has read nothing, so its reason
+  stands.
+
+  The upcast runs after the read's `[:decree, :event_store, :read_query]` span has stopped, so
+  an upcaster's failure reaches the boundary above and never that span's exception event.
 
   **An `{:error, reason}` from `execute/2` is not reduced.** It goes back to the caller, to
   `after_failure` and to telemetry as it stands, as on any aggregate route. So `execute/2` answers
@@ -187,14 +191,20 @@ defmodule Decree.Decision.Rule do
 
       conditional_appends: [targets: [User]]
 
-  The condition's `target` is the route's aggregate module. The two must agree:
+  The condition's `target` is the route's aggregate module. The two must agree. An application
+  with a rule route checks them as it starts, right after its store has started, against the
+  config the running store parsed:
 
-    - A rule route's aggregate with no store target raises an `ArgumentError` when the
-      application starts, naming both.
-    - A store target no route declares logs a warning at start. It is not refused: a store can
-      be shared, and a direct store caller may use a target.
+    - A rule route's aggregate with no store target raises an `ArgumentError`, naming both, and
+      the application does not start: `start_link/1` answers
+      `{:error, {:shutdown, {:failed_to_start_child, _id, _reason}}}`.
+    - A store target no route declares logs a warning. It is not refused: a store can be
+      shared, and a direct store caller may use a target.
     - A router outside the application is not checked at start, so a dispatch through it
       answers the store's `{:error, :undeclared_conditional_target}`.
+
+  An application with no rule route checks nothing and asks its store nothing, so a target
+  its store declares draws no warning there.
 
   ## What declaring leaves alone
 
@@ -226,7 +236,8 @@ defmodule Decree.Decision.Rule do
       its own, on this route as on a plain one.
     - `attempt` counts every run of the command in this dispatch, for either reason.
 
-  A route with no rule fires none of them.
+  A route with no rule fires none of them. The reads' `[:decree, :event_store, :read_query]`
+  span covers the store's answer and not the upcast: see "Leaks".
   """
 
   alias Decree.Event.TagContext

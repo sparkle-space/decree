@@ -55,6 +55,18 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
   defp stop_resident(stream), do: :ok = Aggregate.shutdown(App, Account, stream)
 
+  @populate [:decree, :aggregate, :populate]
+
+  # A span's metadata carries the state by contract, and a telemetry handler must not log that:
+  # what decree adds about the failure is what is checked.
+  defp shown?(telemetry) do
+    telemetry =
+      for {:telemetry, event, measurements, metadata} <- telemetry,
+          do: {event, measurements, Map.delete(metadata, :aggregate_state)}
+
+    inspect(telemetry, limit: :infinity, printable_limit: :infinity) =~ "secret.example"
+  end
+
   defp registered(stream, subject) do
     dispatch!(stream, %Registered{user_id: subject, email: email()},
       metadata: %{"password_hash" => "hash"}
@@ -426,7 +438,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
     for {mode, reason} <- [
           {"exit", {:gave_up, :redacted}},
-          {"throw", {:bad_return_value, {:error, :redacted}}}
+          {"throw", {:nocatch, {:error, :redacted}}}
         ] do
       test "(#{mode}) from `apply/2` on the dispatch path is reduced", context do
         %{stream: stream, subject: subject} = context
@@ -486,6 +498,66 @@ defmodule Decree.PersonalFields.RehydrationTest do
       refute log =~ "secret.example"
     end
 
+    # Read as the return of `handle_continue/2` or `handle_info/2`, the throw would leave the
+    # aggregate running with its state set to `:redacted`, for the next message to meet.
+    for {shape, mode} <- [{"{:noreply, secret}", "noreply"}, {"{:reply, :ok, secret}", "reply"}] do
+      test "a throw of `#{shape}` from `apply/2` on the dispatch path stops the aggregate",
+           %{stream: stream, subject: subject} do
+        store_poison(stream, subject, unquote(mode))
+        attach_telemetry(for stage <- [:start, :stop, :exception], do: @populate ++ [stage])
+
+        log =
+          capture_log([level: :info], fn ->
+            {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, Account, stream)
+            {pid, ref} = monitor_resident(stream)
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            assert reason == {:nocatch, {unquote(String.to_atom(mode)), :redacted}}
+
+            # The next message meets no aggregate, and the fold fails the same way, cleanly.
+            {cold, cold_ref} =
+              spawn_monitor(fn -> Aggregate.aggregate_state(App, Account, stream) end)
+
+            assert_receive {:DOWN, ^cold_ref, :process, ^cold, cold_reason}
+            refute inspect(cold_reason, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+        refute shown?(flush_telemetry())
+      end
+
+      test "a throw of `#{shape}` from `apply/2` on its own stream stops the aggregate" do
+        fresh = UUID.uuid4()
+        subject = Keys.mint(UUID.uuid4())
+
+        registered(fresh, subject)
+        {pid, ref} = monitor_resident(fresh)
+
+        [poison] = prepare!(fresh, %Poison{user_id: subject, email: email(), mode: unquote(mode)})
+        attach_telemetry(for stage <- [:start, :stop, :exception], do: @populate ++ [stage])
+
+        log =
+          capture_log([level: :info], fn ->
+            :ok = EventStore.append_to_stream(App, fresh, 1, [poison])
+
+            assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+            assert reason == {:nocatch, {unquote(String.to_atom(mode)), :redacted}}
+
+            # The next command opens a fresh aggregate, whose fold fails the same way: an error
+            # answered, not a call left waiting.
+            assert {:error, answer} = App.dispatch(%Emit{account_id: fresh}, timeout: 5_000)
+            refute inspect(answer, limit: :infinity) =~ "secret.example"
+
+            Process.sleep(50)
+          end)
+
+        refute log =~ "secret.example"
+        refute shown?(flush_telemetry())
+      end
+    end
+
     test "on its own stream is redacted" do
       fresh = UUID.uuid4()
       subject = Keys.mint(UUID.uuid4())
@@ -514,7 +586,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
       {"clause", {%RedactedError{type: FunctionClauseError}, :stack}},
       {"database", {%RedactedError{type: UniqueViolation}, :stack}},
       {"exit", {:gave_up, :redacted}},
-      {"throw", {:bad_return_value, {:error, :redacted}}}
+      {"throw", {:nocatch, {:error, :redacted}}}
     ]
 
     defp assert_shown_as(reason, {%RedactedError{type: type}, :stack}) do

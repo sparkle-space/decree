@@ -75,7 +75,6 @@ defmodule Decree.Application.Supervisor do
     case runtime_config(application, otp_app, config, opts) do
       {:ok, config} ->
         {event_store_child_spec, config} = event_store_child_spec(name, config)
-        :ok = check_conditional_targets!(application, config)
         {pubsub_child_spec, config} = pubsub_child_spec(name, config)
         {registry_child_spec, config} = registry_child_spec(name, config)
 
@@ -83,6 +82,7 @@ defmodule Decree.Application.Supervisor do
 
         children =
           event_store_child_spec ++
+            conditional_targets_child_spec(application, config) ++
             pubsub_child_spec ++
             registry_child_spec ++
             app_child_spec(name, config)
@@ -94,12 +94,32 @@ defmodule Decree.Application.Supervisor do
     end
   end
 
-  # A rule route's half and the store's half of one declaration. See "Two declarations" in
+  # A rule route's half and the store's half of one declaration, checked by a child started right
+  # after the store's, which has parsed its config and registered it by then. An application with
+  # no rule route gets no such child, and asks its store nothing. See "Two declarations" in
   # `Decree.Decision.Rule`.
-  defp check_conditional_targets!(application, config) do
-    {adapter, adapter_meta} = Keyword.fetch!(config, :event_store)
+  defp conditional_targets_child_spec(application, config) do
+    case application.__conditional_targets__() do
+      [] ->
+        []
 
-    routed = application.__conditional_targets__()
+      routed ->
+        event_store = Keyword.fetch!(config, :event_store)
+
+        [
+          %{
+            id: {__MODULE__, :conditional_targets},
+            start: {__MODULE__, :check_conditional_targets, [application, routed, event_store]},
+            restart: :temporary
+          }
+        ]
+    end
+  end
+
+  @doc false
+  # Raises at start for a rule route's aggregate the running store does not declare, and
+  # otherwise starts nothing.
+  def check_conditional_targets(application, routed, {adapter, adapter_meta}) do
     declared = adapter.conditional_targets(adapter_meta)
 
     with [aggregate | _] <- routed -- declared do
@@ -115,7 +135,7 @@ defmodule Decree.Application.Supervisor do
       end)
     end
 
-    :ok
+    :ignore
   end
 
   defp app_child_spec(name, config) do

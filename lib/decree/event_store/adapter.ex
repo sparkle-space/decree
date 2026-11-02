@@ -127,10 +127,12 @@ defmodule Decree.EventStore.Adapter do
   @callback deletable_stream_prefixes(adapter_meta) :: [String.t()]
 
   @doc """
-  The targets the event store's `conditional_appends` declares, or `[]` if it declares none.
+  The targets the running event store's `conditional_appends` declares, or `[]` if it declares
+  none.
 
-  An application calls this as it starts, before the store has, so it answers from what
-  `c:child_spec/2` was given and needs no running store. See "Two declarations" in
+  It answers from the config the store parsed as it started, so it agrees with what the store
+  refuses. An application with a rule route calls this as it starts, right after its store has,
+  and an application with none never calls it. See "Two declarations" in
   `Decree.Decision.Rule`.
   """
   @callback conditional_targets(adapter_meta) :: [term()]

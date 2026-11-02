@@ -166,7 +166,7 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
       reraise RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)
   catch
     :exit, reason -> exit(RedactedError.reduce(reason))
-    :throw, value -> throw(RedactedError.reduce(value))
+    :throw, value -> RedactedError.leave_throw(value, __STACKTRACE__)
   end
 
   defp advance(%Aggregate{} = state, stream_version, aggregate_state) do

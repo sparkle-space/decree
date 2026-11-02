@@ -9,9 +9,12 @@ defmodule Decree.Decision.RuleRouteTest do
   alias Decree.RuleFixtures.{
     AdoptedAggregate,
     ComposedRouter,
+    CountingStore,
     DeclaringStore,
     OutsideRouter,
     PickyAggregate,
+    PlainApp,
+    PlainDeclaringApp,
     PlainRouter,
     Router,
     StrayTargetApp,
@@ -104,12 +107,24 @@ defmodule Decree.Decision.RuleRouteTest do
     end
   end
 
+  # A store whose `init/1` counts its calls, and declares `first_targets` on the first only.
+  defp counting_store(counter, first_targets) do
+    FrameworkStorage.event_store_config(
+      event_store: CountingStore,
+      init_calls: counter,
+      first_targets: first_targets
+    )
+  end
+
   describe "at start" do
     test "a rule route's aggregate with no store target raises, naming both" do
       Process.flag(:trap_exit, true)
 
-      assert {:error, {%ArgumentError{message: message}, _stacktrace}} =
+      assert {:error, {:shutdown, {:failed_to_start_child, id, failure}}} =
                UndeclaredApp.start_link()
+
+      assert id == {Decree.Application.Supervisor, :conditional_targets}
+      assert {:EXIT, {%ArgumentError{message: message}, _stacktrace}} = failure
 
       assert message =~ inspect(UndeclaredApp)
       assert message =~ "conditional_appends"
@@ -120,13 +135,44 @@ defmodule Decree.Decision.RuleRouteTest do
              )
     end
 
-    test "a store target no route declares warns, and starts" do
+    test "a store target no rule route names warns, and starts" do
       log =
         capture_log(fn ->
           start_supervised!(StrayTargetApp)
         end)
 
-      assert log =~ "declares the conditional target #{inspect(User)}"
+      assert log =~ "declares the conditional target #{inspect(Target)}"
+    end
+
+    test "an application with no rule route is not checked, and starts with no warning" do
+      log =
+        capture_log(fn ->
+          start_supervised!(PlainDeclaringApp)
+        end)
+
+      refute log =~ "conditional target"
+    end
+
+    test "an application with no rule route calls its store's `init/1` once" do
+      counter = :counters.new(1, [])
+
+      start_supervised!(
+        {PlainApp, name: :counting_plain, event_store: counting_store(counter, [])}
+      )
+
+      assert :counters.get(counter, 1) == 1
+    end
+
+    # The store's `init/1` declares the targets on its first call and nothing after. The check
+    # reads what the running store parsed, so it agrees with what that store refuses.
+    test "checks what the running store declares" do
+      counter = :counters.new(1, [])
+      event_store = counting_store(counter, Stores.targets())
+
+      start_supervised!({App, name: :counting_rules, event_store: event_store})
+
+      assert :ok = App.dispatch(ruled(), application: :counting_rules)
+      assert :counters.get(counter, 1) == 1
     end
 
     test "matching declarations start with no warning" do
@@ -140,25 +186,24 @@ defmodule Decree.Decision.RuleRouteTest do
   end
 
   describe "the adapter's `conditional_targets/1`" do
-    test "reads the store's `use` line, with no store running" do
-      {:ok, _child_spec, meta} = Adapter.child_spec(App, event_store: DeclaringStore)
+    test "reads the running store's `use` line" do
+      start_supervised!({DeclaringStore, name: :declaring_store})
+
+      meta = %{event_store: DeclaringStore, name: :declaring_store}
 
       assert Adapter.conditional_targets(meta) == [User]
     end
 
-    test "reads what the application's config gives the store" do
-      {:ok, _child_spec, meta} =
-        Adapter.child_spec(App,
-          event_store: DeclaringStore,
-          conditional_appends: [targets: [RuledAggregate]]
-        )
+    test "reads what the application's config gave the running store" do
+      {_adapter, meta} = Decree.Application.event_store_adapter(App)
 
-      assert Adapter.conditional_targets(meta) == [RuledAggregate]
+      assert Enum.sort(Adapter.conditional_targets(meta)) == Enum.sort(Stores.targets())
     end
 
-    test "answers `[]` for a store that declares nothing" do
-      {:ok, _child_spec, meta} =
-        Adapter.child_spec(App, FrameworkStorage.event_store_config() |> Keyword.delete(:adapter))
+    test "answers `[]` for a running store that declares nothing" do
+      start_supervised!(PlainApp)
+
+      {_adapter, meta} = Decree.Application.event_store_adapter(PlainApp)
 
       assert Adapter.conditional_targets(meta) == []
     end

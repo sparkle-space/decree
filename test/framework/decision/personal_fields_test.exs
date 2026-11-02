@@ -6,7 +6,7 @@ defmodule Decree.Decision.PersonalFieldsTest do
   import ExUnit.CaptureLog
 
   alias Decree.Aggregates.ExecutionContext
-  alias Decree.DecisionFixtures.{Bare, Personal, PersonalApp, PersonalTight}
+  alias Decree.DecisionFixtures.{Bare, Personal, PersonalApp, PersonalTight, Unreadable}
   alias Decree.Event.Append
   alias Decree.EventStore.{EventData, RecordedEvent}
   alias Decree.FrameworkStorage
@@ -940,6 +940,92 @@ defmodule Decree.Decision.PersonalFieldsTest do
 
         refute leaks?(flush_telemetry(), secret)
       end
+    end
+  end
+
+  # The read's span covers the store's answer and not the upcast, so an upcaster failing on a
+  # stored event reaches the dispatch's own boundary and no span.
+  describe "an upcaster failing on a read event" do
+    @event_store_spans [
+      :ack_event,
+      :append_to_stream,
+      :append_to_streams,
+      :delete_snapshot,
+      :delete_subscription,
+      :read_query,
+      :read_snapshot,
+      :read_tags,
+      :record_snapshot,
+      :stream_forward,
+      :subscribe,
+      :subscribe_to,
+      :unsubscribe
+    ]
+
+    @spans [
+             [:decree, :aggregate, :execute],
+             [:decree, :aggregate, :populate],
+             [:decree, :application, :dispatch],
+             [:decree, :decision, :execute],
+             [:decree, :event, :batch],
+             [:decree, :event, :handle]
+           ] ++ Enum.map(@event_store_spans, &[:decree, :event_store, &1])
+
+    setup do
+      attach_telemetry(
+        [@read, @retry, @refused, [:decree, :personal_field, :key_unknown]] ++
+          [[:decree, :personal_field, :plaintext_read]] ++
+          for(span <- @spans, stage <- [:start, :stop, :exception], do: span ++ [stage])
+      )
+
+      :ok
+    end
+
+    defp unreadable(tag) do
+      fn _command, _tag_context -> [[types: [Atom.to_string(Unreadable)], tags: [tag]]] end
+    end
+
+    defp dispatch_unreadable(module, mode, tag) do
+      secret = "unreadable-" <> UUID.uuid4()
+      seed!(%Unreadable{secret: secret, mode: mode}, tag)
+
+      command = scripted([query: unreadable(tag)], module)
+
+      log = capture_log(fn -> send(self(), {:reply, PersonalApp.dispatch(command)}) end)
+
+      assert_received {:reply, {:error, _reason} = reply}
+
+      {reply, log, flush_telemetry(), secret}
+    end
+
+    for {module, mode} <- [
+          {Personal, "raise"},
+          {Personal, "exit"},
+          {Personal, "throw"},
+          {Bare, "exit"},
+          {Bare, "throw"}
+        ] do
+      test "(#{mode}) on #{inspect(module)} shows the value nowhere", %{tag: tag} do
+        {reply, log, telemetry, secret} = dispatch_unreadable(unquote(module), unquote(mode), tag)
+
+        refute leaks?(reply, secret)
+        refute log =~ secret
+        assert telemetry != []
+        refute leaks?(telemetry, secret)
+      end
+    end
+
+    # A raise on a decision that doesn't list its fold is its own, as any other raise there is.
+    test "(raise) on `Bare` reaches the caller as it is, and no span", %{tag: tag} do
+      {reply, _log, telemetry, secret} = dispatch_unreadable(Bare, "raise", tag)
+
+      assert {:error, %RuntimeError{}} = reply
+      assert leaks?(reply, secret)
+
+      event_store = for {:telemetry, [:decree, :event_store | _], _, _} = t <- telemetry, do: t
+
+      assert event_store != []
+      refute leaks?(event_store, secret)
     end
   end
 

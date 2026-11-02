@@ -795,7 +795,7 @@ defmodule Decree.Decision.RequiredTagsTest do
 
       assert prepare(event.("error")) == {:error, {:refused, :redacted}}
       assert catch_exit(prepare(event.("exit"))) == {:gave_up, :redacted}
-      assert catch_throw(prepare(event.("throw"))) == {:thrown, :redacted}
+      assert catch_exit(prepare(event.("throw"))) == {:nocatch, {:thrown, :redacted}}
     end
 
     test "on an event declaring nothing, stays as it is" do

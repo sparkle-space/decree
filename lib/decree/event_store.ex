@@ -100,20 +100,27 @@ defmodule Decree.EventStore do
 
   See `c:Decree.Store.read_query/2` for the items, options and answers. The result's
   events are `Decree.EventStore.RecordedEvent`s.
+
+  Its span covers the store's answer and not the upcast, which runs after the span stops: a
+  raise, an exit or a throw from an upcaster reaches the caller, and no telemetry event.
   """
   def read_query(application, items, opts \\ []) do
     meta = %{application: application, items: items, opts: opts}
 
-    span(:read_query, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+    read =
+      span(:read_query, meta, fn ->
+        {adapter, adapter_meta} = Application.event_store_adapter(application)
 
-      with {:ok, %ReadResult{events: events} = result} <-
-             adapter.read_query(adapter_meta, items, opts) do
-        upcast_opts = [additional_metadata: %{application: application}]
+        adapter.read_query(adapter_meta, items, opts)
+      end)
 
-        {:ok, %ReadResult{result | events: Upcast.upcast_event_stream(events, upcast_opts)}}
-      end
-    end)
+    # Not in the span: its exception event holds the raised term and its stacktrace, and an
+    # upcaster's failure can hold the stored event it failed on.
+    with {:ok, %ReadResult{events: events} = result} <- read do
+      upcast_opts = [additional_metadata: %{application: application}]
+
+      {:ok, %ReadResult{result | events: Upcast.upcast_event_stream(events, upcast_opts)}}
+    end
   end
 
   @doc """

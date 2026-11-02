@@ -1,6 +1,7 @@
 defmodule Decree.PersonalFields.AppendTest do
   use Decree.PostgresCase
 
+  import Decree.PersonalFields.Case, only: [attach_telemetry: 1, flush_telemetry: 0]
   import Decree.PersonalFields.Fixtures, only: [email: 0, email: 1]
   import ExUnit.CaptureLog
 
@@ -13,7 +14,9 @@ defmodule Decree.PersonalFields.AppendTest do
   alias Decree.PersonalFields
   alias Decree.PersonalFields.Envelope
   alias Decree.PersonalFields.Fixtures.{App, EnvApp, FencedApp, Keys}
-  alias Decree.PersonalFields.Fixtures.Commands.Emit
+  alias Decree.Aggregates.Supervisor, as: AggregateSupervisor
+  alias Decree.PersonalFields.Fixtures.Commands.{Emit, PlainEmit}
+  alias Decree.PersonalFields.Fixtures.PlainLedger
 
   alias Decree.PersonalFields.Fixtures.Events.{
     Invited,
@@ -29,6 +32,7 @@ defmodule Decree.PersonalFields.AppendTest do
   }
 
   alias Decree.PersonalFields.RedactedError
+  alias Decree.Registration
   alias Decree.Store.Config
   alias Decree.UUID
 
@@ -419,8 +423,9 @@ defmodule Decree.PersonalFields.AppendTest do
       assert catch_exit(prepare(tag_failure("exit", subject))) == {:gave_up, :redacted}
     end
 
-    test "a throw is reduced, on a declared event", %{subject: subject} do
-      assert catch_throw(prepare(tag_failure("throw", subject))) == {:thrown, :redacted}
+    test "a throw is reduced, and leaves as an exit, on a declared event", %{subject: subject} do
+      assert catch_exit(prepare(tag_failure("throw", subject))) ==
+               {:nocatch, {:thrown, :redacted}}
     end
 
     for mode <- ["error", "exit", "throw"] do
@@ -446,6 +451,56 @@ defmodule Decree.PersonalFields.AppendTest do
 
         refute inspect(answer, limit: :infinity) =~ "secret.example"
         refute log =~ "secret.example"
+      end
+    end
+
+    # An aggregate that lists no personal fields lets a throw from `execute_command` leave as it
+    # is, so a reduced one shaped as a `handle_call/3` return would be read as the answer: the
+    # aggregate would carry on with its state set to `:redacted`, and the caller would wait.
+    for {shape, mode} <- [{"{:noreply, secret}", "noreply"}, {"{:reply, :ok, secret}", "reply"}] do
+      test "a throw of `#{shape}` stops an aggregate that lists no fields", %{subject: subject} do
+        stream = UUID.uuid4()
+        {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, PlainLedger, stream)
+        pid = Registration.whereis_name(App, {App, PlainLedger, stream})
+        ref = Process.monitor(pid)
+
+        attach_telemetry(
+          for span <- [[:decree, :aggregate, :execute], [:decree, :application, :dispatch]],
+              stage <- [:start, :stop, :exception],
+              do: span ++ [stage]
+        )
+
+        event = %Tagged{user_id: subject, email: email(), mode: unquote(mode)}
+        command = %PlainEmit{account_id: stream, command_id: UUID.uuid4(), events: [event]}
+
+        # The debug line printing a command is not this path: commands are not redacted.
+        log =
+          capture_log([level: :info], fn ->
+            send(self(), {:answer, App.dispatch(command, timeout: 2_000)})
+            Process.sleep(50)
+          end)
+
+        assert_received {:answer, {:error, :aggregate_execution_failed}}
+
+        assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+        assert reason == {:nocatch, {unquote(String.to_atom(mode)), :redacted}}
+
+        refute log =~ "secret.example"
+
+        # The command, and the context holding it, are in a span's metadata by contract: what
+        # decree adds about the failure is what is checked.
+        telemetry =
+          for {:telemetry, event, measurements, metadata} <- flush_telemetry(),
+              do: {event, measurements, Map.drop(metadata, [:command, :execution_context])}
+
+        assert telemetry != []
+
+        refute inspect(telemetry, limit: :infinity, printable_limit: :infinity) =~
+                 "secret.example"
+
+        # The next command opens a fresh aggregate.
+        assert :ok = App.dispatch(%PlainEmit{account_id: stream, command_id: UUID.uuid4()})
+        assert Registration.whereis_name(App, {App, PlainLedger, stream}) not in [pid, :undefined]
       end
     end
 

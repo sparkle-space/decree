@@ -49,6 +49,21 @@ defmodule Decree.DecisionFixtures.Stored do
   end
 end
 
+defmodule Decree.DecisionFixtures.Unreadable do
+  @moduledoc false
+
+  # Its upcaster fails as `mode` says, with `secret` in hand.
+  @derive Jason.Encoder
+  defstruct [:secret, :mode]
+
+  defimpl Decree.Event.Upcaster do
+    def upcast(%{mode: "raise", secret: secret}, _metadata), do: raise("cannot upcast " <> secret)
+    def upcast(%{mode: "exit", secret: secret}, _metadata), do: exit({:gave_up, secret})
+    def upcast(%{mode: "throw", secret: secret}, _metadata), do: throw({:thrown, secret})
+    def upcast(event, _metadata), do: event
+  end
+end
+
 defmodule Decree.DecisionFixtures.Burning do
   @moduledoc false
 

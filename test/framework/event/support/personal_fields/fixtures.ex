@@ -212,6 +212,8 @@ defmodule Decree.PersonalFields.Fixtures.Events do
       def tags(%{mode: "invalid", email: email}, _context), do: {:ok, email}
       def tags(%{mode: "exit", email: email}, _context), do: exit({:gave_up, email})
       def tags(%{mode: "throw", email: email}, _context), do: throw({:thrown, email})
+      def tags(%{mode: "noreply", email: email}, _context), do: throw({:noreply, email})
+      def tags(%{mode: "reply", email: email}, _context), do: throw({:reply, :ok, email})
       def tags(%{mode: "error", email: email}, _context), do: {:error, {:refused, email}}
       def tags(%{mode: "bare_error", email: email}, _context), do: {:error, email}
       def tags(%{mode: "atom_error"}, _context), do: {:error, :refused}
@@ -346,6 +348,11 @@ defmodule Decree.PersonalFields.Fixtures.Commands do
   # For `PlainLedger`, which uses no personal fields.
   defmodule PlainFail do
     defstruct [:account_id, :mode, :note]
+  end
+
+  # `Emit` for `PlainLedger`.
+  defmodule PlainEmit do
+    defstruct [:account_id, :command_id, events: []]
   end
 end
 
@@ -507,7 +514,7 @@ defmodule Decree.PersonalFields.Fixtures.PlainLedger do
 
   # Uses no personal fields, so nothing here is redacted.
 
-  alias Decree.PersonalFields.Fixtures.Commands.PlainFail
+  alias Decree.PersonalFields.Fixtures.Commands.{PlainEmit, PlainFail}
   alias Decree.PersonalFields.Fixtures.Events.PlainPoison
   alias Decree.PersonalFields.Fixtures.LeakyFailures
 
@@ -517,6 +524,8 @@ defmodule Decree.PersonalFields.Fixtures.PlainLedger do
     LeakyFailures.fail(mode, note)
     []
   end
+
+  def execute(%__MODULE__{}, %PlainEmit{events: events}), do: events
 
   def apply(%__MODULE__{} = state, %PlainPoison{mode: mode, note: note}) do
     LeakyFailures.fail(mode, note)
@@ -543,6 +552,7 @@ defmodule Decree.PersonalFields.Fixtures.Router do
     FailExecute,
     Hold,
     MatchState,
+    PlainEmit,
     PlainFail,
     RaiseNow
   }
@@ -554,7 +564,7 @@ defmodule Decree.PersonalFields.Fixtures.Router do
     to: Account
 
   dispatch FailBefore, to: Account, before_execute: :before_failing
-  dispatch PlainFail, to: PlainLedger
+  dispatch [PlainEmit, PlainFail], to: PlainLedger
 end
 
 defmodule Decree.PersonalFields.Fixtures.App do
