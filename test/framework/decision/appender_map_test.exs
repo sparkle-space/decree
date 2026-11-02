@@ -516,31 +516,73 @@ defmodule Decree.Decision.AppenderMapTest do
                AppenderMap.check([{EmailRule, items}], row(), conditional: [RegisterUser])
     end
 
-    test "listed under the aggregate is its own row" do
-      assert AppenderMap.check([{User, part_one()}], row()) == []
+    defmodule ImportUser do
     end
 
-    test "listed under the aggregate covers another rule with at least these kinds" do
+    # An aggregate whose routes go `to:` a handler has `apply/2` and no `execute/2`.
+    defmodule HandledUser do
+      def apply(state, _event), do: state
+    end
+
+    defp imported, do: %{Registered => [{RegisterUser, User}, {ImportUser, User}]}
+
+    test "listed under the aggregate is not its own row" do
+      assert AppenderMap.check([{User, part_one()}], row()) ==
+               [{:unchecked_appender, @registered, RegisterUser, User, User}]
+    end
+
+    test "listed under the aggregate leaves a plain command unchecked" do
+      assert AppenderMap.check([{User, part_one()}], imported(), conditional: [RegisterUser]) ==
+               [{:unchecked_appender, @registered, ImportUser, User, User}]
+    end
+
+    test "listed by its module leaves the same plain command unchecked" do
+      rules = [{EmailRule, part_one()}]
+
+      assert AppenderMap.check(rules, imported(), conditional: [RegisterUser]) ==
+               [{:unchecked_appender, @registered, ImportUser, User, EmailRule}]
+    end
+
+    test "listed under the aggregate covers no other rule, with these kinds" do
       other = {ClaimDecision, part_one()}
 
-      assert AppenderMap.check([other, {User, part_one()}], row()) == []
+      assert AppenderMap.check([other, {User, part_one()}], row()) == [
+               {:unchecked_appender, @registered, RegisterUser, User, ClaimDecision},
+               {:unchecked_appender, @registered, RegisterUser, User, User}
+             ]
     end
 
-    test "listed under the aggregate with fewer kinds does not cover another rule" do
-      other = {ClaimDecision, [[types: [@registered], tags: ["email:d", "user:u"]]]}
+    test "listed under the aggregate covers no other rule, with more kinds" do
+      other = {ClaimDecision, part_one()}
+      wider = {User, [[types: [@registered], tags: ["email:d", "user:u"]]]}
 
-      assert AppenderMap.check([other, {User, part_one()}], row()) ==
-               [{:unchecked_appender, @registered, RegisterUser, User, ClaimDecision}]
+      assert AppenderMap.check([other, wider], row()) == [
+               {:unchecked_appender, @registered, RegisterUser, User, ClaimDecision},
+               {:unchecked_appender, @registered, RegisterUser, User, User}
+             ]
     end
 
-    test "under the aggregate, every rule naming the type has to cover" do
-      other = {ClaimDecision, [[types: [@registered], tags: ["email:d", "user:u"]]]}
-      covering = {User, [[types: [@registered], tags: ["email:d", "user:u"]]]}
+    test "under the aggregate, `conditional:` covers what it names and nothing else" do
+      rules = [{ClaimDecision, part_one()}, {User, part_one()}]
 
-      assert AppenderMap.check([other, covering], row()) == []
+      assert AppenderMap.check(rules, row(), conditional: [RegisterUser]) == []
 
-      assert AppenderMap.check([other, covering, {User, part_one()}], row()) ==
-               [{:unchecked_appender, @registered, RegisterUser, User, ClaimDecision}]
+      assert AppenderMap.check(rules, imported(), conditional: [RegisterUser]) == [
+               {:unchecked_appender, @registered, ImportUser, User, ClaimDecision},
+               {:unchecked_appender, @registered, ImportUser, User, User}
+             ]
+    end
+
+    test "an aggregate with `apply/2` and no `execute/2` covers nothing by its name" do
+      refute function_exported?(HandledUser, :execute, 2)
+
+      appenders = %{Registered => [{RegisterUser, HandledUser}]}
+      rules = [{ClaimDecision, part_one()}, {HandledUser, part_one()}]
+
+      assert AppenderMap.check(rules, appenders) == [
+               {:unchecked_appender, @registered, RegisterUser, HandledUser, ClaimDecision},
+               {:unchecked_appender, @registered, RegisterUser, HandledUser, HandledUser}
+             ]
     end
   end
 

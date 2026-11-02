@@ -236,8 +236,8 @@ defmodule Decree.Decision.Rule do
   `Decree.Decision.AppenderMap` audits a rule as it does a decision. A rule has no
   `__decision__/0`, so it is no create. List it as `{EmailRule, items}` with the row
   `{RegisterUser, User}`, and `conditional: [RegisterUser]` says the aggregate appends under it.
-  Or list it under the aggregate, `{User, items}`: the row is then the rule's own, and another
-  rule naming the type is covered only if every rule listed under `User` naming it has its kinds.
+  Each command the rule's route decides goes in `conditional:`. A key that is an aggregate covers
+  no appender by its own name, so `User` as the key certifies none of its commands.
 
   ## Telemetry
 

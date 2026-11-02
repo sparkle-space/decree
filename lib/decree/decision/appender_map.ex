@@ -54,10 +54,10 @@ defmodule Decree.Decision.AppenderMap do
   A type that names no event module is `{:unknown_type, type, decision}`.
 
   **A declared aggregate's rule.** A `Decree.Decision.Rule` goes in `rules` as a decision does,
-  and it is no create, having no `__decision__/0`. List it by its own module with the row
-  `{command, aggregate}` and the command in `conditional:`. Or list it under the aggregate,
-  `{aggregate, items}`: the row is then the rule's own, and condition coverage reads every rule
-  listed under that aggregate naming the type.
+  and it is no create, having no `__decision__/0`. List it by its own module,
+  `{EmailRule, items}`, with the row `{command, aggregate}` and each command the rule's route
+  decides in `conditional:`. A key that is an aggregate, exporting `apply/2` or `execute/2`,
+  covers no appender by its own name, as the rule's own decision or as another rule's.
   """
 
   alias Decree.Decision.Read
@@ -124,6 +124,12 @@ defmodule Decree.Decision.AppenderMap do
       match?([_stream_tag], Read.item_tags(item))
   end
 
+  # An aggregate's command runs under a rule's condition or under none, and no router says which.
+  defp aggregate?(module) do
+    Code.ensure_loaded?(module) and
+      (function_exported?(module, :apply, 2) or function_exported?(module, :execute, 2))
+  end
+
   defp create_types(decision) do
     if Code.ensure_loaded?(decision) and function_exported?(decision, :__decision__, 0) do
       decision.__decision__().create
@@ -165,7 +171,7 @@ defmodule Decree.Decision.AppenderMap do
   end
 
   defp covered?({command, target}, {type, decision, module, kinds}, {rules, _appenders, opts}) do
-    target == decision or
+    (target == decision and not aggregate?(decision)) or
       command in Keyword.get(opts, :conditional, []) or
       {module, command} in Keyword.get(opts, :dominant, []) or
       covers?(rules, target, type, kinds)
@@ -175,7 +181,7 @@ defmodule Decree.Decision.AppenderMap do
   defp covers?(rules, target, type, kinds) do
     naming = for {^target, items} <- rules, type in Read.named_types(items), do: items
 
-    naming != [] and
+    naming != [] and not aggregate?(target) and
       Enum.all?(naming, &(kinds -- Read.kinds_naming(asked_items(target, &1), type) == []))
   end
 
