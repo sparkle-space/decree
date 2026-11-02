@@ -9,7 +9,9 @@ defmodule Decree.Store.AppendCondition do
       `c:Decree.Store.read_query/2`. The append fails if any event past it matches
       `items`. Mandatory: an absent `after` must never become a plain append.
     - `target` - optional, any term. It names what the condition protects, for a store
-      that declares it in `conditional_appends`, and is compared and nothing else.
+      that declares it in `conditional_appends`, and is compared and nothing else. A
+      condition with one is declared by that target alone, and one with none by its
+      streams' prefixes, so a declared prefix does not let an undeclared target in.
 
   See "Conditional appends" in `Decree.Store`. A store that declares `deletable` refuses a
   condition naming it with `{:error, :query_names_deletable}`, as it refuses a read: see

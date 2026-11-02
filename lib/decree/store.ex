@@ -394,9 +394,10 @@ defmodule Decree.Store do
   first batch to the commit, but its `timeout` applies to that one call, so a very large
   batch needs a larger one. Only `c:append_to_stream/4` splits.
 
-  **The declared rule.** A condition here needs what `c:append_to_stream/4` needs: every
-  member's name starts with a declared prefix, or the condition's `target` is declared.
-  One undeclared member refuses the batch.
+  **The declared rule.** A condition here needs what `c:append_to_stream/4` needs: a
+  condition with a `target` needs that target declared, whatever its members are named, and
+  one with none needs every member's name to start with a declared prefix: one member
+  outside them refuses the batch.
 
   ## Deletable streams
 
@@ -998,8 +999,8 @@ defmodule Decree.Store do
   #### Declaring a conditional append
 
   Since a condition takes time while holding `$all`, a store refuses every conditional
-  append until its config declares it, by the stream's prefix or by the condition's
-  `target`:
+  append until its config declares it: by the condition's `target` when it names one, and
+  otherwise by the stream's prefix:
 
       defmodule MyApp.EventStore do
         use Decree.Store,
@@ -1013,10 +1014,12 @@ defmodule Decree.Store do
       config :my_app, MyApp.EventStore,
         conditional_appends: [stream_prefixes: ["decision-"], targets: [MyApp.User]]
 
-  A conditional append is declared when its `stream_uuid` starts with a declared prefix,
-  or when its condition's `target` is one of `targets`, which suits a stream whose name
-  has no prefix. Only the config declares: `conditional_appends` is no `append_to_stream/4`
-  option.
+  The condition's shape says which declaration it needs. One with a `target` is declared
+  when that target is one of `targets`, whatever its `stream_uuid`, which suits a stream
+  whose name has no prefix. One with no `target` is declared when its `stream_uuid` starts
+  with a declared prefix. A prefix never declares a target: a condition naming an undeclared
+  one is refused on a prefixed stream too. Only the config declares: `conditional_appends`
+  is no `append_to_stream/4` option.
 
   A declared prefix also keeps every other writer out: an append with no condition to a
   stream starting with one is refused. A target keeps nobody out. It is compared on a
@@ -1134,8 +1137,8 @@ defmodule Decree.Store do
         Defaults to 15,000ms. It applies to the one statement, at any size.
       - `condition` a `Decree.Store.AppendCondition` keyword list, for a conditional
         append. See "Conditional appends" in `Decree.Store`. It is declared, as
-        `c:append_to_stream/4` says, when every member starts with a declared prefix, or
-        when its `target` is declared.
+        `c:append_to_stream/4` says, when its `target` is declared, or, with no `target`,
+        when every member starts with a declared prefix.
       - `created_at_override` dates the new streams and every event.
       - `returning` `:append_result` to answer `{:ok, %Decree.Store.AppendResult{}}` on
         success, with a version for every member. Without it success answers `:ok`.

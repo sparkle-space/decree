@@ -198,9 +198,10 @@ defmodule Decree.Decision.Rule do
 
       conditional_appends: [targets: [User]]
 
-  The condition's `target` is the route's aggregate module. The two must agree. An application
-  with a rule route checks them as it starts, right after its store has started, against the
-  config the running store parsed:
+  The condition's `target` is the route's aggregate module, and only `targets:` declares it: a
+  `stream_prefixes:` entry covering the aggregate's streams does not. The two must agree. An
+  application with a rule route checks them as it starts, right after its store has started,
+  against the config the running store parsed:
 
     - A rule route's aggregate with no store target raises an `ArgumentError`, naming both, and
       the application does not start: `start_link/1` answers
@@ -208,7 +209,8 @@ defmodule Decree.Decision.Rule do
     - A store target no route declares logs a warning. It is not refused: a store can be
       shared, and a direct store caller may use a target.
     - A router outside the application is not checked at start, so a dispatch through it
-      answers the store's `{:error, :undeclared_conditional_target}`.
+      answers the store's `{:error, :undeclared_conditional_target}`, with nothing written,
+      even when its streams start with a declared prefix.
 
   An application with no rule route checks nothing and asks its store nothing, so a target
   its store declares draws no warning there.

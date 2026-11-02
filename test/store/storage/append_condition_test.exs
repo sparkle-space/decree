@@ -476,11 +476,12 @@ defmodule Decree.Store.Storage.AppendConditionTest do
       assert conditional(@tag_matcher, after: 0) == :ok
     end
 
-    test "a declared prefix passes with a target that is not declared" do
-      assert :ok =
-               EventStore.append_to_stream("decision-x", 0, [event("typed", [])],
-                 condition: [items: @tag_matcher, after: 0, target: :unlisted]
-               )
+    test "a declared prefix refuses a target that is not declared", context do
+      assert EventStore.append_to_stream("decision-x", 0, [event("typed", [])],
+               condition: [items: @tag_matcher, after: 0, target: :unlisted]
+             ) == {:error, :undeclared_conditional_target}
+
+      assert head(context) == 0
     end
 
     test "a declared target passes on a bare UUID stream" do

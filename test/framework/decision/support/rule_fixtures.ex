@@ -483,6 +483,22 @@ defmodule Decree.RuleFixtures.OutsideRouter do
   dispatch Unrouted, to: Target, identity: :id, identity_prefix: "outside-", rule: ScriptedRule
 end
 
+defmodule Decree.RuleFixtures.DecisionPrefixRouter do
+  @moduledoc false
+
+  # A router no application includes, whose rule route's streams land under a decision's
+  # prefix, `"decision-"`.
+  use Decree.Commands.Router
+
+  alias Decree.RuleFixtures.{EmailRule, RegisterUser, User}
+
+  dispatch RegisterUser,
+    to: User,
+    identity: :user_id,
+    identity_prefix: "decision-",
+    rule: EmailRule
+end
+
 defmodule Decree.RuleFixtures.PlainRouter do
   @moduledoc false
 

@@ -10,6 +10,7 @@ defmodule Decree.Decision.RuleRouteTest do
     AdoptedAggregate,
     ComposedRouter,
     CountingStore,
+    DecisionPrefixRouter,
     DeclaringStore,
     OutsideRouter,
     PickyAggregate,
@@ -216,5 +217,40 @@ defmodule Decree.Decision.RuleRouteTest do
              OutsideRouter.dispatch(command, application: App)
 
     assert stored("outside-" <> command.id, App) == []
+  end
+
+  # The store declares the prefix and no `User` target, and no start check saw the router. A
+  # rule's condition names its aggregate, so the prefix does not declare it.
+  test "a rule route under a declared prefix is refused while its target is not declared" do
+    event_store =
+      FrameworkStorage.event_store_config(
+        adapter: Decree.RuleFixtures.RecordingAdapter,
+        conditional_appends: [stream_prefixes: ["decision-"]]
+      )
+
+    start_supervised!({PlainApp, name: :decision_prefix, event_store: event_store})
+
+    command = register(digest())
+
+    assert {:error, :undeclared_conditional_target} =
+             DecisionPrefixRouter.dispatch(command, application: :decision_prefix)
+
+    assert stored("decision-" <> command.user_id, :decision_prefix) == []
+  end
+
+  test "a rule route under a declared prefix appends once its target is declared" do
+    event_store =
+      FrameworkStorage.event_store_config(
+        adapter: Decree.RuleFixtures.RecordingAdapter,
+        conditional_appends: [stream_prefixes: ["decision-"], targets: [User]]
+      )
+
+    start_supervised!({PlainApp, name: :decision_target, event_store: event_store})
+
+    command = register(digest())
+
+    assert :ok = DecisionPrefixRouter.dispatch(command, application: :decision_target)
+
+    assert [%{data: %Registered{}}] = stored("decision-" <> command.user_id, :decision_target)
   end
 end

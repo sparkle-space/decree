@@ -437,15 +437,22 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   # Declared by the store's config, which `opts` carry. `Decree.Store` passes no caller
-  # option of this name through, so a caller cannot declare its own append. Every member
-  # must start with a declared prefix, or the condition's `target` must be declared.
+  # option of this name through, so a caller cannot declare its own append. The condition's
+  # shape picks the one declaration it needs: a `target` must be declared, whatever its
+  # streams are named, and with none every member must start with a declared prefix. A
+  # prefix never stands in for a target, or a rule's aggregate would write into a decision's
+  # prefix undeclared.
   defp validate_declared(stream_uuids, %AppendCondition{target: target}, opts) do
     prefixes = conditional_prefixes(opts)
     targets = opts |> Keyword.get(:conditional_appends, []) |> Keyword.get(:targets, [])
 
-    prefixed? = Enum.all?(stream_uuids, &String.starts_with?(&1, prefixes))
+    declared? =
+      case target do
+        nil -> Enum.all?(stream_uuids, &String.starts_with?(&1, prefixes))
+        _target -> target in targets
+      end
 
-    if prefixed? or (not is_nil(target) and target in targets) do
+    if declared? do
       :ok
     else
       {:error, :undeclared_conditional_target}
