@@ -150,10 +150,12 @@ defmodule Decree.Decision.Rule do
   because a read can bring in another subject's plaintext. A raise from a callback, from
   `execute/2`, `apply/2` or `before_execute`, or from preparing, reaches logs, telemetry,
   `after_failure` and the answer as a `Decree.PersonalFields.RedactedError` with a scrubbed
-  stacktrace. An exit or a throw leaves reduced by `Decree.PersonalFields.RedactedError.reduce/1`,
-  takes the aggregate with it, and the caller gets `{:error, :aggregate_execution_failed}`. An
-  `{:error, reason}` from `c:followup_query/3` is reduced the same way. `c:query/2` has read
-  nothing, so its reason stands.
+  stacktrace. An exit leaves reduced by `Decree.PersonalFields.RedactedError.reduce/1`. A throw
+  is reduced the same way and leaves as an exit, `{:nocatch, reduced}`, because `gen_server`
+  reads a term thrown from `handle_call/3` as its return, and a reduced `{:noreply, _}` is a
+  valid one. Either takes the aggregate with it, and the caller gets
+  `{:error, :aggregate_execution_failed}`. An `{:error, reason}` from `c:followup_query/3` is
+  reduced the same way. `c:query/2` has read nothing, so its reason stands.
 
   **An `{:error, reason}` from `execute/2` is not reduced.** It goes back to the caller, to
   `after_failure` and to telemetry as it stands, as on any aggregate route. So `execute/2` answers

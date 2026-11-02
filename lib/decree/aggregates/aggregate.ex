@@ -106,7 +106,10 @@ defmodule Decree.Aggregates.Aggregate do
   `format_status/1` keeps the state, and the dispatch metadata a command carries, out of crash
   reports and `:sys.get_status/1`. An aggregate that uses `Decree.PersonalFields.Aggregate` can
   hold decrypted state, so what leaves `apply/2`, `execute/2` or `before_execute` on one is
-  redacted, as that module says.
+  redacted, as that module says. There, and on a rule route, a throw while executing a command
+  leaves as an exit, `{:nocatch, reduced}`: `gen_server` reads a term thrown from
+  `handle_call/3` as its return, and a reduced `{:noreply, _}` is a valid one. The aggregate
+  stops, and the caller gets `{:error, :aggregate_execution_failed}`.
 
   ## Rules
 
@@ -658,17 +661,32 @@ defmodule Decree.Aggregates.Aggregate do
     {RedactedError.redact(error), RedactedError.scrub_stacktrace(stacktrace)}
   end
 
-  # An exit or a throw from the same code, and nothing rescues those. A `throw` from here reaches
-  # `gen_server`, which reads it as a return value and crashes printing it.
+  # An exit or a throw from the same code, and nothing rescues those. Where a decrypted value may
+  # be in hand, the value is reduced and the stacktrace scrubbed, and a throw leaves as an exit.
+  # Thrown out of `handle_call/3`, a term is read by `gen_server` as the callback's return, and a
+  # reduced `{:noreply, _}` is a valid one: the aggregate would carry on with its state set to
+  # `:redacted`, and the caller would get no reply. `{:nocatch, reduced}` is the reason an
+  # uncaught throw exits with, and it is none of the reasons `execute/5` reads as a stop to
+  # retry. Elsewhere a throw reaches `gen_server` as it is, and is read as a return.
   defp leave_with(kind, value, stacktrace, %ExecutionContext{rule: rule}, state) do
     %Aggregate{aggregate_module: aggregate_module} = state
 
     if rule != nil or PersonalFields.adopted?(aggregate_module) do
-      :erlang.raise(kind, RedactedError.reduce(value), RedactedError.scrub_stacktrace(stacktrace))
+      leave_redacted(
+        kind,
+        RedactedError.reduce(value),
+        RedactedError.scrub_stacktrace(stacktrace)
+      )
     else
       :erlang.raise(kind, value, stacktrace)
     end
   end
+
+  defp leave_redacted(:throw, reduced, stacktrace) do
+    :erlang.raise(:exit, {:nocatch, reduced}, stacktrace)
+  end
+
+  defp leave_redacted(kind, reduced, stacktrace), do: :erlang.raise(kind, reduced, stacktrace)
 
   defp apply_and_persist_events(pending_events, rule_read, context, %Aggregate{} = state) do
     %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state

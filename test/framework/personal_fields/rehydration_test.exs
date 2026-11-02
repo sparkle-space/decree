@@ -705,7 +705,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
     for {name, command} <- [{"`execute/2`", FailExecute}, {"`before_execute`", FailBefore}],
         {mode, reason} <- [
           {"exit", {:gave_up, :redacted}},
-          {"throw", {:bad_return_value, {:error, :redacted}}}
+          {"throw", {:nocatch, {:error, :redacted}}}
         ] do
       test "an #{mode} from #{name} carries nothing", %{stream: stream, subject: subject} do
         registered(stream, subject)
@@ -725,6 +725,61 @@ defmodule Decree.PersonalFields.RehydrationTest do
           end)
 
         refute log =~ "secret.example"
+      end
+    end
+
+    # A throw of either must not be read as what `handle_call/3` returned: the aggregate would
+    # carry on with its state set to `:redacted`, and the caller would wait for a reply that
+    # never comes.
+    for {name, command} <- [{"`execute/2`", FailExecute}, {"`before_execute`", FailBefore}],
+        {shape, mode} <- [{"{:noreply, secret}", "noreply"}, {"{:reply, :ok, secret}", "reply"}] do
+      test "a throw of `#{shape}` from #{name} stops the aggregate", context do
+        %{stream: stream, subject: subject} = context
+
+        # Appended outside the aggregate, so no delivery of it reaches the aggregate afterwards.
+        append_raw!(stream, prepare!(stream, %Registered{user_id: subject, email: email()}))
+        {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, Account, stream)
+        {pid, ref} = monitor_resident(stream)
+
+        attach_telemetry(
+          for span <- [
+                [:decree, :aggregate, :execute],
+                [:decree, :aggregate, :populate],
+                [:decree, :application, :dispatch]
+              ],
+              stage <- [:start, :stop, :exception],
+              do: span ++ [stage]
+        )
+
+        {reply, log} =
+          with_log([level: :debug], fn ->
+            App.dispatch(struct(unquote(command), account_id: stream, mode: unquote(mode)))
+          end)
+
+        assert reply == {:error, :aggregate_execution_failed}
+
+        assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+        assert reason == {:nocatch, {unquote(String.to_atom(mode)), :redacted}}
+
+        refute log =~ "secret.example"
+
+        # A span's metadata carries the state by contract, and a telemetry handler must not log
+        # that: what decree adds about the failure is what is checked.
+        telemetry =
+          for {:telemetry, event, measurements, metadata} <- flush_telemetry(),
+              do: {event, measurements, Map.delete(metadata, :aggregate_state)}
+
+        assert telemetry != []
+
+        refute inspect(telemetry, limit: :infinity, printable_limit: :infinity) =~
+                 "secret.example"
+
+        # The next command opens a fresh aggregate, which rebuilds its state from the stream.
+        assert :ok = dispatch!(stream, [])
+        assert resident(stream) != pid
+
+        assert %Account{email: "alice@secret.example", seen: 1} =
+                 Aggregate.aggregate_state(App, Account, stream)
       end
     end
 

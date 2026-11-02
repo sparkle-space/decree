@@ -4,6 +4,7 @@ defmodule Decree.Decision.RuleLeaksTest do
   import ExUnit.CaptureLog
 
   alias Decree.Aggregates.Aggregate
+  alias Decree.Aggregates.Supervisor, as: AggregateSupervisor
   alias Decree.PersonalFields.RedactedError
   alias Decree.Registration
   alias Decree.RuleFixtures.{Adopted, AdoptedAggregate, Picky, PickyAggregate}
@@ -69,7 +70,7 @@ defmodule Decree.Decision.RuleLeaksTest do
   end
 
   # Runs a dispatch that fails with a marker in hand, and looks everywhere it could have gone.
-  defp assert_no_leak(command, stream) do
+  defp assert_no_leak(command, stream, appended \\ 0) do
     {reply, log} =
       with_log([level: :debug], fn ->
         App.dispatch(command, timeout: 60_000)
@@ -90,14 +91,26 @@ defmodule Decree.Decision.RuleLeaksTest do
       refute holds_marker?(:sys.get_status(pid))
     end
 
-    assert stored(stream, App) == []
+    assert length(stored(stream, App)) == appended
 
     reply
   end
 
-  defp aggregate_name(%Adopted{}, stream), do: Aggregate.name(App, AdoptedAggregate, stream)
-  defp aggregate_name(%Picky{}, stream), do: Aggregate.name(App, PickyAggregate, stream)
-  defp aggregate_name(_command, stream), do: Aggregate.name(App, RuledAggregate, stream)
+  defp aggregate_name(command, stream), do: Aggregate.name(App, aggregate_module(command), stream)
+
+  defp aggregate_module(%Adopted{}), do: AdoptedAggregate
+  defp aggregate_module(%Picky{}), do: PickyAggregate
+  defp aggregate_module(_command), do: RuledAggregate
+
+  defp rebuilt(module, stream) do
+    stream
+    |> stored(App)
+    |> Enum.reduce(struct(module), fn %{data: event}, state -> module.apply(state, event) end)
+  end
+
+  # Reduced, each is still a return `handle_call/3` may give.
+  defp returned(:noreply, secret), do: {:noreply, secret}
+  defp returned(:reply, secret), do: {:reply, :ok, secret}
 
   for {module, stream_of} <- [
         {Ruled, "ruled-"},
@@ -141,6 +154,40 @@ defmodule Decree.Decision.RuleLeaksTest do
 
         assert {:error, :aggregate_execution_failed} =
                  assert_no_leak(command, @prefix <> command.id)
+      end
+
+      # Read as a return, the throw would leave the aggregate running with its state set to
+      # `:redacted`, and the caller waiting for a reply that never comes. The aggregate opens on
+      # an event appended outside it, so no delivery of one reaches it afterwards.
+      for shape <- [:noreply, :reply] do
+        test "a throw shaped as a `:#{shape}` return from `execute/2` stops the aggregate",
+             context do
+          execute = fn _state, command -> throw(returned(unquote(shape), secret(command))) end
+          command = unquote(:"command_#{stream_of}")(context, execute: execute)
+          stream = @prefix <> command.id
+          module = aggregate_module(command)
+
+          seed(%Noted{id: command.id, note: "noted"}, [], App, stream)
+          {:ok, ^stream} = AggregateSupervisor.open_aggregate(App, module, stream)
+
+          pid = Registration.whereis_name(App, aggregate_name(command, stream))
+          ref = Process.monitor(pid)
+
+          assert {:error, :aggregate_execution_failed} = assert_no_leak(command, stream, 1)
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+          assert reason == {:nocatch, {unquote(shape), :redacted}}
+
+          # The next command opens a fresh aggregate, which rebuilds its state from the stream.
+          note = fn _state, %{id: id} -> %Noted{id: id, note: "next"} end
+          next = unquote(:"command_#{stream_of}")(context, id: command.id, execute: note)
+
+          assert :ok = App.dispatch(next)
+          assert Registration.whereis_name(App, aggregate_name(next, stream)) != pid
+
+          assert %^module{} = state = Aggregate.aggregate_state(App, module, stream)
+          assert state == rebuilt(module, stream)
+        end
       end
 
       test "a raise from `followup_query/3` is redacted", context do

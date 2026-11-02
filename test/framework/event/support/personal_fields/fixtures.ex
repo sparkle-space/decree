@@ -803,6 +803,10 @@ defmodule Decree.PersonalFields.Fixtures.LeakyFailures do
   def fail("exit", email), do: exit({:gave_up, email})
   def fail("throw", email), do: throw({:error, {:thrown, email}})
 
+  # Throws shaped as a `handle_call/3` return, which `gen_server` would take as the answer.
+  def fail("noreply", email), do: throw({:noreply, email})
+  def fail("reply", email), do: throw({:reply, :ok, email})
+
   defp helper(:never), do: :ok
 end
 
