@@ -452,6 +452,9 @@ defmodule Decree.Decision.AppenderMapTest do
   end
 
   describe "a declared aggregate's rule" do
+    import Decree.BuildFixture, only: [build_in_order: 2]
+    import ExUnit.CaptureIO, only: [capture_io: 2]
+
     alias Decree.Decision.Rule.Result
     alias Decree.Event.TagContext
     alias Decree.RuleFixtures.{EmailRule, Erased, EraseUser, Registered, RegisterUser, User}
@@ -583,6 +586,171 @@ defmodule Decree.Decision.AppenderMapTest do
                {:unchecked_appender, @registered, RegisterUser, HandledUser, ClaimDecision},
                {:unchecked_appender, @registered, RegisterUser, HandledUser, HandledUser}
              ]
+    end
+
+    # A decision or a rule may have helpers named like an aggregate's callbacks.
+    defmodule HelperDecision do
+      use Decree.Decision, create: false
+
+      @impl Decree.Decision
+      def command_window_ms, do: Decree.DecisionFixtures.command_window_ms()
+
+      @impl Decree.Decision
+      def query(_command, _tag_context), do: []
+
+      @impl Decree.Decision
+      def initial_state, do: []
+
+      @impl Decree.Decision
+      def evolve(state, event), do: state ++ [event]
+
+      @impl Decree.Decision
+      def decide(_state, _command), do: []
+
+      def execute(state, _command), do: state
+      def apply(state, _event), do: state
+    end
+
+    defmodule HelperRule do
+      use Decree.Decision.Rule
+
+      @impl Decree.Decision.Rule
+      def query(_command, _tag_context), do: []
+
+      def execute(state, _command), do: state
+      def apply(state, _event), do: state
+    end
+
+    for {label, key} <- [{"a decision", HelperDecision}, {"a rule", HelperRule}] do
+      test "#{label} with `execute/2` and `apply/2` helpers covers its own row" do
+        key = unquote(key)
+
+        assert function_exported?(key, :execute, 2) and function_exported?(key, :apply, 2)
+
+        assert AppenderMap.check([{key, [item()]}], %{EmailClaimed => [{ClaimCommand, key}]}) ==
+                 []
+      end
+
+      test "#{label} with `execute/2` and `apply/2` helpers covers another rule's row" do
+        key = unquote(key)
+        rules = [{ClaimDecision, [item()]}, {key, [item()]}]
+
+        assert AppenderMap.check(rules, %{EmailClaimed => [{ClaimCommand, key}]}) == []
+      end
+    end
+
+    test "a key that names no module covers nothing by its name" do
+      missing = Module.concat([Nope, Missing])
+      rules = [{ClaimDecision, [item()]}, {missing, [item()]}]
+
+      assert AppenderMap.check(rules, %{EmailClaimed => [{ClaimCommand, missing}]}) == [
+               {:unchecked_appender, @claimed, ClaimCommand, missing, ClaimDecision},
+               {:unchecked_appender, @claimed, ClaimCommand, missing, missing}
+             ]
+    end
+
+    defp later_name(label) do
+      "Decree.Decision.AppenderMapTest.#{label}#{System.unique_integer([:positive])}"
+    end
+
+    # A build check in the first file, run before the key the second file defines is compiled.
+    defp check_source(name, key, items) do
+      """
+      defmodule #{name}.Check do
+        Decree.Decision.AppenderMap.verify!(
+          [{#{key}, #{inspect(items)}}],
+          %{#{inspect(EmailClaimed)} => [{#{inspect(ClaimCommand)}, #{key}}]}
+        )
+      end
+      """
+    end
+
+    test "an aggregate compiled later in the same build covers nothing by its name" do
+      name = later_name("LaterAggregate")
+      key = Module.concat([name, Aggregate])
+
+      aggregate = """
+      defmodule #{inspect(key)} do
+        def execute(state, _command), do: state
+        def apply(state, _event), do: state
+      end
+      """
+
+      check = check_source(name, inspect(key), [item()])
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} =
+                 build_in_order(name, [check, aggregate])
+
+        assert message =~ inspect({:unchecked_appender, @claimed, ClaimCommand, key, key})
+      end)
+    end
+
+    test "a decision compiled later in the same build covers its own row" do
+      name = later_name("LaterDecision")
+      key = Module.concat([name, Decision])
+
+      decision = """
+      defmodule #{inspect(key)} do
+        use Decree.Decision, create: false
+
+        @impl Decree.Decision
+        def command_window_ms, do: 300_000
+
+        @impl Decree.Decision
+        def query(_command, _tag_context), do: []
+
+        @impl Decree.Decision
+        def initial_state, do: []
+
+        @impl Decree.Decision
+        def evolve(state, event), do: state ++ [event]
+
+        @impl Decree.Decision
+        def decide(_state, _command), do: []
+
+        def execute(state, _command), do: state
+      end
+      """
+
+      check = check_source(name, inspect(key), [item()])
+
+      assert {_dir, {:ok, _modules, _warnings}} = build_in_order(name, [check, decision])
+    end
+
+    test "a create decision compiled later in the same build still needs its fact item" do
+      name = later_name("LaterCreate")
+      key = Module.concat([name, Create])
+
+      create = """
+      defmodule #{inspect(key)} do
+        use Decree.Decision, create: [types: [#{inspect(@claimed)}]]
+
+        @impl Decree.Decision
+        def command_window_ms, do: 300_000
+
+        @impl Decree.Decision
+        def query(_command, _tag_context), do: []
+
+        @impl Decree.Decision
+        def initial_state, do: []
+
+        @impl Decree.Decision
+        def evolve(state, event), do: state ++ [event]
+
+        @impl Decree.Decision
+        def decide(_state, _command), do: []
+      end
+      """
+
+      check = check_source(name, inspect(key), [item(@claimed, ["email:d", "tenant:t"])])
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} =
+                 build_in_order(name, [check, create])
+
+        assert message =~ inspect({:no_fact_item, key})
+      end)
     end
   end
 

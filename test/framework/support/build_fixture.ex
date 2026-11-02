@@ -17,4 +17,26 @@ defmodule Decree.BuildFixture do
 
     {dir, Kernel.ParallelCompiler.compile_to_path([path], dir, return_diagnostics: true)}
   end
+
+  # One file at a time, in the order given. A file waiting on a module lets the next one start,
+  # so a check in the first runs before a module the second defines is compiled, every time.
+  def build_in_order(name, sources) do
+    dir = Path.join(System.tmp_dir!(), name)
+
+    paths =
+      for {_source, index} <- Enum.with_index(sources) do
+        Path.join(dir, "file#{index}.ex")
+      end
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    Enum.zip_with(paths, sources, &File.write!/2)
+
+    {dir,
+     Kernel.ParallelCompiler.compile_to_path(paths, dir,
+       return_diagnostics: true,
+       max_concurrency: 1
+     )}
+  end
 end
