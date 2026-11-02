@@ -62,9 +62,10 @@ defmodule Decree.Decision.Rule do
 
   In the aggregate's process, after `before_execute`, on each attempt:
 
-    1. Call `c:query/2`. Its error is the answer. `[]` skips to step 4 with no statement.
-       Refuse an item naming no types, a `replay: true` item, and more items or probes than
-       the bounds allow. Read the items.
+    1. Call `c:query/2`. Its error is the answer. Refuse an item naming no types, a
+       `replay: true` item, and more items or probes than the bounds allow. Read the items.
+       `[]` skips to step 4 with no statement, and step 5 is then the batch bound and a plain
+       append.
     2. Call `c:followup_query/3` if it is defined, with the events the first read matched, those
        the rule lists decrypted. Check both bounds again across both reads, read the items,
        and merge by position. The first read's `after` stands for both. More matched events
@@ -75,7 +76,9 @@ defmodule Decree.Decision.Rule do
     5. Refuse more new events than `max_batch_events`, compare the digests and require the
        tags, as "Required tags" says, and append at the expected version under the condition.
        Its items are the rule's own from both reads, and its `after` is the first read's: the
-       store's head at that read, and never 0 on an empty store.
+       store's head at that read, and never 0 on an empty store. After `[]` there is no
+       condition: past the bound, the append is the one a route with no rule makes, with no
+       digest comparison and no required tags but the event's own.
 
   So an event committed after the first read, the gap between the two reads included, fails
   the append if it matches. An `after` taken from the second read would miss what landed in
@@ -101,9 +104,9 @@ defmodule Decree.Decision.Rule do
   state, no snapshot. `Inspect` shows nothing of a result, and writing one into an event raises.
 
   **`[]`** from `c:query/2` means this command has nothing to check, as a registration with no
-  address has not. `execute/2` gets an empty result and the append is a plain one. A decision
-  refuses `[]`, because a decision that reads nothing has nothing to decide on, and a rule
-  decides nothing.
+  address has not. `execute/2` gets an empty result, and the append is the plain one a route
+  with no rule makes, once the batch is within `max_batch_events`. A decision refuses `[]`,
+  because a decision that reads nothing has nothing to decide on, and a rule decides nothing.
 
   ## Required tags
 
@@ -140,7 +143,8 @@ defmodule Decree.Decision.Rule do
 
   `max_items`, `max_probes`, `max_events`, `max_batch_events` and `bound_reason:` are those of
   "Bounds" in `Decree.Decision`, with the same defaults, the same rule for raising one, and the
-  same answers: `:decision_query_too_large` and `:decision_batch_too_large`. A condition's items
+  same answers: `:decision_query_too_large` and `:decision_batch_too_large`. `max_batch_events`
+  holds on every append a rule route makes, a plain one after `[]` included. A condition's items
   run under the `$all` lock on an aggregate route as on a decision's, so lead each item with
   its narrowest tag.
 

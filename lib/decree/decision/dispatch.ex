@@ -78,8 +78,9 @@ defmodule Decree.Decision.Dispatch do
 
   @doc """
   A rule's reads, for one attempt at a command, in the aggregate's process. Answers
-  `{:ok, result, rule_read}`, where `rule_read` is what `append_rule/5` takes, or `nil` for a
-  plain append, or `{:error, reason}`. A raise, an exit or a throw is the aggregate's to catch.
+  `{:ok, result, rule_read}`, where `rule_read` is what `append_rule/5` takes, or
+  `{:error, reason}`. After `[]` from `query/2` it holds no condition, and keeps the rule's
+  bounds for the batch. A raise, an exit or a throw is the aggregate's to catch.
   """
   def read_rule(application, rule, %ExecutionContext{} = context) do
     dispatch = %__MODULE__{
@@ -100,7 +101,7 @@ defmodule Decree.Decision.Dispatch do
         filter(dispatch, merged, reads, System.monotonic_time() - started, answers)
 
       :nothing_to_read ->
-        {:ok, %Result{}, nil}
+        {:ok, %Result{}, dispatch}
 
       {:error, _reason} = error ->
         error
@@ -108,9 +109,24 @@ defmodule Decree.Decision.Dispatch do
   end
 
   @doc """
-  A rule's conditional append, on the aggregate's stream at its expected version. The store's
-  answer, or a refusal with nothing sent.
+  A rule's append, on the aggregate's stream at its expected version: conditional, or after
+  `[]` from `query/2` a plain one, as a route with no rule makes, under the batch bound alone.
+  The store's answer, or a refusal with nothing sent.
   """
+  def append_rule(
+        %__MODULE__{condition: nil} = dispatch,
+        _target,
+        stream_uuid,
+        expected_version,
+        event_data
+      ) do
+    %__MODULE__{application: application} = dispatch
+
+    with :ok <- within_batch(dispatch, event_data) do
+      EventStore.append_to_stream(application, stream_uuid, expected_version, event_data)
+    end
+  end
+
   def append_rule(%__MODULE__{} = dispatch, target, stream_uuid, expected_version, event_data) do
     %__MODULE__{application: application, condition: condition} = dispatch
 

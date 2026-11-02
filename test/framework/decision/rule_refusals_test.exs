@@ -1,6 +1,9 @@
 defmodule Decree.Decision.RuleRefusalsTest do
   use Decree.RuleCase
 
+  import ExUnit.CaptureLog
+
+  alias Decree.Aggregate.Multi
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.Append
   alias Decree.EventStore.EventData
@@ -155,6 +158,59 @@ defmodule Decree.Decision.RuleRefusalsTest do
       end
 
       assert :ok = App.dispatch(ruled([execute: execute], Tight))
+    end
+
+    test "`max_batch_events + 1` after `[]` from `query/2` refuses, with nothing appended" do
+      execute = fn %RuledAggregate{}, %{id: id} ->
+        for note <- 1..3, do: %Noted{id: id, note: note}
+      end
+
+      command = ruled([query: querying([]), execute: execute], Tight)
+
+      log = capture_log(fn -> assert_refused_cleanly(command, :decision_batch_too_large) end)
+
+      assert log =~ "refused on the batch_events bound: 3 over 2"
+      refute_received {:read_query, _items, _opts}
+      assert [{%{value: 3, limit: 2}, %{bound: :batch_events}}] = received(@refused)
+
+      assert %RuledAggregate{notes: []} =
+               App.aggregate_state(RuledAggregate, ruled_stream(command))
+    end
+
+    test "`max_batch_events + 1` through a `Multi` after `[]` from `query/2` refuses" do
+      execute = fn %RuledAggregate{} = state, %{id: id} ->
+        for note <- 1..3, reduce: Multi.new(state) do
+          multi -> Multi.execute(multi, fn _state -> %Noted{id: id, note: note} end)
+        end
+      end
+
+      command = ruled([query: querying([]), execute: execute], Tight)
+
+      log = capture_log(fn -> assert_refused_cleanly(command, :decision_batch_too_large) end)
+
+      assert log =~ "refused on the batch_events bound: 3 over 2"
+      refute_received {:read_query, _items, _opts}
+      assert [{%{value: 3, limit: 2}, %{bound: :batch_events}}] = received(@refused)
+
+      assert %RuledAggregate{notes: []} =
+               App.aggregate_state(RuledAggregate, ruled_stream(command))
+    end
+
+    test "`max_batch_events` after `[]` from `query/2` is a plain append, with no condition" do
+      execute = fn %RuledAggregate{}, %{id: id} ->
+        for note <- 1..2, do: %Noted{id: id, note: note}
+      end
+
+      command = ruled([query: querying([]), execute: execute], Tight)
+      stream = ruled_stream(command)
+
+      assert :ok = App.dispatch(command)
+
+      assert_received {:append_to_stream, ^stream, 0, 2, []}
+      refute_received {:read_query, _items, _opts}
+      assert received(@read) == []
+      assert received(@refused) == []
+      assert [%{data: %Noted{note: 1}}, %{data: %Noted{note: 2}}] = stored(stream, App)
     end
   end
 
