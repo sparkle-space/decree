@@ -517,7 +517,9 @@ defmodule Decree.Decision.Dispatch do
     opts = [condition: condition, returning: :append_result]
 
     with :ok <- check_digests(dispatch, appends, items) do
-      case EventStore.append_to_streams(dispatch.application, required(appends, items), opts) do
+      appends_required = required(appends, asked(dispatch, items))
+
+      case EventStore.append_to_streams(dispatch.application, appends_required, opts) do
         {:ok, %AppendResult{} = result} ->
           decided(dispatch, appends, result, events, state)
 
@@ -553,6 +555,12 @@ defmodule Decree.Decision.Dispatch do
 
     Enum.all?(on_batch, fn {kind, batch_tags} -> batch_tags == Read.tags_of_kind(read, kind) end)
   end
+
+  # What `required/2` asks from. A create's fact item heads the condition, since `own_items/2`
+  # puts it first in the first read. The decision never wrote it, and the route's member carries
+  # its kind anyway, so another member is not asked that kind.
+  defp asked(%__MODULE__{bounds: %{create: false}}, items), do: items
+  defp asked(%__MODULE__{}, [_fact_item | items]), do: items
 
   defp required(appends, items) do
     for {stream_uuid, expected_version, prepared} <- appends do

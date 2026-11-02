@@ -18,12 +18,14 @@ defmodule Decree.Decision.RequiredTagsTest do
   alias Decree.RequiredTagsFixtures.{
     Addressed,
     Contact,
+    Creating,
     DecisionApp,
     Digested,
     Emit,
     Forged,
     Indexed,
     Injected,
+    KeyedCreate,
     Malformed,
     MockedDecisionApp,
     PlainRaising,
@@ -81,7 +83,9 @@ defmodule Decree.Decision.RequiredTagsTest do
     deciding(module, items, fn _state, _command -> decided end)
   end
 
+  defp stream_of(%Creating{claim_id: claim_id}), do: "creating-" <> claim_id
   defp stream_of(%Indexed{claim_id: claim_id}), do: "indexed-" <> claim_id
+  defp stream_of(%KeyedCreate{claim_id: claim_id}), do: "keyed-" <> claim_id
   defp stream_of(%TwoFamilies{claim_id: claim_id}), do: "two-" <> claim_id
   defp stream_of(%Unindexed{claim_id: claim_id}), do: "unindexed-" <> claim_id
 
@@ -230,6 +234,13 @@ defmodule Decree.Decision.RequiredTagsTest do
       assert {:error, :missing_required_tag} = DecisionApp.dispatch(command)
       assert stored_decided(command) == []
       assert stored("unindexed-" <> second, DecisionApp) == []
+    end
+
+    test "the command item asks nothing of a type no item names" do
+      command = deciding(Unindexed, read_nothing(), %Unopted{})
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{data: %Unopted{}}] = stored_decided(command)
     end
 
     test "a malformed answer from an event reaches the store, and is refused" do
@@ -538,6 +549,21 @@ defmodule Decree.Decision.RequiredTagsTest do
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
     end
 
+    test "a digest kind in `scope_tags/1` off the batch answers ahead of the empty side" do
+      command =
+        scripted(
+          [
+            query: fn _command, _context -> [item(@digested, ["email:a"])] end,
+            scope_tags: fn _command -> ["email:a"] end,
+            decide: fn _state, _command -> digested([]) end
+          ],
+          Indexed
+        )
+
+      assert {:error, :batch_lacks_scope_tag} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+    end
+
     defp two_digested(tags), do: %TwoDigested{tags: tags}
 
     defp items_of(type, tags), do: Enum.map(tags, &item(type, [&1]))
@@ -611,6 +637,119 @@ defmodule Decree.Decision.RequiredTagsTest do
         assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
         assert stored_decided(command) == []
       end
+    end
+  end
+
+  describe "a create's fact item" do
+    # Of another stream kind: a second `:claim` member would carry the route's kind anyway.
+    defp on_two_kinds(other, first, second) do
+      fn _state, %{claim_id: route} ->
+        {:streams, [{:claim, route, first}, {:order, other, second}]}
+      end
+    end
+
+    defp route_item(type),
+      do: fn %{claim_id: route}, _context -> [item(type, ["claim:" <> route])] end
+
+    test "asks nothing of a declared type on another member's stream kind" do
+      other = UUID.uuid4()
+      command = deciding(Creating, [], on_two_kinds(other, %Unopted{}, %Unopted{}))
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{data: %Unopted{}}] = stored_decided(command)
+      assert [%RecordedEvent{data: %Unopted{}}] = stored("creating-" <> other, DecisionApp)
+    end
+
+    test "the exception is that item alone: the same item the decision wrote still asks" do
+      other = UUID.uuid4()
+      decide = on_two_kinds(other, %Unopted{}, %Unopted{})
+      command = scripted([query: route_item(@unopted), decide: decide], Unindexed)
+
+      assert {:error, :missing_required_tag} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+      assert stored("unindexed-" <> other, DecisionApp) == []
+    end
+
+    test "a create's own item naming the route's stream tag still asks" do
+      other = UUID.uuid4()
+      decide = on_two_kinds(other, %Unopted{}, %Unopted{})
+      command = scripted([query: route_item(@unopted), decide: decide], Creating)
+
+      assert {:error, :missing_required_tag} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+      assert stored("creating-" <> other, DecisionApp) == []
+    end
+
+    test "a second member of a type it does not name lands" do
+      other = UUID.uuid4()
+      command = deciding(Creating, [], on_two_kinds(other, %Unopted{}, %Digested{}))
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{data: %Unopted{}}] = stored_decided(command)
+      assert [%RecordedEvent{data: %Digested{}}] = stored("creating-" <> other, DecisionApp)
+    end
+
+    test "F7 still reads it" do
+      # With the item gone from F7's side, the batch's tag has nothing to equal.
+      command = deciding(KeyedCreate, [], %Unopted{})
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{}] = stored_decided(command)
+
+      other = UUID.uuid4()
+
+      decide = fn _state, %{claim_id: route} ->
+        {:streams, [{:claim, route, %Unopted{}}, {:claim, other, %Unopted{}}]}
+      end
+
+      command = deciding(KeyedCreate, [], decide)
+
+      assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+      assert stored("keyed-" <> other, DecisionApp) == []
+    end
+  end
+
+  describe "a `replay: true` item" do
+    defp replay_query(type, tags) do
+      fn %{claim_id: route} = command, _context ->
+        [
+          [
+            types: [type],
+            tags: ["claim:" <> route, Append.kind_tag(command) | tags],
+            replay: true
+          ]
+        ]
+      end
+    end
+
+    test "asks its kinds, as any item does" do
+      query = replay_query(@unopted, ["label:l"])
+
+      command = scripted([query: query, decide: fn _state, _c -> %Unopted{} end], Unindexed)
+
+      assert {:error, :missing_required_tag} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
+
+      decide = fn _state, _command -> %Unopted{tags: ["label:l"]} end
+      command = scripted([query: query, decide: decide], Unindexed)
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{}] = stored_decided(command)
+    end
+
+    test "has its digest kind compared by F7" do
+      query = replay_query(@digested, ["email:a"])
+
+      command = scripted([query: query, decide: fn _s, _c -> digested(["email:a"]) end], Indexed)
+
+      assert :ok = DecisionApp.dispatch(command)
+      assert [%RecordedEvent{}] = stored_decided(command)
+
+      command = scripted([query: query, decide: fn _s, _c -> digested(["email:b"]) end], Indexed)
+
+      assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+      assert stored_decided(command) == []
     end
   end
 

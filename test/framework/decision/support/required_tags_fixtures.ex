@@ -243,6 +243,34 @@ defmodule Decree.RequiredTagsFixtures.InjectedDecision do
   use Decree.RequiredTagsFixtures.InjectingFamilies
 end
 
+defmodule Decree.RequiredTagsFixtures.Creating do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
+defmodule Decree.RequiredTagsFixtures.KeyedCreate do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
+defmodule Decree.RequiredTagsFixtures.CreatingDecision do
+  @moduledoc false
+
+  # Makes a fact of a type with no exports, so nothing declares it may lack a kind.
+  use Decree.DecisionFixtures.Scripting,
+    create: [types: ["Elixir.Decree.RequiredTagsFixtures.Unopted"]]
+end
+
+defmodule Decree.RequiredTagsFixtures.KeyedCreateDecision do
+  @moduledoc false
+
+  # The same, with the route's stream kind marked as a digest.
+  use Decree.DecisionFixtures.Scripting,
+    create: [types: ["Elixir.Decree.RequiredTagsFixtures.Unopted"]]
+
+  def index_families, do: %{"claim" => :digest}
+end
+
 defmodule Decree.RequiredTagsFixtures.Router do
   @moduledoc false
   use Decree.Commands.Router
@@ -257,18 +285,24 @@ defmodule Decree.RequiredTagsFixtures.DecisionRouter do
   use Decree.Commands.Router
 
   alias Decree.RequiredTagsFixtures.{
+    Creating,
+    CreatingDecision,
     Indexed,
     IndexedDecision,
     Injected,
     InjectedDecision,
+    KeyedCreate,
+    KeyedCreateDecision,
     TwoFamilies,
     TwoFamiliesDecision,
     Unindexed,
     UnindexedDecision
   }
 
+  decide(Creating, to: CreatingDecision, identity: :claim_id, identity_prefix: "creating-")
   decide(Indexed, to: IndexedDecision, identity: :claim_id, identity_prefix: "indexed-")
   decide(Injected, to: InjectedDecision, identity: :claim_id, identity_prefix: "injected-")
+  decide(KeyedCreate, to: KeyedCreateDecision, identity: :claim_id, identity_prefix: "keyed-")
   decide(TwoFamilies, to: TwoFamiliesDecision, identity: :claim_id, identity_prefix: "two-")
   decide(Unindexed, to: UnindexedDecision, identity: :claim_id, identity_prefix: "unindexed-")
 end
@@ -296,7 +330,9 @@ defmodule Decree.RequiredTagsFixtures.DecisionApp do
     key_source: Decree.PersonalFields.Fixtures.Keys,
     event_store:
       Decree.FrameworkStorage.event_store_config(
-        conditional_appends: [stream_prefixes: ["indexed-", "injected-", "two-", "unindexed-"]]
+        conditional_appends: [
+          stream_prefixes: ["creating-", "indexed-", "injected-", "keyed-", "two-", "unindexed-"]
+        ]
       ),
     pubsub: :local,
     registry: :local

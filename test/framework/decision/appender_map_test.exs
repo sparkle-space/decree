@@ -24,6 +24,25 @@ defmodule Decree.Decision.AppenderMapTest do
   defmodule OtherDecision do
   end
 
+  defmodule CreateDecision do
+    use Decree.DecisionFixtures.Scripting,
+      create: [types: ["Elixir.Decree.Decision.AppenderMapTest.EmailClaimed"]]
+  end
+
+  defmodule TwoFactsDecision do
+    use Decree.DecisionFixtures.Scripting,
+      create: [
+        types: [
+          "Elixir.Decree.Decision.AppenderMapTest.EmailClaimed",
+          "Elixir.Decree.Decision.AppenderMapTest.NoExports"
+        ]
+      ]
+  end
+
+  defmodule NoCreateDecision do
+    use Decree.DecisionFixtures.Scripting
+  end
+
   defmodule ClaimCommand do
   end
 
@@ -178,6 +197,116 @@ defmodule Decree.Decision.AppenderMapTest do
         assert AppenderMap.check([{ClaimDecision, [item()]}], appenders, []) ==
                  [{:no_appender_row, @claimed, ClaimDecision}]
       end
+    end
+  end
+
+  describe "a create" do
+    @created %{EmailClaimed => [{ClaimCommand, CreateDecision}]}
+
+    test "with no items has no fact item" do
+      assert AppenderMap.check([{CreateDecision, []}], @created, []) ==
+               [{:no_fact_item, CreateDecision}]
+    end
+
+    test "an item with another tag count is no fact item" do
+      for tags <- [[], ["email:d", "tenant:t"]] do
+        assert AppenderMap.check([{CreateDecision, [item(@claimed, tags)]}], @created, []) ==
+                 [{:no_fact_item, CreateDecision}]
+      end
+    end
+
+    test "an item naming a subset of the declared types is no fact item" do
+      appenders = %{
+        EmailClaimed => [{ClaimCommand, TwoFactsDecision}],
+        NoExports => [{ClaimCommand, TwoFactsDecision}]
+      }
+
+      for type <- [@claimed, @no_exports] do
+        assert AppenderMap.check(
+                 [{TwoFactsDecision, [item(type, ["correlation:c"])]}],
+                 appenders,
+                 []
+               ) == [{:no_fact_item, TwoFactsDecision}]
+      end
+    end
+
+    test "an item naming a type past the declared ones is no fact item" do
+      appenders = %{
+        EmailClaimed => [{ClaimCommand, CreateDecision}],
+        NoExports => [{ClaimCommand, CreateDecision}]
+      }
+
+      item = [types: [@claimed, @no_exports], tags: ["correlation:c"]]
+
+      assert AppenderMap.check([{CreateDecision, [item]}], appenders, []) ==
+               [{:no_fact_item, CreateDecision}]
+    end
+
+    test "the declared types may come in any order" do
+      appenders = %{
+        EmailClaimed => [{ClaimCommand, TwoFactsDecision}],
+        NoExports => [{ClaimCommand, TwoFactsDecision}]
+      }
+
+      item = [types: [@no_exports, @claimed], tags: ["correlation:c"]]
+
+      assert AppenderMap.check([{TwoFactsDecision, [item]}], appenders, []) == []
+    end
+
+    test "comes ahead of the rule's type problems" do
+      item = item(@claimed, ["email:d", "phone:1"])
+
+      assert AppenderMap.check([{CreateDecision, [item]}], %{}, []) == [
+               {:no_fact_item, CreateDecision},
+               {:missing_tag_kind, @claimed, "phone", CreateDecision},
+               {:no_appender_row, @claimed, CreateDecision}
+             ]
+    end
+
+    test "`verify!/3` raises naming it" do
+      error =
+        assert_raise ArgumentError, fn ->
+          AppenderMap.verify!([{CreateDecision, []}], @created, [])
+        end
+
+      assert error.message =~ inspect({:no_fact_item, CreateDecision})
+    end
+
+    test "with the fact item is clean, a map item included" do
+      for fact <- [item(), %{types: [@claimed], tags: ["email:d"]}] do
+        assert AppenderMap.check([{CreateDecision, [fact]}], @created, []) == []
+      end
+
+      assert AppenderMap.verify!([{CreateDecision, [item()]}], @created, []) == :ok
+    end
+
+    test "with the fact item, a plain aggregate row is unchecked" do
+      appenders = %{
+        EmailClaimed => [{ClaimCommand, CreateDecision}, {ImportCommand, UserAggregate}]
+      }
+
+      assert AppenderMap.check([{CreateDecision, [item()]}], appenders, []) ==
+               [{:unchecked_appender, @claimed, ImportCommand, UserAggregate, CreateDecision}]
+    end
+
+    test "with the fact item, a kind the module can't produce is a problem" do
+      assert AppenderMap.check([{CreateDecision, [item(@claimed, ["phone:1"])]}], @created, []) ==
+               [{:missing_tag_kind, @claimed, "phone", CreateDecision}]
+    end
+
+    test "the fact item need not be alone" do
+      items = [item(), item(@claimed, ["phone:1", "email:d"])]
+
+      assert AppenderMap.check([{CreateDecision, items}], @created, []) ==
+               [{:missing_tag_kind, @claimed, "phone", CreateDecision}]
+    end
+
+    test "is nothing to a decision that says `create: false`" do
+      assert AppenderMap.check([{NoCreateDecision, []}], %{}, []) == []
+    end
+
+    test "is nothing to a module with no `__decision__/0`" do
+      assert AppenderMap.check([{ClaimDecision, []}], %{}, []) == []
     end
   end
 

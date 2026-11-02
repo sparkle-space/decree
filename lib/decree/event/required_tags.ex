@@ -57,8 +57,10 @@ defmodule Decree.Event.RequiredTags do
   `always/0`, and the kinds of the tags on the condition's items naming the event's type, less
   the module's `__conditional_tag_kinds__/0`. That takes kinds from what the items ask and from
   nothing else, so a conditional kind `__required_tag_kinds__/2` answers stays required. See
-  step 8 of `Decree.Decision`. Every item naming the type counts, so a kind only some events of
-  a type carry, one member's stream kind on a batch for example, belongs in that list.
+  step 8 of `Decree.Decision`. A create's fact item is left out: the decision never wrote it,
+  so a declared type on another member is not asked the route's kind. Every item the decision
+  wrote naming the type counts, so a kind only some events of a type carry, one member's stream
+  kind on a batch for example, belongs in that list.
 
   That holds on a decision's own append and nowhere else. A plain aggregate appending a type
   a decision queries has no condition to take kinds from, so it gets only what the event

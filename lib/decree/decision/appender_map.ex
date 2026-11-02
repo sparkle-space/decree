@@ -16,14 +16,26 @@ defmodule Decree.Decision.AppenderMap do
         conditional: [ImportUser]
       )
 
-  `rules` is a list of `{decision, items}`, `items` being what the decision's
-  `c:Decree.Decision.query/2` answered for a fixture command. `appenders` maps each event
-  module to its `{command_module, target_module}` rows. The options:
+  `rules` is a list of `{decision, items}`, `items` being every condition item of a fixture
+  dispatch: what `c:Decree.Decision.query/2` and any `c:Decree.Decision.followup_query/3`
+  answered, and on a create the fact item `[types: types, tags: [stream_tag]]` first. The
+  stream tag is the route's, and this reads no router, so the application passes that item:
+
+      {CreateClaim, [[types: types, tags: ["claim:" <> fixture_id]] | query_items]}
+
+  `appenders` maps each event module to its `{command_module, target_module}` rows. The
+  options:
 
     - `conditional:` command modules an aggregate decides under the rule's condition.
     - `dominant:` `{event_module, command_module}` pairs, the exceptions named by hand.
 
-  For each rule, for each type its items name, it checks two things.
+  **Fact item.** `c:Decree.Decision.query/2` may answer `[]` on a create, so a rule without
+  the fact item names none of what the create reads. For a decision declaring `create:`, some
+  item must name exactly the declared types, in any order, and exactly one tag. Otherwise the
+  problem is `{:no_fact_item, decision}`, ahead of the rule's other problems. A module with no
+  `__decision__/0` is no create.
+
+  Then, for each rule, for each type its items name, it checks two things.
 
   **Tag coverage.** Each tag's kind on an item naming the type must be one the module can
   produce, by `Decree.Event.RequiredTags.producible_kinds/1`. Otherwise the problem is
@@ -52,17 +64,19 @@ defmodule Decree.Decision.AppenderMap do
           | {:unchecked_appender, type :: String.t(), command :: module(), target :: module(),
              decision :: module()}
           | {:unknown_type, type :: String.t(), decision :: module()}
+          | {:no_fact_item, decision :: module()}
 
   @doc """
   Answers the problems, by rule and by type, in the order given.
   """
   @spec check([rule()], appenders(), [option()]) :: [problem()]
   def check(rules, appenders, opts \\ []) when is_list(rules) and is_map(appenders) do
-    for {decision, items} <- rules,
-        type <- Read.named_types(items),
-        problem <- type_problems(type, decision, items, {rules, appenders, opts}) do
-      problem
-    end
+    Enum.flat_map(rules, fn {decision, items} ->
+      world = {rules, appenders, opts}
+
+      fact_problems(decision, items) ++
+        Enum.flat_map(Read.named_types(items), &type_problems(&1, decision, items, world))
+    end)
   end
 
   @doc """
@@ -78,6 +92,34 @@ defmodule Decree.Decision.AppenderMap do
         raise ArgumentError,
               "decisions a condition can miss an event of:\n" <>
                 Enum.map_join(problems, "\n", &("  " <> inspect(&1)))
+    end
+  end
+
+  defp fact_problems(decision, items) do
+    case create_types(decision) do
+      false ->
+        []
+
+      types ->
+        if Enum.any?(items, &fact_item?(&1, types)) do
+          []
+        else
+          [{:no_fact_item, decision}]
+        end
+    end
+  end
+
+  # What a dispatch prepends has one tag, so an item with more is a query about the type.
+  defp fact_item?(item, types) do
+    MapSet.new(Read.item_types(item)) == MapSet.new(types) and
+      match?([_stream_tag], Read.item_tags(item))
+  end
+
+  defp create_types(decision) do
+    if Code.ensure_loaded?(decision) and function_exported?(decision, :__decision__, 0) do
+      decision.__decision__().create
+    else
+      false
     end
   end
 

@@ -113,9 +113,10 @@ defmodule Decree.Decision do
        the digest kinds with the condition's items (see "Digest tags"), and refuse on a
        mismatch. Require of each event, whether or not it opted in,
        `Decree.Event.RequiredTags.always/0` and the kinds of the tags on the condition's
-       items naming its type, less those its module lists in `__conditional_tag_kinds__/0`,
-       and of an event that opted in its own answer as well. Append them at `:any_version`
-       under the condition, and the store refuses an event lacking a kind on its list.
+       items naming its type, a create's fact item left out, less those its module lists in
+       `__conditional_tag_kinds__/0`, and of an event that opted in its own answer as well.
+       Append them at `:any_version` under the condition, and the store refuses an event
+       lacking a kind on its list.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
@@ -167,6 +168,10 @@ defmodule Decree.Decision do
   type on another member and the stream tag on another event add up to nothing the item finds.
   A create that records a refusal as an event lists that type in `create:` too, so a later
   create folds it, and is otherwise refused the same way: the rule fails closed.
+
+  Step 8 asks no event for the fact item's kinds, because the decision never wrote that item
+  and the route's member carries the stream tag anyway. So a declared type on another member
+  need not carry the route's kind. The digest comparison does read the item.
 
   Anything else says `create: false`. The item cannot be `replay: true`, which fails the build,
   and a `replay: true` item of `c:query/2` or `c:followup_query/3` naming the stream tag on a
@@ -235,8 +240,10 @@ defmodule Decree.Decision do
   For each kind marked `:digest`, the set of that kind's tags across every event of the
   batch must equal the set of that kind's tags on the condition's items, from both reads.
   Each kind is compared on its own. An empty batch side passes, because that is what an erased
-  subject's dropped value leaves. A non-empty one with no such item is unequal. Otherwise the
-  answer is `{:error, :digest_tag_mismatch}`, an atom and never the digest, with nothing
+  subject's dropped value leaves. That side is this comparison's alone: a scope tag has to land
+  whatever it says, so a digest kind in `c:scope_tags/1` whose value dropped answers
+  `{:error, :batch_lacks_scope_tag}`. A non-empty side with no such item is unequal. Otherwise
+  the answer is `{:error, :digest_tag_mismatch}`, an atom and never the digest, with nothing
   appended and no retry. A kind marked `:plain` is not compared, and a decision with no
   `c:index_families/0` compares nothing. An answer that is not a map of tag kinds to `:digest`
   or `:plain` fails the build, because it would compare nothing and say nothing.
