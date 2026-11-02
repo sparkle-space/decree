@@ -30,9 +30,10 @@ defmodule Decree.Decision.AppenderMap do
     - `dominant:` `{event_module, command_module}` pairs, the exceptions named by hand.
 
   **Fact item.** `c:Decree.Decision.query/2` may answer `[]` on a create, so a rule without
-  the fact item names none of what the create reads. For a decision declaring `create:`, some
-  item must name exactly the declared types, in any order, and exactly one tag. Otherwise the
-  problem is `{:no_fact_item, decision}`, ahead of the rule's other problems. A module with no
+  the fact item names none of what the create reads. For a decision declaring `create:`, the
+  rule's first item must name exactly the declared types, in any order, and exactly one tag,
+  as it is first at a dispatch. An item further down does not count. Otherwise the problem is
+  `{:no_fact_item, decision}`, ahead of the rule's other problems. A module with no
   `__decision__/0` is no create.
 
   Then, for each rule, for each type its items name, it checks two things.
@@ -45,7 +46,8 @@ defmodule Decree.Decision.AppenderMap do
   **Condition coverage.** A type with no row is `{:no_appender_row, type, decision}`. Every
   row must be the rule's own decision, or another rule's decision whose items name that type
   with at least these kinds, or a command in `conditional:`, or a pair in `dominant:`.
-  Otherwise the problem is `{:unchecked_appender, type, command, target, decision}`.
+  Otherwise the problem is `{:unchecked_appender, type, command, target, decision}`. A rule's
+  fact item covers nothing for another rule, because a dispatch asks no event for its kinds.
 
   A type that names no event module is `{:unknown_type, type, decision}`.
   """
@@ -101,13 +103,12 @@ defmodule Decree.Decision.AppenderMap do
         []
 
       types ->
-        if Enum.any?(items, &fact_item?(&1, types)) do
-          []
-        else
-          [{:no_fact_item, decision}]
-        end
+        if fact_head?(items, types), do: [], else: [{:no_fact_item, decision}]
     end
   end
+
+  defp fact_head?([item | _items], types), do: fact_item?(item, types)
+  defp fact_head?([], _types), do: false
 
   # What a dispatch prepends has one tag, so an item with more is a query about the type.
   defp fact_item?(item, types) do
@@ -164,7 +165,14 @@ defmodule Decree.Decision.AppenderMap do
 
   defp covers?({decision, items}, target, type, kinds) do
     decision == target and type in Read.named_types(items) and
-      kinds -- Read.kinds_naming(items, type) == []
+      kinds -- Read.kinds_naming(asked_items(decision, items), type) == []
+  end
+
+  # As a dispatch asks: the target's condition reads the fact item, and no event is asked for it.
+  defp asked_items(decision, items) do
+    types = create_types(decision)
+
+    if types != false and fact_head?(items, types), do: tl(items), else: items
   end
 
   # `to_struct/1` answers a struct built with no keys, so `@enforce_keys` does not come into it.

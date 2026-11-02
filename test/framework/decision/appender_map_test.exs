@@ -242,6 +242,22 @@ defmodule Decree.Decision.AppenderMapTest do
                [{:no_fact_item, CreateDecision}]
     end
 
+    test "a fact item behind a query item is no fact item" do
+      items = [item(@claimed, ["email:d", "tenant:t"]), item()]
+
+      assert AppenderMap.check([{CreateDecision, items}], @created, []) ==
+               [{:no_fact_item, CreateDecision}]
+    end
+
+    test "with no fact item at the head keeps all its items for another rule" do
+      appenders = %{EmailClaimed => [{ImportCommand, CreateDecision}]}
+
+      query_item = item(@claimed, ["email:d", "tenant:t"])
+      rules = [{ClaimDecision, [item()]}, {CreateDecision, [query_item]}]
+
+      assert AppenderMap.check(rules, appenders, []) == [{:no_fact_item, CreateDecision}]
+    end
+
     test "the declared types may come in any order" do
       appenders = %{
         EmailClaimed => [{ClaimCommand, TwoFactsDecision}],
@@ -299,6 +315,47 @@ defmodule Decree.Decision.AppenderMapTest do
 
       assert AppenderMap.check([{CreateDecision, items}], @created, []) ==
                [{:missing_tag_kind, @claimed, "phone", CreateDecision}]
+    end
+
+    test "a kind on the fact item alone does not cover another rule" do
+      appenders = %{
+        EmailClaimed => [{ClaimCommand, ClaimDecision}, {ImportCommand, CreateDecision}]
+      }
+
+      rules = [{ClaimDecision, [item()]}, {CreateDecision, [item()]}]
+
+      assert AppenderMap.check(rules, appenders, []) ==
+               [{:unchecked_appender, @claimed, ImportCommand, CreateDecision, ClaimDecision}]
+    end
+
+    test "the same kind on a query item of the create's rule covers another rule" do
+      appenders = %{
+        EmailClaimed => [{ClaimCommand, ClaimDecision}, {ImportCommand, CreateDecision}]
+      }
+
+      # The second has the fact item's shape, and one item is dropped, not every such item.
+      for query_item <- [item(@claimed, ["email:d", "email:e"]), item(@claimed, ["email:e"])] do
+        rules = [{ClaimDecision, [item()]}, {CreateDecision, [item(), query_item]}]
+
+        assert AppenderMap.check(rules, appenders, []) == []
+      end
+    end
+
+    test "the fact item is dropped, and not the query item after it" do
+      appenders = %{EmailClaimed => [{ImportCommand, CreateDecision}]}
+
+      fact = item(@claimed, ["tenant:t"])
+      rules = [{ClaimDecision, [item()]}, {CreateDecision, [fact, item()]}]
+
+      assert AppenderMap.check(rules, appenders, []) == []
+    end
+
+    test "a fact item alone still reads the type, for a rule asking no kind of it" do
+      appenders = %{EmailClaimed => [{ImportCommand, CreateDecision}]}
+
+      rules = [{ClaimDecision, [item(@claimed, [])]}, {CreateDecision, [item()]}]
+
+      assert AppenderMap.check(rules, appenders, []) == []
     end
 
     test "is nothing to a decision that says `create: false`" do
