@@ -48,6 +48,7 @@ defmodule Decree.Decision.Rule do
       `{:error, reason}`.
     - `c:followup_query/3`, optional, names a second read that depends on what the first
       found: a list of items, `[]` to skip it, or `{:error, reason}`.
+    - `c:index_families/0`, optional, says which tag kinds hold digests. See "Required tags".
 
   Items are those of `Decree.Decision`, with one difference: `replay: true` answers
   `{:error, :invalid_query}`, because a rule has no scope to hold one to. Both callbacks may run
@@ -71,9 +72,10 @@ defmodule Decree.Decision.Rule do
     3. Keep the events the rule's own items matched, and decrypt the ones it lists.
     4. Call `execute/2` with those events on a local copy of the command. Everything
        after that is the aggregate's as on any other route: `apply/2`, preparing, tags.
-    5. Refuse more new events than `max_batch_events`, and append at the expected version under
-       the condition. Its items are the rule's own from both reads, and its `after` is the
-       first read's: the store's head at that read, and never 0 on an empty store.
+    5. Refuse more new events than `max_batch_events`, compare the digests and require the
+       tags, as "Required tags" says, and append at the expected version under the condition.
+       Its items are the rule's own from both reads, and its `after` is the first read's: the
+       store's head at that read, and never 0 on an empty store.
 
   So an event committed after the first read, the gap between the two reads included, fails
   the append if it matches. An `after` taken from the second read would miss what landed in
@@ -102,6 +104,24 @@ defmodule Decree.Decision.Rule do
   address has not. `execute/2` gets an empty result and the append is a plain one. A decision
   refuses `[]`, because a decision that reads nothing has nothing to decide on, and a rule
   decides nothing.
+
+  ## Required tags
+
+  A condition finds an event by its tags, so a rule's conditional append requires of every event
+  what a decision's does, through the same code, opted in or not: `always/0` of
+  `Decree.Event.RequiredTags`, the kinds of the tags on the condition's items naming the event's
+  type, less the module's `__conditional_tag_kinds__/0`, and the event's own answer. All the
+  condition's items count, since a rule has no fact item. So a kind a query names is required
+  here though the same event on a plain route is not refused, and a command with no usable
+  `command_id` cannot append on a rule route.
+
+  `c:query/2` answering `[]` makes a plain append, with no condition to take kinds from, so an
+  event there gets its own answer only.
+
+  `c:index_families/0` works as "Digest tags" in `Decree.Decision` says, on the condition's items
+  from both reads, and fails the build on the same bad answers. The refusals are
+  `{:error, :missing_required_tag}` and `{:error, :digest_tag_mismatch}`, an atom with no digest
+  in it. Each answers with nothing appended, before any statement, and never retries.
 
   ## Retries
 
@@ -185,6 +205,14 @@ defmodule Decree.Decision.Rule do
   The aggregate's own prefix should not be one of `conditional_appends`' `stream_prefixes`, which
   would refuse its plain commands.
 
+  ## The appender map
+
+  `Decree.Decision.AppenderMap` audits a rule as it does a decision. A rule has no
+  `__decision__/0`, so it is no create. List it as `{EmailRule, items}` with the row
+  `{RegisterUser, User}`, and `conditional: [RegisterUser]` says the aggregate appends under it.
+  Or list it under the aggregate, `{User, items}`: the row is then the rule's own, and another
+  rule naming the type is covered only if every rule listed under `User` naming it has its kinds.
+
   ## Telemetry
 
   An aggregate's span runs as on any route. There is no `[:decree, :decision, :execute]` span,
@@ -242,7 +270,12 @@ defmodule Decree.Decision.Rule do
   @callback followup_query(command :: struct(), TagContext.t(), [struct()]) ::
               [item()] | {:error, term()}
 
-  @optional_callbacks followup_query: 3
+  @doc """
+  Which tag kinds hold digests. See "Digest tags" in `Decree.Decision`. Defaults to none.
+  """
+  @callback index_families() :: %{String.t() => :digest | :plain}
+
+  @optional_callbacks followup_query: 3, index_families: 0
 
   @refused [
     evolve: 2,
@@ -259,6 +292,7 @@ defmodule Decree.Decision.Rule do
     quote bind_quoted: [opts: opts] do
       @behaviour Decree.Decision.Rule
       @before_compile Decree.Decision.Rule
+      @after_compile Decree.Decision
 
       @decree_rule_bounds Decree.Decision.Rule.__bounds__!(__MODULE__, opts)
     end
@@ -281,9 +315,15 @@ defmodule Decree.Decision.Rule do
     followup_query? = Module.defines?(module, {:followup_query, 3}, :def)
 
     quote do
+      unquote(Decree.Decision.__index_families__(module))
+
       @doc false
       def __rule__ do
-        Map.merge(@decree_rule_bounds, %{create: false, followup_query?: unquote(followup_query?)})
+        Map.merge(@decree_rule_bounds, %{
+          create: false,
+          followup_query?: unquote(followup_query?),
+          index_families: index_families()
+        })
       end
     end
   end

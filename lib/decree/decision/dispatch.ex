@@ -114,9 +114,12 @@ defmodule Decree.Decision.Dispatch do
   def append_rule(%__MODULE__{} = dispatch, target, stream_uuid, expected_version, event_data) do
     %__MODULE__{application: application, condition: condition} = dispatch
 
-    # What else refuses an append before the store goes in this `with`.
-    with :ok <- within_batch(dispatch, event_data) do
-      EventStore.append_to_stream(application, stream_uuid, expected_version, event_data,
+    appends = [{stream_uuid, expected_version, event_data}]
+
+    with :ok <- within_batch(dispatch, event_data),
+         {:ok, [{_stream_uuid, _version, required}]} <-
+           checked(dispatch, appends, condition[:items]) do
+      EventStore.append_to_stream(application, stream_uuid, expected_version, required,
         condition: Keyword.put(condition, :target, target)
       )
     end
@@ -621,10 +624,8 @@ defmodule Decree.Decision.Dispatch do
     condition = [items: items, after: merged.after]
     opts = [condition: condition, returning: :append_result]
 
-    with :ok <- check_digests(dispatch, appends, items) do
-      appends_required = required(appends, asked(dispatch, items))
-
-      case EventStore.append_to_streams(dispatch.application, appends_required, opts) do
+    with {:ok, required} <- checked(dispatch, appends, items) do
+      case EventStore.append_to_streams(dispatch.application, required, opts) do
         {:ok, %AppendResult{} = result} ->
           decided(dispatch, appends, result, events, state)
 
@@ -634,6 +635,14 @@ defmodule Decree.Decision.Dispatch do
         {:error, _reason} = error ->
           error
       end
+    end
+  end
+
+  # What both append paths ask of a batch before the store: a decision's `appends`, and a rule's
+  # one stream as a list of one. Its answer is `appends` with each event's required kinds.
+  defp checked(%__MODULE__{} = dispatch, appends, items) do
+    with :ok <- check_digests(dispatch, appends, items) do
+      {:ok, required(appends, asked(dispatch, items))}
     end
   end
 

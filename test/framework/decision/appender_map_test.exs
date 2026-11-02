@@ -451,6 +451,99 @@ defmodule Decree.Decision.AppenderMapTest do
     end
   end
 
+  describe "a declared aggregate's rule" do
+    alias Decree.Decision.Rule.Result
+    alias Decree.Event.TagContext
+    alias Decree.RuleFixtures.{EmailRule, Erased, EraseUser, Registered, RegisterUser, User}
+
+    @registered Atom.to_string(Registered)
+
+    defp part_one do
+      EmailRule.query(%RegisterUser{digest: "d", rule_result: %Result{}}, %TagContext{})
+    end
+
+    defp part_two do
+      registration = %Registered{user_id: "candidate", digest: "d"}
+
+      EmailRule.followup_query(%RegisterUser{}, %TagContext{}, [registration])
+    end
+
+    defp row, do: %{Registered => [{RegisterUser, User}]}
+
+    test "is no create, having no `__decision__/0`" do
+      refute function_exported?(EmailRule, :__decision__, 0)
+
+      assert AppenderMap.check([{EmailRule, []}], %{}) == []
+    end
+
+    test "listed by its module passes with its command in `conditional:`" do
+      assert AppenderMap.check([{EmailRule, part_one()}], row(), conditional: [RegisterUser]) ==
+               []
+    end
+
+    test "listed by its module is unchecked without it" do
+      assert AppenderMap.check([{EmailRule, part_one()}], row()) ==
+               [{:unchecked_appender, @registered, RegisterUser, User, EmailRule}]
+    end
+
+    test "both its parts go through, each type with its own rows" do
+      items = part_one() ++ part_two()
+
+      appenders =
+        Map.merge(row(), %{
+          Erased => [{EraseUser, User}],
+          Decree.RuleFixtures.Removed => [{Decree.RuleFixtures.RemoveUser, User}]
+        })
+
+      assert AppenderMap.check([{EmailRule, items}], appenders,
+               conditional: [RegisterUser],
+               dominant: [
+                 {Erased, EraseUser},
+                 {Decree.RuleFixtures.Removed, Decree.RuleFixtures.RemoveUser}
+               ]
+             ) == []
+
+      assert [
+               {:unchecked_appender, _erased, EraseUser, User, EmailRule},
+               {:unchecked_appender, _removed, Decree.RuleFixtures.RemoveUser, User, EmailRule}
+             ] = AppenderMap.check([{EmailRule, items}], appenders, conditional: [RegisterUser])
+    end
+
+    test "a kind its event can't produce is a problem" do
+      items = [[types: [@registered], tags: ["phone:1"]]]
+
+      assert [{:missing_tag_kind, @registered, "phone", EmailRule} | _] =
+               AppenderMap.check([{EmailRule, items}], row(), conditional: [RegisterUser])
+    end
+
+    test "listed under the aggregate is its own row" do
+      assert AppenderMap.check([{User, part_one()}], row()) == []
+    end
+
+    test "listed under the aggregate covers another rule with at least these kinds" do
+      other = {ClaimDecision, part_one()}
+
+      assert AppenderMap.check([other, {User, part_one()}], row()) == []
+    end
+
+    test "listed under the aggregate with fewer kinds does not cover another rule" do
+      other = {ClaimDecision, [[types: [@registered], tags: ["email:d", "user:u"]]]}
+
+      assert AppenderMap.check([other, {User, part_one()}], row()) ==
+               [{:unchecked_appender, @registered, RegisterUser, User, ClaimDecision}]
+    end
+
+    test "under the aggregate, every rule naming the type has to cover" do
+      other = {ClaimDecision, [[types: [@registered], tags: ["email:d", "user:u"]]]}
+      covering = {User, [[types: [@registered], tags: ["email:d", "user:u"]]]}
+
+      assert AppenderMap.check([other, covering], row()) == []
+
+      assert AppenderMap.check([other, covering, {User, part_one()}], row()) ==
+               [{:unchecked_appender, @registered, RegisterUser, User, ClaimDecision}]
+    end
+  end
+
   describe "a type" do
     test "with no module is a problem and not a crash" do
       type = "Elixir.Decree.Decision.AppenderMapTest.NeverDefined"

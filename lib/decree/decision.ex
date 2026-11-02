@@ -37,7 +37,7 @@ defmodule Decree.Decision do
   what keeps every other writer out of those streams.
 
   An aggregate that keeps its process and its stream, and has one command to check beyond
-  that stream, wants a `Decree.Decision.Rule`, which reads through the same path.
+  that stream, wants a `Decree.Decision.Rule`, which reads and appends through the same path.
 
   ## Callbacks
 
@@ -515,21 +515,8 @@ defmodule Decree.Decision do
 
     followup_query? = Module.defines?(module, {:followup_query, 3}, :def)
 
-    # Here and not in `__using__/1`: a default from the module body is final before any
-    # `@before_compile` runs, so a later hook's `def` would be a second clause that never
-    # matches. One made overridable here gives way to it.
-    index_families =
-      if not Module.defines?(module, {:index_families, 0}, :def) do
-        quote do
-          @doc false
-          def index_families, do: %{}
-
-          defoverridable index_families: 0
-        end
-      end
-
     quote do
-      unquote(index_families)
+      unquote(__index_families__(module))
 
       @doc false
       def __decision__ do
@@ -542,6 +529,23 @@ defmodule Decree.Decision do
     end
   end
 
+  # The fallback, for a module's `@before_compile`, a `Decree.Decision.Rule`'s too. Here and not
+  # in `__using__/1`: a default from the module body is final before any `@before_compile` runs,
+  # so a later hook's `def` would be a second clause that never matches. One made overridable
+  # here gives way to it.
+  @doc false
+  def __index_families__(module) do
+    if not Module.defines?(module, {:index_families, 0}, :def) do
+      quote do
+        @doc false
+        def index_families, do: %{}
+
+        defoverridable index_families: 0
+      end
+    end
+  end
+
+  # A `Decree.Decision.Rule` runs this check too, by naming this module in its `@after_compile`.
   # A key no tag can have, or a family no comparison reads, compares nothing and says so
   # nowhere: a digest check that passes because it never ran. A raise from the callback
   # leaves through here and fails the build too. Called with no export test, because under the

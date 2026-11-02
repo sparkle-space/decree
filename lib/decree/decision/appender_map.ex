@@ -52,6 +52,12 @@ defmodule Decree.Decision.AppenderMap do
   for another rule, because a dispatch asks no event for its kinds.
 
   A type that names no event module is `{:unknown_type, type, decision}`.
+
+  **A declared aggregate's rule.** A `Decree.Decision.Rule` goes in `rules` as a decision does,
+  and it is no create, having no `__decision__/0`. List it by its own module with the row
+  `{command, aggregate}` and the command in `conditional:`. Or list it under the aggregate,
+  `{aggregate, items}`: the row is then the rule's own, and condition coverage reads every rule
+  listed under that aggregate naming the type.
   """
 
   alias Decree.Decision.Read

@@ -15,6 +15,13 @@ defmodule Decree.RuleFixtures.Registered do
   @derive Jason.Encoder
   defstruct [:user_id, :digest, :note]
 
+  def __required_tag_kinds__(%__MODULE__{digest: nil}, _tag_context), do: []
+  def __required_tag_kinds__(%__MODULE__{}, _tag_context), do: ["email"]
+
+  def __conditional_tag_kinds__, do: ["email"]
+
+  def __tag_kinds__, do: ["email", "user"]
+
   defimpl Decree.Event.Tags do
     def tags(%{digest: nil}, _context), do: {:ok, []}
     def tags(%{digest: digest}, _context), do: {:ok, ["email:" <> digest]}
@@ -29,6 +36,8 @@ defmodule Decree.RuleFixtures.Erased do
   @derive Jason.Encoder
   defstruct [:user_id, :erased_by]
 
+  def __tag_kinds__, do: ["erased_by", "user"]
+
   defimpl Decree.Event.Tags do
     def tags(%{erased_by: nil}, _context), do: {:ok, []}
     def tags(%{erased_by: erased_by}, _context), do: {:ok, ["erased_by:" <> erased_by]}
@@ -41,6 +50,8 @@ defmodule Decree.RuleFixtures.Removed do
   # Part 2's other release.
   @derive Jason.Encoder
   defstruct [:user_id]
+
+  def __tag_kinds__, do: ["user"]
 end
 
 defmodule Decree.RuleFixtures.Noted do
@@ -57,6 +68,75 @@ defmodule Decree.RuleFixtures.Read do
   # What a `Ruled` command's rule reads.
   @derive Jason.Encoder
   defstruct [:scope, :secret, :note]
+end
+
+defmodule Decree.RuleFixtures.OAuthJoined do
+  @moduledoc false
+
+  # A registration with no address holds nothing: `email` is conditional, and asked for by the
+  # event itself when it has one. `forget_tag` is the buggy implementation that loses it.
+  @derive Jason.Encoder
+  defstruct [:id, :digest, :forget_tag]
+
+  def __required_tag_kinds__(%__MODULE__{digest: nil}, _tag_context), do: []
+  def __required_tag_kinds__(%__MODULE__{}, _tag_context), do: ["email"]
+
+  def __conditional_tag_kinds__, do: ["email"]
+
+  def __tag_kinds__, do: ["email"]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{digest: nil}, _context), do: {:ok, []}
+    def tags(%{forget_tag: true}, _context), do: {:ok, []}
+    def tags(%{digest: digest}, _context), do: {:ok, ["email:" <> digest]}
+  end
+end
+
+defmodule Decree.RuleFixtures.StrictOAuthJoined do
+  @moduledoc false
+
+  # `OAuthJoined` with `email` not conditional, and opted in to nothing.
+  @derive Jason.Encoder
+  defstruct [:id, :digest]
+
+  def __tag_kinds__, do: ["email"]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{digest: nil}, _context), do: {:ok, []}
+    def tags(%{digest: digest}, _context), do: {:ok, ["email:" <> digest]}
+  end
+end
+
+defmodule Decree.RuleFixtures.MemberAdded do
+  @moduledoc false
+
+  # An unkeyed member has no `member_key:` tag, and the kind is conditional.
+  @derive Jason.Encoder
+  defstruct [:id, :key]
+
+  def __conditional_tag_kinds__, do: ["member_key"]
+
+  def __tag_kinds__, do: ["member_key"]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{key: nil}, _context), do: {:ok, []}
+    def tags(%{key: key}, _context), do: {:ok, ["member_key:" <> key]}
+  end
+end
+
+defmodule Decree.RuleFixtures.StrictMemberAdded do
+  @moduledoc false
+
+  # `MemberAdded` with the kind not conditional.
+  @derive Jason.Encoder
+  defstruct [:id, :key]
+
+  def __tag_kinds__, do: ["member_key"]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{key: nil}, _context), do: {:ok, []}
+    def tags(%{key: key}, _context), do: {:ok, ["member_key:" <> key]}
+  end
 end
 
 defmodule Decree.RuleFixtures.RegisterUser do
@@ -88,6 +168,23 @@ end
 
 defmodule Decree.RuleFixtures.Personal do
   @moduledoc false
+  defstruct [:command_id, :id, :scope, :rule_result, script: %{}]
+end
+
+defmodule Decree.RuleFixtures.RegisterOAuth do
+  @moduledoc false
+  defstruct [:command_id, :id, :scope, :rule_result, script: %{}]
+end
+
+defmodule Decree.RuleFixtures.AddMember do
+  @moduledoc false
+  defstruct [:command_id, :id, :scope, :rule_result, script: %{}]
+end
+
+defmodule Decree.RuleFixtures.DigestChecked do
+  @moduledoc false
+
+  # On a route whose rule says `email` holds digests.
   defstruct [:command_id, :id, :scope, :rule_result, script: %{}]
 end
 
@@ -246,6 +343,14 @@ defmodule Decree.RuleFixtures.TightRule do
   use Decree.RuleFixtures.Scripting, max_events: 3, max_batch_events: 2
 end
 
+defmodule Decree.RuleFixtures.DigestRule do
+  @moduledoc false
+  use Decree.RuleFixtures.Scripting
+
+  @impl Decree.Decision.Rule
+  def index_families, do: %{"email" => :digest, "label" => :plain}
+end
+
 defmodule Decree.RuleFixtures.PersonalRule do
   @moduledoc false
 
@@ -283,6 +388,8 @@ defmodule Decree.RuleFixtures.RuledAggregate do
   def apply(%__MODULE__{notes: notes} = state, %Noted{note: note}) do
     %__MODULE__{state | notes: notes ++ [note]}
   end
+
+  def apply(%__MODULE__{} = state, _event), do: state
 end
 
 defmodule Decree.RuleFixtures.AdoptedAggregate do
@@ -330,7 +437,8 @@ defmodule Decree.RuleFixtures.Router do
   @moduledoc false
   use Decree.Commands.Router
 
-  alias Decree.RuleFixtures.{Adopted, AdoptedAggregate, EmailRule, EraseUser, Gated, Personal}
+  alias Decree.RuleFixtures.{AddMember, Adopted, AdoptedAggregate, DigestChecked, DigestRule}
+  alias Decree.RuleFixtures.{EmailRule, EraseUser, Gated, Personal, RegisterOAuth}
   alias Decree.RuleFixtures.{PersonalRule, Picky, PickyAggregate, PlainNote, RegisterUser}
   alias Decree.RuleFixtures.{RemoveUser, Ruled, RuledAggregate, ScriptedRule, Stopped, Stopping}
   alias Decree.RuleFixtures.{Tight, TightRule, User}
@@ -349,6 +457,9 @@ defmodule Decree.RuleFixtures.Router do
   dispatch Stopped, to: RuledAggregate, rule: ScriptedRule, lifespan: Stopping
   dispatch Gated, to: RuledAggregate, rule: ScriptedRule, before_execute: :refuse
   dispatch PlainNote, to: RuledAggregate
+
+  dispatch [RegisterOAuth, AddMember], to: RuledAggregate, rule: ScriptedRule
+  dispatch DigestChecked, to: RuledAggregate, rule: DigestRule
 
   dispatch Adopted, to: AdoptedAggregate, rule: ScriptedRule
   dispatch Picky, to: PickyAggregate, rule: ScriptedRule

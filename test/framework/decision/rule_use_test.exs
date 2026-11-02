@@ -1,6 +1,9 @@
 defmodule Decree.Decision.RuleUseTest do
   use ExUnit.Case, async: true
 
+  import Decree.BuildFixture, only: [build: 2]
+  import ExUnit.CaptureIO
+
   alias Decree.Decision.Rule.Result
   alias Decree.RuleFixtures.{EmailRule, Read, RegisterUser, ScriptedRule, TightRule}
 
@@ -81,6 +84,136 @@ defmodule Decree.Decision.RuleUseTest do
       for value <- ["false", ~s([types: ["Elixir.Fact"]])] do
         assert_raise ArgumentError, ~r/with `create:`/, fn -> compile(", create: #{value}") end
       end
+    end
+  end
+
+  describe "`index_families/0`" do
+    # A `use` after `use Decree.Decision.Rule`, so its `@before_compile` runs after that one's.
+    defp injecting(name, families) do
+      """
+      defmodule #{name}.Families do
+        defmacro __using__(_opts) do
+          quote do
+            @before_compile #{name}.Families
+          end
+        end
+
+        defmacro __before_compile__(_env) do
+          quote do
+            def index_families, do: #{families}
+          end
+        end
+      end
+
+      defmodule #{name} do
+        use Decree.Decision.Rule
+        use #{name}.Families
+
+        def query(_command, _context), do: []
+      end
+      """
+    end
+
+    defp declaring(name, body) do
+      """
+      defmodule #{name} do
+        use Decree.Decision.Rule
+
+        def query(_command, _context), do: []
+        #{body}
+      end
+      """
+    end
+
+    defp build_name(label) do
+      "Decree.Decision.RuleUseTest.#{label}#{System.unique_integer([:positive])}"
+    end
+
+    test "defaults to none, and is read when it is defined" do
+      assert %{index_families: families} = compile().__rule__()
+      assert families == %{}
+
+      assert %{index_families: %{"email" => :digest}} =
+               compile("", ~s(def index_families, do: %{"email" => :digest})).__rule__()
+    end
+
+    test "a later `use` can inject it" do
+      name = build_name("Injected")
+      rule = Module.concat([name])
+
+      assert {dir, {:ok, _modules, _warnings}} =
+               build(name, injecting(name, ~s(%{"email" => :digest})))
+
+      assert {:module, ^rule} = :code.load_abs(~c"#{Path.join(dir, "Elixir." <> name)}")
+
+      on_exit(fn ->
+        :code.purge(rule)
+        :code.delete(rule)
+      end)
+
+      assert %{index_families: %{"email" => :digest}} = rule.__rule__()
+    end
+
+    for {name, answer} <- [
+          {"an atom key", ~s(%{email: :digest})},
+          {"a key with a colon", ~s(%{"email:x" => :digest})},
+          {"an unknown family", ~s(%{"email" => :digests})},
+          {"something other than a map", ~s([{"email", :digest}])},
+          {"nil", ~s(nil)}
+        ] do
+      test "fails the build for #{name}" do
+        body = "def index_families, do: #{unquote(answer)}"
+
+        assert_raise ArgumentError, ~r/Fixture\d+ has an invalid `index_families/, fn ->
+          compile("", body)
+        end
+      end
+    end
+
+    test "fails under the compiler too, where the module is not loaded yet" do
+      name = build_name("Compiled")
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} =
+                 build(name, declaring(name, "def index_families, do: %{email: :digest}"))
+
+        assert message =~ "#{name} has an invalid `index_families/0`"
+      end)
+    end
+
+    test "fails the build when a later `use` injects a bad one" do
+      name = build_name("InjectedBad")
+
+      capture_io(:stderr, fn ->
+        assert {_dir, {:error, [%{message: message}], _warnings}} =
+                 build(name, injecting(name, "%{email: :digest}"))
+
+        assert message =~ "#{name} has an invalid `index_families/0`"
+      end)
+    end
+
+    test "fails the build when it is a `defp`, and writes no module" do
+      name = build_name("Private")
+      body = ~s(defp index_families, do: %{"email" => :digest})
+
+      capture_io(:stderr, fn ->
+        assert {dir, {:error, errors, _warnings}} = build(name, declaring(name, body))
+
+        assert Enum.any?(
+                 errors,
+                 &(&1.message =~ "index_families/0" and &1.message =~ ~r/\bdefp\b/)
+               )
+
+        assert File.ls!(dir) == ["decision.ex"]
+      end)
+    end
+
+    test "the same module with a `def` builds, so it is the `defp` that fails" do
+      name = build_name("Public")
+      body = ~s(def index_families, do: %{"email" => :digest})
+
+      assert {dir, {:ok, _modules, _warnings}} = build(name, declaring(name, body))
+      assert "Elixir.#{name}.beam" in File.ls!(dir)
     end
   end
 

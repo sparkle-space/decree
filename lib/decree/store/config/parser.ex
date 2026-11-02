@@ -12,6 +12,10 @@ defmodule Decree.Store.Config.Parser do
     timeout: 15_000
   ]
 
+  # Read for their truth by whatever takes them, so the text "false" would turn them on. Not
+  # `:ssl`, which can be a keyword list.
+  @boolean_keys [:enable_hard_deletes, :show_sensitive_data_on_connection_error]
+
   @deletable_keys [:stream_prefixes, :event_types, :tag_kinds]
   @conditional_appends_keys [:stream_prefixes, :targets]
 
@@ -34,8 +38,8 @@ defmodule Decree.Store.Config.Parser do
 
         Keyword.merge(config, parsed_value)
 
-      {:enable_hard_deletes, value}, config ->
-        Keyword.put(config, :enable_hard_deletes, get_config_boolean!(value))
+      {key, value}, config when key in @boolean_keys ->
+        Keyword.put(config, key, get_config_boolean!(key, value))
 
       {:deletable, value}, config ->
         Keyword.put(config, :deletable, validate_deletable!(value))
@@ -199,7 +203,7 @@ defmodule Decree.Store.Config.Parser do
 
   # Raises, because a `{:system, _}` value is text, and the text "false" is truthy: read as it
   # stands it would turn on what it names as off.
-  defp get_config_boolean!(value) do
+  defp get_config_boolean!(key, value) do
     case get_config_value(value, false) do
       boolean when is_boolean(boolean) ->
         boolean
@@ -213,7 +217,7 @@ defmodule Decree.Store.Config.Parser do
       invalid ->
         raise ArgumentError,
           message:
-            "expected `:enable_hard_deletes` to be a boolean, \"true\" or \"false\", got: " <>
+            "expected `#{inspect(key)}` to be a boolean, \"true\" or \"false\", got: " <>
               inspect(invalid)
     end
   end

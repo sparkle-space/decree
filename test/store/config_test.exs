@@ -317,6 +317,54 @@ defmodule Decree.Store.ConfigTest do
     end
   end
 
+  describe "parse `:show_sensitive_data_on_connection_error`" do
+    defp sensitive(value) do
+      [show_sensitive_data_on_connection_error: value]
+      |> Config.parse()
+      |> Keyword.fetch!(:show_sensitive_data_on_connection_error)
+    end
+
+    test "takes a boolean" do
+      assert sensitive(true) == true
+      assert sensitive(false) == false
+    end
+
+    # DBConnection tests this for truth, so the text "false" would print credentials.
+    test "takes its text, as an environment variable gives it" do
+      set_envs(%{"ES_SENSITIVE_ON" => "true", "ES_SENSITIVE_OFF" => "false"})
+
+      assert sensitive("true") == true
+      assert sensitive("false") == false
+      assert sensitive({:system, "ES_SENSITIVE_ON"}) == true
+      assert sensitive({:system, "ES_SENSITIVE_OFF"}) == false
+    end
+
+    test "reads nothing set as off" do
+      assert sensitive(nil) == false
+      assert sensitive({:system, "ES_SENSITIVE_UNSET"}) == false
+    end
+
+    test "raises on anything else, naming the key" do
+      for value <- ["", "TRUE", "1", 1, :on] do
+        assert_raise ArgumentError, ~r/`:show_sensitive_data_on_connection_error`/, fn ->
+          sensitive(value)
+        end
+      end
+    end
+
+    test "is not set when it is not given" do
+      refute Keyword.has_key?(Config.parse([]), :show_sensitive_data_on_connection_error)
+    end
+  end
+
+  test "`:ssl` stays as it is: it can be a keyword list" do
+    assert Keyword.fetch!(Config.parse(ssl: [verify: :verify_none]), :ssl) == [
+             verify: :verify_none
+           ]
+
+    assert Keyword.fetch!(Config.parse(ssl: true), :ssl) == true
+  end
+
   describe "setting application parameters" do
     setup do
       postgrex_config = TestEventStore.config()
