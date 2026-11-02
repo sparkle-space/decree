@@ -52,6 +52,13 @@ defmodule Decree.Decision.AppenderMap do
   for another rule, because a dispatch asks no event for its kinds.
 
   A type that names no event module is `{:unknown_type, type, decision}`.
+
+  **A declared aggregate's rule.** A `Decree.Decision.Rule` goes in `rules` as a decision does,
+  and it is no create, having no `__decision__/0`. List it by its own module, `{EmailRule, items}`,
+  with the row `{command, aggregate}` and each command the rule's route decides in
+  `conditional:`. That is the one supported form. A key covers every row whose target is that
+  key, so an aggregate listed as a key would certify all of its own commands, a plain one
+  included: don't list one.
   """
 
   alias Decree.Decision.Read

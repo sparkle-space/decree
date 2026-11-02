@@ -1,6 +1,7 @@
 defmodule Decree.Decision.UseTest do
   use ExUnit.Case, async: true
 
+  import Decree.BuildFixture, only: [build: 2]
   import ExUnit.CaptureIO
 
   alias Decree.DecisionFixtures.{ClaimDecision, TightDecision}
@@ -27,21 +28,6 @@ defmodule Decree.Decision.UseTest do
     """)
 
     Module.concat([name])
-  end
-
-  # `Code.eval_string/1` is not what a build runs. `compile_to_path/3` is what `mix compile`
-  # calls, and under it the module is not loaded when the check runs, which is where an export
-  # test would pass every bad declaration.
-  defp build(name, source) do
-    dir = Path.join(System.tmp_dir!(), name)
-    path = Path.join(dir, "decision.ex")
-
-    File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
-
-    File.write!(path, source)
-
-    {dir, Kernel.ParallelCompiler.compile_to_path([path], dir, return_diagnostics: true)}
   end
 
   # A `use` after `use Decree.Decision`, so its `@before_compile` runs after that one's.

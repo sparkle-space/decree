@@ -35,6 +35,40 @@ defmodule Decree.Decision.ReadTest do
     }
   end
 
+  describe "a rule's layout" do
+    defp rule_layout(items, framework_items \\ []) do
+      {:ok, parsed} = Read.parse(items)
+
+      Read.layout_rule(parsed, framework_items)
+    end
+
+    test "has no command item, whatever framework items it holds" do
+      assert %Read{command_index: nil, framework: []} = rule_layout([item("a")])
+
+      assert %Read{command_index: nil, framework_indexes: [1]} =
+               rule_layout([item("a")], [[tags: ["index:x"]]])
+    end
+
+    test "gives a condition of its own items" do
+      assert Read.condition_items([rule_layout([item("a")])]) == [item("a")]
+    end
+
+    test "merges by position, keeps the first `after`, and has no command match" do
+      first = rule_layout([item("a")])
+      second = rule_layout([item("b")])
+
+      merged = Read.first(first, result([{1, [0]}], after: 7))
+
+      refute Read.new_command_match?(merged, second, result([{2, [0]}]))
+
+      merged = Read.merge(merged, second, result([{2, [0]}], after: 9))
+
+      assert merged.after == 7
+      assert Read.command_positions(merged) == []
+      assert Enum.map(Read.business_events(merged), & &1.event_number) == [1, 2]
+    end
+  end
+
   describe "parse/1" do
     test "takes a keyword list or a map, and leaves `:replay` out of the store's item" do
       assert {:ok, [%{item: [types: ["A"]], replay: false}]} = Read.parse([[types: ["A"]]])

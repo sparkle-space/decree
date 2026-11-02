@@ -474,13 +474,58 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
       assert stream_versions(context, "decision-1") == [1]
     end
 
-    test "at any `target` on a prefixed stream is a conditional append", context do
+    test "with a `target` that is not declared is refused on a prefixed stream, sending nothing",
+         context do
+      assert EventStore.append_to_stream("decision-1", 0, events(1),
+               conn: @no_conn,
+               condition: condition(target: :not_declared)
+             ) == {:error, :undeclared_conditional_target}
+
+      assert EventStore.append_to_stream("decision-1", 0, events(1),
+               condition: condition(target: :not_declared)
+             ) == {:error, :undeclared_conditional_target}
+
+      assert all_version(context) == 0
+      assert stream_id(context, "decision-1") == nil
+    end
+
+    test "with a `target` that is not declared is refused when every member is prefixed",
+         context do
+      assert EventStore.append_to_streams(
+               [{"decision-1", 0, events(1)}, {"ruling-1", 0, events(1)}],
+               condition: condition(target: :not_declared)
+             ) == {:error, :undeclared_conditional_target}
+
+      assert all_version(context) == 0
+    end
+
+    test "with no `target` writes to every prefixed member, as `target: nil` does", context do
       assert :ok =
-               EventStore.append_to_stream("decision-1", 0, events(1),
-                 condition: condition(target: :not_declared)
+               EventStore.append_to_streams(
+                 [{"decision-1", 0, events(1)}, {"ruling-1", 0, events(1)}],
+                 condition: condition()
+               )
+
+      assert :ok =
+               EventStore.append_to_stream("decision-2", 0, events(1),
+                 condition: condition(target: nil)
                )
 
       assert stream_versions(context, "decision-1") == [1]
+      assert stream_versions(context, "ruling-1") == [1]
+      assert stream_versions(context, "decision-2") == [1]
+    end
+
+    test "with no `target` is refused outside the prefixes, writing nothing", context do
+      for appends <- [
+            [{"plain", 0, events(1)}],
+            [{"decision-1", 0, events(1)}, {"plain", 0, events(1)}]
+          ] do
+        assert EventStore.append_to_streams(appends, condition: condition()) ==
+                 {:error, :undeclared_conditional_target}
+      end
+
+      assert all_version(context) == 0
     end
 
     test "with a declared `target` writes to members in and out of a prefix", context do

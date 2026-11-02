@@ -152,23 +152,41 @@ defmodule Decree.DecisionStoreCase do
   that puts it back.
   """
   def age_stamps(command_id, seconds) do
+    update_past_trigger!(
+      "event_tags",
+      "no_update_event_tags",
+      "UPDATE event_tags SET stamped_at = stamped_at - make_interval(secs => $2) WHERE tag = $1",
+      ["command:" <> command_id, seconds * 1.0]
+    )
+  end
+
+  @doc """
+  Overwrites the stored data of every event of `event_type` with `bytes`, as a corrupt row, or
+  one written by a serializer the reader does not share, would hold. An event cannot be
+  updated, so the one statement runs with that trigger off, in a transaction that puts it back.
+  """
+  def corrupt_data(event_type, bytes) do
+    update_past_trigger!(
+      "events",
+      "no_update_events",
+      "UPDATE events SET data = $2 WHERE event_type = $1",
+      [event_type, bytes]
+    )
+  end
+
+  # One statement that changes at least one row, with `trigger` off on `table` for it alone.
+  defp update_past_trigger!(table, trigger, statement, params) do
     {:ok, conn} =
       Decree.FrameworkStorage.config() |> Config.default_postgrex_opts() |> Postgrex.start_link()
 
     try do
       {:ok, rows} =
         Postgrex.transaction(conn, fn tx ->
-          Postgrex.query!(tx, "ALTER TABLE event_tags DISABLE TRIGGER no_update_event_tags", [])
+          Postgrex.query!(tx, "ALTER TABLE #{table} DISABLE TRIGGER #{trigger}", [])
 
-          %Postgrex.Result{num_rows: rows} =
-            Postgrex.query!(
-              tx,
-              "UPDATE event_tags SET stamped_at = stamped_at - make_interval(secs => $2) " <>
-                "WHERE tag = $1",
-              ["command:" <> command_id, seconds * 1.0]
-            )
+          %Postgrex.Result{num_rows: rows} = Postgrex.query!(tx, statement, params)
 
-          Postgrex.query!(tx, "ALTER TABLE event_tags ENABLE TRIGGER no_update_event_tags", [])
+          Postgrex.query!(tx, "ALTER TABLE #{table} ENABLE TRIGGER #{trigger}", [])
 
           rows
         end)

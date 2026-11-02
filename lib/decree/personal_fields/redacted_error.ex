@@ -65,4 +65,14 @@ defmodule Decree.PersonalFields.RedactedError do
     do: {elem(reason, 0), :redacted}
 
   def reduce(_reason), do: :redacted
+
+  @doc false
+  # How a throw leaves code that held a decrypted value: as the exit `{:nocatch, reduced}`, the
+  # stacktrace scrubbed. Thrown on out of a `gen_server` callback, a reduced term is read as the
+  # callback's return, and a reduced `{:noreply, _}` is a valid one: the process would carry on
+  # with its state set to `:redacted`.
+  @spec leave_throw(term, Exception.stacktrace()) :: no_return
+  def leave_throw(value, stacktrace) do
+    :erlang.raise(:exit, {:nocatch, reduce(value)}, scrub_stacktrace(stacktrace))
+  end
 end

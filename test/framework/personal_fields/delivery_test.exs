@@ -350,7 +350,26 @@ defmodule Decree.PersonalFields.DeliveryTest do
 
       log = failing_run(Leaky)
 
-      assert :redacted = assert_nothing_shown(log, plaintext)
+      assert {:nocatch, {:error, :redacted}} = assert_nothing_shown(log, plaintext)
+    end
+
+    # Read as a return, the throw would leave the handler running with its state set to
+    # `:redacted`, for the next event to meet.
+    for {shape, mode} <- [{"{:noreply, secret}", "noreply"}, {"{:reply, :ok, secret}", "reply"}] do
+      test "a throw of `#{shape}` stops the handler", %{leak: leak, plaintext: plaintext} do
+        leak.(unquote(mode))
+
+        log = failing_run(Leaky)
+
+        assert assert_nothing_shown(log, plaintext) ==
+                 {:nocatch, {unquote(String.to_atom(mode)), :redacted}}
+
+        # The event was not acknowledged, so the next handler meets it again, and stops the same.
+        log = failing_run(Leaky)
+
+        assert assert_nothing_shown(log, plaintext) ==
+                 {:nocatch, {unquote(String.to_atom(mode)), :redacted}}
+      end
     end
 
     test "`error/3` gets a return as it stands, and ciphertext for the event", context do

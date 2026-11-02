@@ -507,7 +507,10 @@ defmodule Decree.Event.Handler do
   from `handle/2` becomes a `Decree.PersonalFields.RedactedError` with a scrubbed stacktrace
   before anything sees it, `c:error/3` included. Decree's own log lines, telemetry and stop
   reasons show an `{:error, reason}` return reduced by
-  `Decree.PersonalFields.RedactedError.reduce/1`. A handler must not put a declared value in
+  `Decree.PersonalFields.RedactedError.reduce/1`. An exit leaves reduced the same way, and a
+  throw leaves as the exit `{:nocatch, reduced}`, so the handler stops: thrown on, a reduced
+  `{:noreply, _}` would be read as the callback's return and keep the handler running on a state
+  of `:redacted`. A handler must not put a declared value in
   an error reason, because decree reduces it in its own log and telemetry but hands it to
   `c:error/3` as it stands. A handler must not keep a declared value in its state either,
   because decree hides it in its own output and hands it to the handler as it stands: once a
@@ -1741,7 +1744,7 @@ defmodule Decree.Event.Handler do
         {:error, RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)}
     catch
       :exit, reason -> exit(RedactedError.reduce(reason))
-      :throw, value -> throw(RedactedError.reduce(value))
+      :throw, value -> RedactedError.leave_throw(value, __STACKTRACE__)
     end
   end
 

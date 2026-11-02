@@ -5,6 +5,8 @@ defmodule Decree.Application.Supervisor do
 
   alias Decree.Application.Config
 
+  require Logger
+
   # Options read from the `use` line and nowhere else: they name what protects personal
   # data, so neither the environment, nor start options, nor `init/1` can change them.
   @source_opts [:key_source, :personal_metadata_keys]
@@ -80,6 +82,7 @@ defmodule Decree.Application.Supervisor do
 
         children =
           event_store_child_spec ++
+            conditional_targets_child_spec(application, config) ++
             pubsub_child_spec ++
             registry_child_spec ++
             app_child_spec(name, config)
@@ -89,6 +92,50 @@ defmodule Decree.Application.Supervisor do
       :ignore ->
         :ignore
     end
+  end
+
+  # A rule route's half and the store's half of one declaration, checked by a child started right
+  # after the store's, which has parsed its config and registered it by then. An application with
+  # no rule route gets no such child, and asks its store nothing. See "Two declarations" in
+  # `Decree.Decision.Rule`.
+  defp conditional_targets_child_spec(application, config) do
+    case application.__conditional_targets__() do
+      [] ->
+        []
+
+      routed ->
+        event_store = Keyword.fetch!(config, :event_store)
+
+        [
+          %{
+            id: {__MODULE__, :conditional_targets},
+            start: {__MODULE__, :check_conditional_targets, [application, routed, event_store]},
+            restart: :temporary
+          }
+        ]
+    end
+  end
+
+  @doc false
+  # Raises at start for a rule route's aggregate the running store does not declare, and
+  # otherwise starts nothing.
+  def check_conditional_targets(application, routed, {adapter, adapter_meta}) do
+    declared = adapter.conditional_targets(adapter_meta)
+
+    with [aggregate | _] <- routed -- declared do
+      raise ArgumentError,
+            "#{inspect(application)} routes a rule to #{inspect(aggregate)}, which its event " <>
+              "store does not declare: add it to `conditional_appends: [targets: [...]]`"
+    end
+
+    for target <- declared -- routed do
+      Logger.warning(fn ->
+        "#{inspect(application)}'s event store declares the conditional target " <>
+          "#{inspect(target)}, and no route in it names a rule for that aggregate"
+      end)
+    end
+
+    :ignore
   end
 
   defp app_child_spec(name, config) do

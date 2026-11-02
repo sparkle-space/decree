@@ -106,7 +106,22 @@ defmodule Decree.Aggregates.Aggregate do
   `format_status/1` keeps the state, and the dispatch metadata a command carries, out of crash
   reports and `:sys.get_status/1`. An aggregate that uses `Decree.PersonalFields.Aggregate` can
   hold decrypted state, so what leaves `apply/2`, `execute/2` or `before_execute` on one is
-  redacted, as that module says.
+  redacted, as that module says. There a throw leaves as an exit, `{:nocatch, reduced}`, whether
+  it comes while executing a command, rebuilding the state or applying an event another process
+  appended, and on a rule route it does while executing a command: `gen_server` reads a term
+  thrown from a callback as its return, and a reduced `{:noreply, _}` is a valid one. The
+  aggregate stops, and a caller waiting on a command gets
+  `{:error, :aggregate_execution_failed}`. A throw from a `Decree.Event.Tags` implementation on
+  an event with a declaration leaves the same way on any aggregate.
+
+  ## Rules
+
+  A route with a `Decree.Decision.Rule` reads in this process, in `execute_command`, after
+  `before_execute` and before `execute/2`, so the reads hold up the mailbox as a rebuild does.
+  What they answer lives in one local variable for one `execute/2` call, on a copy of the
+  command, and the append goes in under a condition. Both retry loops come back through there,
+  so each attempt reads afresh. See `Decree.Decision.Rule`. A route with no rule does none of
+  this: it is the same append, with no statement added.
 
   ## Telemetry
 
@@ -121,6 +136,7 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Aggregates.AggregateStateBuilder
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Application.Config
+  alias Decree.Decision.Dispatch
   alias Decree.Event.Append
   alias Decree.Event.Upcast
   alias Decree.EventStore
@@ -130,6 +146,7 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Registration
   alias Decree.Snapshotting
   alias Decree.Store.AppendError
+  alias Decree.Store.AppendResult
   alias Decree.Telemetry
 
   @type state :: struct()
@@ -581,13 +598,26 @@ defmodule Decree.Aggregates.Aggregate do
     Kernel.apply(handler, before_execute, [aggregate_state, context])
   end
 
+  # The command `execute/2` gets, and what the append needs of a rule's reads. The result stays
+  # on this copy of the command: nothing after the one call below may hold it.
+  defp rule_read(%ExecutionContext{rule: nil, command: command}, _state), do: {:ok, command, nil}
+
+  defp rule_read(%ExecutionContext{rule: rule, command: command} = context, state) do
+    %Aggregate{application: application} = state
+
+    with {:ok, result, rule_read} <- Dispatch.read_rule(application, rule, context) do
+      {:ok, %{command | rule_result: result}, rule_read}
+    end
+  end
+
   defp execute_command(%ExecutionContext{} = context, %Aggregate{} = state) do
     %ExecutionContext{command: command, handler: handler, function: function} = context
     %Aggregate{aggregate_state: aggregate_state} = state
 
     Logger.debug(describe(state) <> " executing command: " <> inspect(command))
 
-    with :ok <- before_execute_command(aggregate_state, context) do
+    with :ok <- before_execute_command(aggregate_state, context),
+         {:ok, command, rule_read} <- rule_read(context, state) do
       case Kernel.apply(handler, function, [aggregate_state, command]) do
         {:error, _error} = reply ->
           {reply, state}
@@ -601,14 +631,14 @@ defmodule Decree.Aggregates.Aggregate do
               {reply, state}
 
             {aggregate_state, pending_events} ->
-              persist_events(pending_events, aggregate_state, context, state)
+              persist_events(pending_events, aggregate_state, rule_read, context, state)
           end
 
         {:ok, pending_events} ->
-          apply_and_persist_events(pending_events, context, state)
+          apply_and_persist_events(pending_events, rule_read, context, state)
 
         pending_events ->
-          apply_and_persist_events(pending_events, context, state)
+          apply_and_persist_events(pending_events, rule_read, context, state)
       end
     else
       {:error, _error} = reply ->
@@ -616,33 +646,55 @@ defmodule Decree.Aggregates.Aggregate do
     end
   rescue
     error ->
-      {error, stacktrace} =
-        PersonalFields.reported_exception(state.aggregate_module, error, __STACKTRACE__)
+      {error, stacktrace} = reported_exception(context, error, __STACKTRACE__, state)
 
       Logger.error(Exception.format(:error, error, stacktrace))
 
       {{:error, error, stacktrace}, state}
   catch
-    kind, value -> leave_with(kind, value, __STACKTRACE__, state)
+    kind, value -> leave_with(kind, value, __STACKTRACE__, context, state)
   end
 
-  # An exit or a throw from the same code, and nothing rescues those. A `throw` from here reaches
-  # `gen_server`, which reads it as a return value and crashes printing it.
-  defp leave_with(kind, value, stacktrace, %Aggregate{aggregate_module: aggregate_module}) do
-    if PersonalFields.adopted?(aggregate_module) do
-      :erlang.raise(kind, RedactedError.reduce(value), RedactedError.scrub_stacktrace(stacktrace))
+  # A rule route has read what any subject's events hold, so it is redacted adopted or not.
+  defp reported_exception(%ExecutionContext{rule: nil}, error, stacktrace, state) do
+    PersonalFields.reported_exception(state.aggregate_module, error, stacktrace)
+  end
+
+  defp reported_exception(%ExecutionContext{}, error, stacktrace, _state) do
+    {RedactedError.redact(error), RedactedError.scrub_stacktrace(stacktrace)}
+  end
+
+  # An exit or a throw from the same code, and nothing rescues those. Where a decrypted value may
+  # be in hand, the value is reduced and the stacktrace scrubbed, and a throw leaves as an exit.
+  # Thrown out of `handle_call/3`, a term is read by `gen_server` as the callback's return, and a
+  # reduced `{:noreply, _}` is a valid one: the aggregate would carry on with its state set to
+  # `:redacted`, and the caller would get no reply. `{:nocatch, reduced}` is the reason an
+  # uncaught throw exits with, and it is none of the reasons `execute/5` reads as a stop to
+  # retry. `Decree.PersonalFields.RedactedError.leave_throw/2` is the one place that does this.
+  # Elsewhere a throw reaches `gen_server` as it is, and is read as a return.
+  defp leave_with(kind, value, stacktrace, %ExecutionContext{rule: rule}, state) do
+    %Aggregate{aggregate_module: aggregate_module} = state
+
+    if rule != nil or PersonalFields.adopted?(aggregate_module) do
+      leave_redacted(kind, value, stacktrace)
     else
       :erlang.raise(kind, value, stacktrace)
     end
   end
 
-  defp apply_and_persist_events(pending_events, context, %Aggregate{} = state) do
+  defp leave_redacted(:throw, value, stacktrace), do: RedactedError.leave_throw(value, stacktrace)
+
+  defp leave_redacted(kind, value, stacktrace) do
+    :erlang.raise(kind, RedactedError.reduce(value), RedactedError.scrub_stacktrace(stacktrace))
+  end
+
+  defp apply_and_persist_events(pending_events, rule_read, context, %Aggregate{} = state) do
     %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state
 
     pending_events = List.wrap(pending_events)
     aggregate_state = apply_events(aggregate_module, aggregate_state, pending_events)
 
-    persist_events(pending_events, aggregate_state, context, state)
+    persist_events(pending_events, aggregate_state, rule_read, context, state)
   end
 
   defp apply_events(aggregate_module, aggregate_state, events) do
@@ -651,10 +703,10 @@ defmodule Decree.Aggregates.Aggregate do
 
   # An error from preparing the events is answered here, ahead of the arms below: those
   # read the event store's answer, and a `Decree.Event.Tags` implementation's is not one.
-  defp persist_events(pending_events, aggregate_state, context, %Aggregate{} = state) do
+  defp persist_events(pending_events, aggregate_state, rule_read, context, state) do
     case prepare_events(pending_events, context, state) do
       {:ok, event_data} ->
-        store_events(pending_events, event_data, aggregate_state, context, state)
+        store_events(pending_events, event_data, aggregate_state, rule_read, context, state)
 
       {:error, _error} = reply ->
         {reply, state}
@@ -667,10 +719,10 @@ defmodule Decree.Aggregates.Aggregate do
     Append.prepare_events(application, aggregate_uuid, pending_events, context)
   end
 
-  defp store_events(pending_events, event_data, aggregate_state, context, %Aggregate{} = state) do
+  defp store_events(pending_events, event_data, aggregate_state, rule_read, context, state) do
     %Aggregate{aggregate_version: expected_version} = state
 
-    with :ok <- append_to_stream(event_data, state) do
+    with :ok <- append_to_stream(event_data, rule_read, state) do
       aggregate_version = expected_version + length(pending_events)
 
       state = %Aggregate{
@@ -693,7 +745,24 @@ defmodule Decree.Aggregates.Aggregate do
             {reply, %Aggregate{state | stop_reason: {:shutdown, :key_unknown}}}
         end
 
+      {:error, :append_condition_failed} ->
+        retry_rule(context, state)
+
       {:error, _error} = reply ->
+        {reply, state}
+    end
+  end
+
+  # Only a rule route's append carries a condition. Its stream did not move, or the store would
+  # have said so first, so the state stands, and the attempt reads again.
+  defp retry_rule(%ExecutionContext{rule: rule} = context, %Aggregate{} = state) do
+    case ExecutionContext.retry_rule(context) do
+      {:ok, retried} ->
+        Dispatch.rule_retried(state.application, rule, context)
+
+        execute_command(retried, state)
+
+      reply ->
         {reply, state}
     end
   end
@@ -713,9 +782,18 @@ defmodule Decree.Aggregates.Aggregate do
     end
   end
 
-  defp append_to_stream([], _state), do: :ok
+  defp append_to_stream([], _rule_read, _state), do: :ok
 
-  defp append_to_stream(event_data, %Aggregate{} = state) do
+  defp append_to_stream(event_data, rule_read, %Aggregate{} = state) do
+    case store_append(event_data, rule_read, state) do
+      # A store configured with `returning: :append_result` answers this for every append, and
+      # the write has committed.
+      {:ok, %AppendResult{}} -> :ok
+      answer -> answer
+    end
+  end
+
+  defp store_append(event_data, nil, %Aggregate{} = state) do
     %Aggregate{
       application: application,
       aggregate_uuid: aggregate_uuid,
@@ -723,6 +801,22 @@ defmodule Decree.Aggregates.Aggregate do
     } = state
 
     EventStore.append_to_stream(application, aggregate_uuid, expected_version, event_data)
+  end
+
+  defp store_append(event_data, rule_read, %Aggregate{} = state) do
+    %Aggregate{
+      aggregate_module: aggregate_module,
+      aggregate_uuid: aggregate_uuid,
+      aggregate_version: expected_version
+    } = state
+
+    Dispatch.append_rule(
+      rule_read,
+      aggregate_module,
+      aggregate_uuid,
+      expected_version,
+      event_data
+    )
   end
 
   defp do_take_snapshot(%Aggregate{} = state) do

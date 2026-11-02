@@ -48,6 +48,15 @@ defmodule Decree.Aggregates.ExecutionContext do
     - `stream_tag` - the kind the route named for the stream's entity tag, an atom, or
       `nil`. See `Decree.Commands.Router.dispatch/2`.
 
+    - `rule` - the route's `Decree.Decision.Rule`, or `nil`. What its read answers never
+      reaches this struct: `command` stays the plain command.
+
+    - `rule_retries` - the number of retries permitted if a rule's condition fails, set from
+      `retry_attempts` and spent apart from it, so neither loop spends the other's budget.
+
+    - `attempt` - the number of this attempt at the command in this dispatch, which a rule's
+      telemetry reports.
+
   """
 
   alias Decree.Aggregates.DefaultLifespan
@@ -63,7 +72,10 @@ defmodule Decree.Aggregates.ExecutionContext do
     :identity,
     :aggregate_identity,
     :stream_tag,
+    :rule,
+    :rule_retries,
     before_execute: nil,
+    attempt: 1,
     retry_attempts: 0,
     returning: false,
     lifespan: Application.compile_env(:decree, :aggregate_lifespan, DefaultLifespan),
@@ -79,9 +91,26 @@ defmodule Decree.Aggregates.ExecutionContext do
   def retry(%ExecutionContext{} = context) do
     %ExecutionContext{retry_attempts: retry_attempts} = context
 
-    context = %ExecutionContext{context | retry_attempts: retry_attempts - 1}
+    context = %ExecutionContext{
+      context
+      | retry_attempts: retry_attempts - 1,
+        attempt: context.attempt + 1
+    }
 
     {:ok, context}
+  end
+
+  @doc false
+  def retry_rule(%ExecutionContext{rule_retries: nil}),
+    do: {:error, :too_many_attempts}
+
+  def retry_rule(%ExecutionContext{rule_retries: rule_retries}) when rule_retries <= 0,
+    do: {:error, :too_many_attempts}
+
+  def retry_rule(%ExecutionContext{} = context) do
+    %ExecutionContext{rule_retries: rule_retries, attempt: attempt} = context
+
+    {:ok, %ExecutionContext{context | rule_retries: rule_retries - 1, attempt: attempt + 1}}
   end
 
   # `outcome` is an `%Aggregate{}`, or a decision's map of the same three keys. A decision

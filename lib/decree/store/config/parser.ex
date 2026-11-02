@@ -12,6 +12,10 @@ defmodule Decree.Store.Config.Parser do
     timeout: 15_000
   ]
 
+  # Read for their truth by whatever takes them, so the text "false" would turn them on. Not
+  # `:ssl`, which can be a keyword list.
+  @boolean_keys [:enable_hard_deletes, :show_sensitive_data_on_connection_error]
+
   @deletable_keys [:stream_prefixes, :event_types, :tag_kinds]
   @conditional_appends_keys [:stream_prefixes, :targets]
 
@@ -33,6 +37,9 @@ defmodule Decree.Store.Config.Parser do
         parsed_value = get_config_value(value) |> parse_url()
 
         Keyword.merge(config, parsed_value)
+
+      {key, value}, config when key in @boolean_keys ->
+        Keyword.put(config, key, get_config_boolean!(key, value))
 
       {:deletable, value}, config ->
         Keyword.put(config, :deletable, validate_deletable!(value))
@@ -193,6 +200,31 @@ defmodule Decree.Store.Config.Parser do
 
   defp get_config_value(nil, default), do: default
   defp get_config_value(value, _default), do: value
+
+  # Raises, because a `{:system, _}` value is text, and the text "false" is truthy: read as it
+  # stands it would turn on what it names as off. Nil is nothing set, as an unset variable whose
+  # own default is nil leaves it, and so off.
+  defp get_config_boolean!(key, value) do
+    case get_config_value(value, false) do
+      boolean when is_boolean(boolean) ->
+        boolean
+
+      nil ->
+        false
+
+      "true" ->
+        true
+
+      "false" ->
+        false
+
+      invalid ->
+        raise ArgumentError,
+          message:
+            "expected `#{inspect(key)}` to be a boolean, \"true\" or \"false\", got: " <>
+              inspect(invalid)
+    end
+  end
 
   defp get_config_integer(value, default \\ nil) do
     case get_config_value(value) do

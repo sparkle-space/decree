@@ -100,7 +100,7 @@ defmodule Decree.EventStore.Adapters.EventStore do
     {_event_store, name} = extract_adapter_meta(adapter_meta)
 
     # `delete_stream/4` refuses a hard delete without this setting, so what a store declares
-    # could never be deleted. Truthy, as it tests there: a `{:system, _}` value parses to a string.
+    # could never be deleted. The config's parse makes it a boolean.
     if Config.lookup(name, :enable_hard_deletes) do
       case Config.lookup(name, :deletable) do
         nil -> []
@@ -108,6 +108,16 @@ defmodule Decree.EventStore.Adapters.EventStore do
       end
     else
       []
+    end
+  end
+
+  @impl Decree.EventStore.Adapter
+  def conditional_targets(adapter_meta) do
+    {_event_store, name} = extract_adapter_meta(adapter_meta)
+
+    case Config.lookup(name, :conditional_appends) do
+      nil -> []
+      conditional_appends -> Keyword.get(conditional_appends, :targets, [])
     end
   end
 

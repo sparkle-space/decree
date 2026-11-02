@@ -26,6 +26,8 @@ defmodule Decree.EventStore do
     * subscribe_to/6
     * unsubscribe/2
 
+  `read_query/3`'s span never fires `exception`, and a failure stops it with `error`: its doc
+  says why.
   """
   alias Decree.Application
   alias Decree.Event.Upcast
@@ -100,20 +102,30 @@ defmodule Decree.EventStore do
 
   See `c:Decree.Store.read_query/2` for the items, options and answers. The result's
   events are `Decree.EventStore.RecordedEvent`s.
+
+  Its span covers the store's answer, and the upcast runs after it stops. A raise, an exit or
+  a throw from either, the store's deserializing and the adapter's mapping included, reaches
+  the caller as it was raised, and no telemetry event holds it. The span never fires its
+  exception event. A failure inside it stops it with `error` in the stop metadata, the kind
+  alone: `:error`, `:exit` or `:throw`. A read that answered stops with no `error`.
   """
   def read_query(application, items, opts \\ []) do
     meta = %{application: application, items: items, opts: opts}
 
-    span(:read_query, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+    read =
+      contained_span(:read_query, meta, fn ->
+        {adapter, adapter_meta} = Application.event_store_adapter(application)
 
-      with {:ok, %ReadResult{events: events} = result} <-
-             adapter.read_query(adapter_meta, items, opts) do
-        upcast_opts = [additional_metadata: %{application: application}]
+        adapter.read_query(adapter_meta, items, opts)
+      end)
 
-        {:ok, %ReadResult{result | events: Upcast.upcast_event_stream(events, upcast_opts)}}
-      end
-    end)
+    # Not in the span: an upcaster's failure can hold the stored event it failed on, and it
+    # reaches the caller as it was raised.
+    with {:ok, %ReadResult{events: events} = result} <- read do
+      upcast_opts = [additional_metadata: %{application: application}]
+
+      {:ok, %ReadResult{result | events: Upcast.upcast_event_stream(events, upcast_opts)}}
+    end
   end
 
   @doc """
@@ -394,5 +406,26 @@ defmodule Decree.EventStore do
     :telemetry.span([:decree, :event_store, event], meta, fn ->
       {func.(), meta}
     end)
+  end
+
+  # A span whose exception event never fires. That event holds the raised term and its
+  # stacktrace, and a read's failure can hold the stored bytes it failed on, as
+  # `Jason.DecodeError` does. So a raise, an exit or a throw in `func` is answered as a value,
+  # the span stops with `error` set to its kind and nothing else of it, and it is raised again,
+  # as it was, for the caller's own boundary to decide.
+  defp contained_span(event, meta, func) do
+    contained =
+      :telemetry.span([:decree, :event_store, event], meta, fn ->
+        try do
+          {{:answered, func.()}, meta}
+        catch
+          kind, value -> {{:left, kind, value, __STACKTRACE__}, Map.put(meta, :error, kind)}
+        end
+      end)
+
+    case contained do
+      {:answered, answer} -> answer
+      {:left, kind, value, stacktrace} -> :erlang.raise(kind, value, stacktrace)
+    end
   end
 end

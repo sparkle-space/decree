@@ -71,6 +71,9 @@ defmodule Decree.Event.Tagging.Adapter do
   defdelegate deletable_stream_prefixes(adapter_meta), to: Adapter
 
   @impl Decree.EventStore.Adapter
+  defdelegate conditional_targets(adapter_meta), to: Adapter
+
+  @impl Decree.EventStore.Adapter
   defdelegate subscribe_to(adapter_meta, stream, name, subscriber, start_from, opts),
     to: Adapter
 

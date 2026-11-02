@@ -9,7 +9,7 @@ defmodule Decree.Decision.ClassificationTest do
   }
 
   alias Decree.Event.Append
-  alias Decree.Store.{Config, EventData, LockSession, Wait}
+  alias Decree.Store.{Config, EventData, LockSession}
 
   defmodule Kindless do
     defstruct [:command_id, :_id, script: %{}]
@@ -377,27 +377,6 @@ defmodule Decree.Decision.ClassificationTest do
       end)
     end
 
-    # Waits on the database, not a clock. A second waiter on one row queues behind the first,
-    # so a blocker is the holder or the other waiter.
-    defp wait_until_waiting(observer, holder, count) do
-      Wait.until(5_000, fn ->
-        %Postgrex.Result{rows: rows} =
-          Postgrex.query!(
-            observer,
-            "SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity " <>
-              "WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0",
-            []
-          )
-
-        waiters = Enum.map(rows, fn [pid, _blockers] -> pid end)
-        blockers = Enum.flat_map(rows, fn [_pid, blockers] -> blockers end)
-
-        assert length(waiters) == count
-        assert holder in blockers
-        assert Enum.all?(blockers, &(&1 == holder or &1 in waiters))
-      end)
-    end
-
     defp tagged_rows(observer, tag) do
       %Postgrex.Result{rows: [[count]]} =
         Postgrex.query!(observer, "SELECT count(*) FROM event_tags WHERE tag = $1", [tag])
@@ -417,7 +396,7 @@ defmodule Decree.Decision.ClassificationTest do
       other = dispatch_async(second)
 
       # Both are at the append while `$all` is held, so neither read can have seen the other.
-      wait_until_waiting(observer, holder.backend, 2)
+      LockSession.wait_until_waiting(observer, holder.backend, 2)
 
       assert tagged_rows(observer, "command:" <> first.command_id) == 0
 

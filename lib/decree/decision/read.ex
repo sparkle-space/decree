@@ -141,6 +141,19 @@ defmodule Decree.Decision.Read do
   """
   @spec layout([parsed()], [keyword()], [keyword()]) :: %__MODULE__{}
   def layout(parsed, [_command_item | _] = framework_items, read_only_items \\ []) do
+    %__MODULE__{} = read = lay_out(parsed, framework_items, read_only_items)
+
+    %__MODULE__{read | command_index: length(read.own)}
+  end
+
+  @doc """
+  Lays out one read of a `Decree.Decision.Rule`. A rule has no command item, so nothing here
+  is one, whatever framework items it holds.
+  """
+  @spec layout_rule([parsed()], [keyword()]) :: %__MODULE__{}
+  def layout_rule(parsed, framework_items), do: lay_out(parsed, framework_items, [])
+
+  defp lay_out(parsed, framework_items, read_only_items) do
     own = Enum.map(parsed, & &1.item)
     n = length(own)
 
@@ -153,7 +166,6 @@ defmodule Decree.Decision.Read do
       framework: framework_items,
       decision_indexes: Enum.to_list(0..(n - 1)//1),
       framework_indexes: Enum.to_list(n..(n + length(framework_items) - 1)//1),
-      command_index: n,
       replay_indexes: replay_indexes
     }
   end
@@ -246,11 +258,11 @@ defmodule Decree.Decision.Read do
       matched_items: result.matched_items,
       decision: MapSet.new(read.decision_indexes),
       framework: MapSet.new(read.framework_indexes),
-      command: MapSet.new([read.command_index]),
+      command: read |> command_indexes() |> MapSet.new(),
       replay: MapSet.new(read.replay_indexes),
       offset: length(read.items),
       first_commands:
-        result.matched_items |> positions_matching([read.command_index]) |> MapSet.new()
+        result.matched_items |> positions_matching(command_indexes(read)) |> MapSet.new()
     }
   end
 
@@ -278,7 +290,7 @@ defmodule Decree.Decision.Read do
           end),
         decision: MapSet.union(merged.decision, shift.(read.decision_indexes)),
         framework: MapSet.union(merged.framework, shift.(read.framework_indexes)),
-        command: MapSet.put(merged.command, read.command_index + offset),
+        command: MapSet.union(merged.command, shift.(command_indexes(read))),
         replay: MapSet.union(merged.replay, shift.(read.replay_indexes)),
         offset: offset + length(read.items)
     }
@@ -291,7 +303,7 @@ defmodule Decree.Decision.Read do
   @spec new_command_match?(%Merged{}, %__MODULE__{}, ReadResult.t()) :: boolean()
   def new_command_match?(%Merged{first_commands: known}, %__MODULE__{} = read, result) do
     result.matched_items
-    |> positions_matching([read.command_index])
+    |> positions_matching(command_indexes(read))
     |> Enum.any?(&(not MapSet.member?(known, &1)))
   end
 
@@ -380,6 +392,9 @@ defmodule Decree.Decision.Read do
       true -> :duplicate
     end
   end
+
+  defp command_indexes(%__MODULE__{command_index: nil}), do: []
+  defp command_indexes(%__MODULE__{command_index: index}), do: [index]
 
   defp positions_matching(matched_items, indexes) do
     matched_items

@@ -127,6 +127,17 @@ defmodule Decree.EventStore.Adapter do
   @callback deletable_stream_prefixes(adapter_meta) :: [String.t()]
 
   @doc """
+  The targets the running event store's `conditional_appends` declares, or `[]` if it declares
+  none.
+
+  It answers from the config the store parsed as it started, so it agrees with what the store
+  refuses. An application with a rule route calls this as it starts, right after its store has,
+  and an application with none never calls it. See "Two declarations" in
+  `Decree.Decision.Rule`.
+  """
+  @callback conditional_targets(adapter_meta) :: [term()]
+
+  @doc """
   Create a transient subscription to a single event stream.
 
   The event store will publish any events appended to the given stream to the

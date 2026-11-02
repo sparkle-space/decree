@@ -36,6 +36,9 @@ defmodule Decree.Decision do
   stream prefix must be declared in the event store's `conditional_appends`, which is also
   what keeps every other writer out of those streams.
 
+  An aggregate that keeps its process and its stream, and has one command to check beyond
+  that stream, wants a `Decree.Decision.Rule`, which reads and appends through the same path.
+
   ## Callbacks
 
     - `c:query/2` names what to read: a list of items, or `{:error, reason}`.
@@ -295,9 +298,10 @@ defmodule Decree.Decision do
 
   ## Answers
 
-  A raise from any callback, or from a `Decree.Event.Tags` implementation, is rescued, and
-  the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An error from a
-  `Decree.Event.Tags` implementation is the answer as it stands.
+  A raise from any callback, from a `Decree.Event.Tags` implementation, or from reading an
+  event the reads matched, in the store's deserializing, the adapter's mapping or an upcaster,
+  is rescued, and the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An
+  error from a `Decree.Event.Tags` implementation is the answer as it stands.
 
   An exit or a throw from any of it, on any decision, answers
   `{:error, :decision_execution_failed}`. It logs nothing but what
@@ -386,6 +390,12 @@ defmodule Decree.Decision do
       an aggregate's span, `execution_context` holds the command and its metadata in the clear,
       `events` are the new events before they are encrypted, and `error` is the answer. The
       state is on none of these.
+    - `[:decree, :event_store, :read_query]`, a span per read, covering the store's answer,
+      its deserializing and mapping included, and not the upcast, which runs after it stops.
+      Its exception event never fires: a failure inside it stops it with `error` in the stop
+      metadata, the kind alone (`:error`, `:exit` or `:throw`), and is raised again after. A
+      read that answered stops with no `error`. Either failure reaches the span above as
+      "Answers" says.
     - `[:decree, :decision, :read]`, once per completed read cycle, one refused on
       `max_events` included. Measurements `items`, `probes`, `matched_events`, `read_time`
       and `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata
@@ -512,21 +522,8 @@ defmodule Decree.Decision do
 
     followup_query? = Module.defines?(module, {:followup_query, 3}, :def)
 
-    # Here and not in `__using__/1`: a default from the module body is final before any
-    # `@before_compile` runs, so a later hook's `def` would be a second clause that never
-    # matches. One made overridable here gives way to it.
-    index_families =
-      if not Module.defines?(module, {:index_families, 0}, :def) do
-        quote do
-          @doc false
-          def index_families, do: %{}
-
-          defoverridable index_families: 0
-        end
-      end
-
     quote do
-      unquote(index_families)
+      unquote(__index_families__(module))
 
       @doc false
       def __decision__ do
@@ -539,6 +536,23 @@ defmodule Decree.Decision do
     end
   end
 
+  # The fallback, for a module's `@before_compile`, a `Decree.Decision.Rule`'s too. Here and not
+  # in `__using__/1`: a default from the module body is final before any `@before_compile` runs,
+  # so a later hook's `def` would be a second clause that never matches. One made overridable
+  # here gives way to it.
+  @doc false
+  def __index_families__(module) do
+    if not Module.defines?(module, {:index_families, 0}, :def) do
+      quote do
+        @doc false
+        def index_families, do: %{}
+
+        defoverridable index_families: 0
+      end
+    end
+  end
+
+  # A `Decree.Decision.Rule` runs this check too, by naming this module in its `@after_compile`.
   # A key no tag can have, or a family no comparison reads, compares nothing and says so
   # nowhere: a digest check that passes because it never ran. A raise from the callback
   # leaves through here and fails the build too. Called with no export test, because under the

@@ -3,11 +3,15 @@ defmodule Decree.Decision.Dispatch do
 
   # One dispatch of a decision, in the dispatcher's task. The steps are those of
   # `Decree.Decision`'s moduledoc, and each is named below by its number there.
+  #
+  # `read_rule/3` and `append_rule/5` are the same steps for a `Decree.Decision.Rule`, in an
+  # aggregate's process: a dispatch with no command tag, so no command item and no scope.
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Commands.Router
   alias Decree.Decision.Read
   alias Decree.Decision.Read.Merged
+  alias Decree.Decision.Rule.Result
   alias Decree.Event.{Append, RequiredTags, TagContext}
   alias Decree.EventStore
   alias Decree.EventStore.EventData
@@ -37,6 +41,8 @@ defmodule Decree.Decision.Dispatch do
     :scope,
     :bounds,
     :fold,
+    # A rule's condition, once its reads have answered.
+    :condition,
     attempt: 1
   ]
 
@@ -68,6 +74,82 @@ defmodule Decree.Decision.Dispatch do
 
     telemetry_stop(result, start_time, Map.put(metadata, :attempts, attempts))
     answer(result, context)
+  end
+
+  @doc """
+  A rule's reads, for one attempt at a command, in the aggregate's process. Answers
+  `{:ok, result, rule_read}`, where `rule_read` is what `append_rule/5` takes, or
+  `{:error, reason}`. After `[]` from `query/2` it holds no condition, and keeps the rule's
+  bounds for the batch. A raise, an exit or a throw is the aggregate's to catch.
+  """
+  def read_rule(application, rule, %ExecutionContext{} = context) do
+    dispatch = %__MODULE__{
+      application: application,
+      decision: rule,
+      context: context,
+      tag_context: %TagContext{metadata: context.metadata, command: context.command},
+      scope: [],
+      bounds: rule.__rule__(),
+      fold: PersonalFields.fold_events(rule),
+      attempt: context.attempt
+    }
+
+    started = System.monotonic_time()
+
+    case reads(dispatch, started) do
+      {:ok, merged, reads, answers, _tags} ->
+        filter(dispatch, merged, reads, System.monotonic_time() - started, answers)
+
+      :nothing_to_read ->
+        {:ok, %Result{}, dispatch}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc """
+  A rule's append, on the aggregate's stream at its expected version: conditional, or after
+  `[]` from `query/2` a plain one, as a route with no rule makes, under the batch bound alone.
+  The store's answer, or a refusal with nothing sent.
+  """
+  def append_rule(
+        %__MODULE__{condition: nil} = dispatch,
+        _target,
+        stream_uuid,
+        expected_version,
+        event_data
+      ) do
+    %__MODULE__{application: application} = dispatch
+
+    with :ok <- within_batch(dispatch, event_data) do
+      EventStore.append_to_stream(application, stream_uuid, expected_version, event_data)
+    end
+  end
+
+  def append_rule(%__MODULE__{} = dispatch, target, stream_uuid, expected_version, event_data) do
+    %__MODULE__{application: application, condition: condition} = dispatch
+
+    appends = [{stream_uuid, expected_version, event_data}]
+
+    with :ok <- within_batch(dispatch, event_data),
+         {:ok, [{_stream_uuid, _version, required}]} <-
+           checked(dispatch, appends, condition[:items]) do
+      EventStore.append_to_stream(application, stream_uuid, expected_version, required,
+        condition: Keyword.put(condition, :target, target)
+      )
+    end
+  end
+
+  @doc """
+  Says a rule's condition failed and the attempt runs again.
+  """
+  def rule_retried(application, rule, %ExecutionContext{attempt: attempt}) do
+    :telemetry.execute(@retry, %{attempt: attempt}, %{
+      application: application,
+      decision: rule,
+      reason: :append_condition_failed
+    })
   end
 
   @doc """
@@ -230,18 +312,25 @@ defmodule Decree.Decision.Dispatch do
   defp cycle(%__MODULE__{} = dispatch) do
     started = System.monotonic_time()
 
+    with {:ok, merged, reads, answers, tags} <- reads(dispatch, started),
+         read_time = System.monotonic_time() - started,
+         {:ok, state} <- fold(dispatch, merged, reads, read_time, answers),
+         :ok <- admit(dispatch, state),
+         {:ok, mode} <- classify(dispatch, merged, tags) do
+      decide(mode, dispatch, state, merged, reads)
+    end
+  end
+
+  # Steps 1 to 3, the part a rule shares.
+  defp reads(%__MODULE__{} = dispatch, started) do
     with {:ok, read} <- first_read(dispatch),
          {:ok, result} <- read_query(dispatch, read),
          merged = Read.first(read, result),
          :ok <- within_events(dispatch, merged, [read], started),
          {:ok, merged, reads, answers} <- second_read(dispatch, merged, read, started),
          {:ok, tags} <- fetch_tags(dispatch, merged),
-         :ok <- check_tag_index(tags),
-         read_time = System.monotonic_time() - started,
-         {:ok, state} <- fold(dispatch, merged, reads, read_time, answers),
-         :ok <- admit(dispatch, state),
-         {:ok, mode} <- classify(dispatch, merged, tags) do
-      decide(mode, dispatch, state, merged, reads)
+         :ok <- check_tag_index(tags) do
+      {:ok, merged, reads, answers, tags}
     end
   end
 
@@ -251,12 +340,23 @@ defmodule Decree.Decision.Dispatch do
       {:error, _reason} = error ->
         error
 
+      [] when is_nil(dispatch.command_tag) ->
+        :nothing_to_read
+
       items ->
         with {:ok, parsed} <- Read.parse(own_items(dispatch, items)),
              :ok <- replays_in_scope(dispatch, parsed) do
-          bounded(dispatch, [], Read.layout(parsed, framework_items(dispatch)))
+          bounded(dispatch, [], layout(dispatch, parsed))
         end
     end
+  end
+
+  defp layout(%__MODULE__{command_tag: nil} = dispatch, parsed) do
+    Read.layout_rule(parsed, framework_items(dispatch))
+  end
+
+  defp layout(%__MODULE__{} = dispatch, parsed) do
+    Read.layout(parsed, framework_items(dispatch))
   end
 
   # A create's fact item is the decision's own, in the first read only. Anything but a list
@@ -300,7 +400,7 @@ defmodule Decree.Decision.Dispatch do
         items ->
           with {:ok, parsed} <- Read.parse(items),
                :ok <- replays_in_scope(dispatch, parsed),
-               read = Read.layout(parsed, framework_items(dispatch)),
+               read = layout(dispatch, parsed),
                {:ok, read} <- bounded(dispatch, [first], read) do
             reads = [first, read]
 
@@ -325,7 +425,14 @@ defmodule Decree.Decision.Dispatch do
     end
   end
 
+  defp framework_items(%__MODULE__{command_tag: nil}), do: []
   defp framework_items(%__MODULE__{command_tag: command_tag}), do: [[tags: [command_tag]]]
+
+  defp read_query(%__MODULE__{command_tag: nil} = dispatch, %Read{items: items}) do
+    %__MODULE__{application: application, bounds: bounds} = dispatch
+
+    EventStore.read_query(application, items, count: bounds.max_events + 1)
+  end
 
   defp read_query(%__MODULE__{} = dispatch, %Read{items: items}) do
     %__MODULE__{application: application, bounds: bounds, command_tag: command_tag} = dispatch
@@ -356,6 +463,20 @@ defmodule Decree.Decision.Dispatch do
       telemetry_read(dispatch, merged, reads, read_time, System.monotonic_time() - started)
 
       {:ok, state}
+    end
+  end
+
+  # What a rule keeps of its reads. The condition's `after` is the first read's, as a
+  # decision's is.
+  defp filter(%__MODULE__{} = dispatch, %Merged{} = merged, reads, read_time, answers) do
+    started = System.monotonic_time()
+
+    with {:ok, events, _answers} <- readable(dispatch, merged, answers) do
+      telemetry_read(dispatch, merged, reads, read_time, System.monotonic_time() - started)
+
+      condition = [items: Read.condition_items(reads), after: merged.after]
+
+      {:ok, %Result{events: events}, %__MODULE__{dispatch | condition: condition}}
     end
   end
 
@@ -391,8 +512,11 @@ defmodule Decree.Decision.Dispatch do
   # An answer from a callback that saw decrypted events or state: its reason is returned to the
   # caller and goes to `after_failure` and telemetry, so an adopted decision's is reduced, as an
   # exit's is. In the steps, not in `shape/1`: `Decree.Decision.Assertions` shares that, with no
-  # logs or telemetry to keep a value from.
-  defp callback_answer(%__MODULE__{fold: nil}, answer), do: answer
+  # logs or telemetry to keep a value from. A rule's is reduced whatever it lists, as its raises
+  # are, because it can read another subject's plaintext.
+  defp callback_answer(%__MODULE__{fold: nil, command_tag: tag}, answer) when not is_nil(tag) do
+    answer
+  end
 
   defp callback_answer(%__MODULE__{}, {:error, reason}) do
     {:error, RedactedError.reduce(reason)}
@@ -516,10 +640,8 @@ defmodule Decree.Decision.Dispatch do
     condition = [items: items, after: merged.after]
     opts = [condition: condition, returning: :append_result]
 
-    with :ok <- check_digests(dispatch, appends, items) do
-      appends_required = required(appends, asked(dispatch, items))
-
-      case EventStore.append_to_streams(dispatch.application, appends_required, opts) do
+    with {:ok, required} <- checked(dispatch, appends, items) do
+      case EventStore.append_to_streams(dispatch.application, required, opts) do
         {:ok, %AppendResult{} = result} ->
           decided(dispatch, appends, result, events, state)
 
@@ -529,6 +651,14 @@ defmodule Decree.Decision.Dispatch do
         {:error, _reason} = error ->
           error
       end
+    end
+  end
+
+  # What both append paths ask of a batch before the store: a decision's `appends`, and a rule's
+  # one stream as a list of one. Its answer is `appends` with each event's required kinds.
+  defp checked(%__MODULE__{} = dispatch, appends, items) do
+    with :ok <- check_digests(dispatch, appends, items) do
+      {:ok, required(appends, asked(dispatch, items))}
     end
   end
 

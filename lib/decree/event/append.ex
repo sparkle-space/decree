@@ -45,8 +45,9 @@ defmodule Decree.Event.Append do
   rescued here: the aggregate or the decision answers it, having written nothing. On an event
   with a declaration anything leaving an implementation can carry the value it failed on, so
   its error reason, exit and throw are reduced by `Decree.PersonalFields.RedactedError.reduce/1`,
-  and a raise becomes a `Decree.PersonalFields.RedactedError`. An event's
-  `__required_tag_kinds__/2` is treated the same way, because it sees the same plaintext.
+  a throw leaving as the exit `{:nocatch, reduced}`, and a raise becomes a
+  `Decree.PersonalFields.RedactedError`. An event's `__required_tag_kinds__/2` is treated the
+  same way, because it sees the same plaintext.
 
   ## Framework tags
 
@@ -169,7 +170,7 @@ defmodule Decree.Event.Append do
       reraise RedactedError.redact(error), RedactedError.scrub_stacktrace(__STACKTRACE__)
   catch
     :exit, reason -> exit(RedactedError.reduce(reason))
-    :throw, value -> throw(RedactedError.reduce(value))
+    :throw, value -> RedactedError.leave_throw(value, __STACKTRACE__)
   end
 
   # The tag context's metadata is this event's copy, after the drop and before the encrypt.
