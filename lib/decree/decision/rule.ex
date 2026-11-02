@@ -104,8 +104,9 @@ defmodule Decree.Decision.Rule do
   state, no snapshot. `execute/2` is the application's own code, and the framework does not
   look inside what it returns. So it must not copy the result, or anything in it, into an
   event, or into the state it seeds a `Decree.Aggregate.Multi` with: either would keep it.
-  `Inspect` shows nothing of a result, and with the JSON serializer an event holding one
-  raises before it is stored. Another serializer has no such fence.
+  `Inspect` shows nothing of a result. With the JSON serializer, an event whose encoder hands a
+  result to `Jason` raises before it is stored. An encoder of the event's own can leave the
+  field out or unpack its events, and another serializer has no such fence at all.
 
   **`[]`** from `c:query/2` means this command has nothing to check, as a registration with no
   address has not. `execute/2` gets an empty result, and the append is the plain one a route
@@ -262,8 +263,9 @@ defmodule Decree.Decision.Rule do
 
       - `events` - the data of the events the rule's own items matched, in position order.
 
-    `Inspect` shows nothing of them, and JSON refuses it, so it cannot reach a log by accident,
-    nor an event while the serializer is JSON.
+    `Inspect` shows nothing of them, so it cannot reach a log by accident. `Jason` refuses to
+    encode it, which fences an event only while the serializer is JSON and the event's encoder
+    hands the result to `Jason` whole.
     """
 
     @derive {Inspect, only: []}
