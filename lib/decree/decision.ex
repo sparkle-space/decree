@@ -298,10 +298,10 @@ defmodule Decree.Decision do
 
   ## Answers
 
-  A raise from any callback, from a `Decree.Event.Tags` implementation, or from an upcaster on
-  an event the reads matched, is rescued, and the dispatch answers `{:error, error}`, as a raise
-  from `execute/2` does. An error from a `Decree.Event.Tags` implementation is the answer as it
-  stands.
+  A raise from any callback, from a `Decree.Event.Tags` implementation, or from reading an
+  event the reads matched, in the store's deserializing, the adapter's mapping or an upcaster,
+  is rescued, and the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An
+  error from a `Decree.Event.Tags` implementation is the answer as it stands.
 
   An exit or a throw from any of it, on any decision, answers
   `{:error, :decision_execution_failed}`. It logs nothing but what
@@ -390,9 +390,12 @@ defmodule Decree.Decision do
       an aggregate's span, `execution_context` holds the command and its metadata in the clear,
       `events` are the new events before they are encrypted, and `error` is the answer. The
       state is on none of these.
-    - `[:decree, :event_store, :read_query]`, a span per read, covering the store's answer and
-      not the upcast, which runs after it stops. An upcaster's failure reaches the span above
-      as "Answers" says, and never this span's exception event.
+    - `[:decree, :event_store, :read_query]`, a span per read, covering the store's answer,
+      its deserializing and mapping included, and not the upcast, which runs after it stops.
+      Its exception event never fires: a failure inside it stops it with `error` in the stop
+      metadata, the kind alone (`:error`, `:exit` or `:throw`), and is raised again after. A
+      read that answered stops with no `error`. Either failure reaches the span above as
+      "Answers" says.
     - `[:decree, :decision, :read]`, once per completed read cycle, one refused on
       `max_events` included. Measurements `items`, `probes`, `matched_events`, `read_time`
       and `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata

@@ -42,7 +42,8 @@ defmodule Decree.Decision.RuleLeaksTest do
                  [:decree, :decision, :retry],
                  [:decree, :decision, :refused],
                  [:decree, :personal_field, :key_unknown],
-                 [:decree, :personal_field, :plaintext_read]
+                 [:decree, :personal_field, :plaintext_read],
+                 [:decree, :store, :subscription, :catch_up, :error]
                ] ++ for(span <- @spans, stage <- [:start, :stop, :exception], do: span ++ [stage])
 
   setup do
@@ -243,6 +244,66 @@ defmodule Decree.Decision.RuleLeaksTest do
       else
         assert reason == :aggregate_execution_failed
       end
+    end
+  end
+
+  # The store deserializes each event inside the read's span. `Jason.DecodeError` holds the
+  # bytes it failed on, and the span answers the failure after it has stopped, so it leaves
+  # through the aggregate, which redacts it, and through no span's exception event.
+  describe "a stored event the serializer cannot read" do
+    setup %{scope: scope} do
+      # Not JSON, and the marker in its bytes.
+      corrupt_data(Atom.to_string(Read), "{" <> @marker)
+
+      [items: [[types: [Atom.to_string(Read)], tags: ["scope:" <> scope]]]]
+    end
+
+    test "shows nothing on a rule route", %{scope: scope} do
+      command = ruled(scope: scope)
+
+      assert {:error, %RedactedError{type: Jason.DecodeError}} =
+               assert_no_leak(command, ruled_stream(command))
+
+      refute_received {:telemetry, [:decree, :event_store, :read_query, :exception], _, _}
+    end
+
+    test "reaches a plain read as it was raised", %{items: items} do
+      {error, stacktrace} =
+        try do
+          EventStore.read_query(App, items)
+        rescue
+          error -> {error, __STACKTRACE__}
+        end
+
+      assert %Jason.DecodeError{data: "{" <> @marker} = error
+
+      assert Enum.any?(stacktrace, fn {module, _function, _arity, _location} ->
+               module == Decree.Serialization.JsonSerializer
+             end)
+    end
+
+    # A contained failure stops the span as a read that answered does, saying only its kind.
+    test "stops the read's span, naming the failure's kind and nothing else", %{items: items} do
+      elsewhere = [[types: [Atom.to_string(Read)], tags: ["scope:" <> scope()]]]
+
+      assert {:ok, %{events: []}} = EventStore.read_query(App, elsewhere)
+
+      assert_received {:telemetry, [:decree, :event_store, :read_query, :stop], succeeded,
+                       answered}
+
+      refute Map.has_key?(answered, :error)
+
+      assert_raise Jason.DecodeError, fn -> EventStore.read_query(App, items) end
+
+      assert_received {:telemetry, [:decree, :event_store, :read_query, :stop], failed, metadata}
+      refute_received {:telemetry, [:decree, :event_store, :read_query, :exception], _, _}
+
+      assert %{duration: duration} = failed
+      assert is_integer(duration) and duration >= 0
+      assert Map.keys(failed) == Map.keys(succeeded)
+
+      assert %{application: App, items: ^items, opts: [], error: :error} = metadata
+      assert Map.keys(Map.delete(metadata, :error)) == Map.keys(answered)
     end
   end
 

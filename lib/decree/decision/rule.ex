@@ -148,8 +148,9 @@ defmodule Decree.Decision.Rule do
 
   A rule route is redacted whether or not the aggregate uses `Decree.PersonalFields.Aggregate`,
   because a read can bring in another subject's plaintext. A raise from a callback, from
-  `execute/2`, `apply/2` or `before_execute`, from preparing, or from an upcaster on an event
-  the rule reads, reaches logs, telemetry, `after_failure` and the answer as a
+  `execute/2`, `apply/2` or `before_execute`, from preparing, or from reading an event the rule
+  reads, in the store's deserializing, the adapter's mapping or an upcaster, reaches logs,
+  telemetry, `after_failure` and the answer as a
   `Decree.PersonalFields.RedactedError` with a scrubbed stacktrace. An exit leaves reduced by
   `Decree.PersonalFields.RedactedError.reduce/1`. A throw is reduced the same way and leaves as
   an exit, `{:nocatch, reduced}`, because `gen_server` reads a term thrown from a callback as its
@@ -158,8 +159,10 @@ defmodule Decree.Decision.Rule do
   `c:followup_query/3` is reduced the same way. `c:query/2` has read nothing, so its reason
   stands.
 
-  The upcast runs after the read's `[:decree, :event_store, :read_query]` span has stopped, so
-  an upcaster's failure reaches the boundary above and never that span's exception event.
+  None of these reaches the read's `[:decree, :event_store, :read_query]` span. The store's
+  deserializing and the adapter's mapping run inside it, and its exception event never fires:
+  a failure there stops it with `error` set to its kind alone, `:error`, `:exit` or `:throw`,
+  and is raised again after. The upcast runs after it stops. Each reaches the boundary above.
 
   **An `{:error, reason}` from `execute/2` is not reduced.** It goes back to the caller, to
   `after_failure` and to telemetry as it stands, as on any aggregate route. So `execute/2` answers
@@ -237,7 +240,8 @@ defmodule Decree.Decision.Rule do
     - `attempt` counts every run of the command in this dispatch, for either reason.
 
   A route with no rule fires none of them. The reads' `[:decree, :event_store, :read_query]`
-  span covers the store's answer and not the upcast: see "Leaks".
+  span never fires its exception event, and its stop names a failure's kind in `error`: see
+  "Leaks".
   """
 
   alias Decree.Event.TagContext

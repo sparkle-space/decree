@@ -751,7 +751,15 @@ defmodule Decree.RuleCase do
   using do
     quote do
       import Decree.DecisionStoreCase,
-        only: [attach_telemetry: 1, hold: 2, scope: 0, seed: 3, seed: 4, stored: 2]
+        only: [
+          attach_telemetry: 1,
+          corrupt_data: 2,
+          hold: 2,
+          scope: 0,
+          seed: 3,
+          seed: 4,
+          stored: 2
+        ]
 
       import Decree.RuleCase
 

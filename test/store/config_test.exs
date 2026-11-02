@@ -305,6 +305,7 @@ defmodule Decree.Store.ConfigTest do
       assert hard_deletes(nil) == false
       assert hard_deletes({:system, "ES_HARD_DELETES_UNSET"}) == false
       assert hard_deletes({:system, "ES_HARD_DELETES_UNSET", false}) == false
+      assert hard_deletes({:system, "ES_HARD_DELETES_UNSET", nil}) == false
       assert hard_deletes({:system, "ES_HARD_DELETES_UNSET", "true"}) == true
     end
 
@@ -342,6 +343,7 @@ defmodule Decree.Store.ConfigTest do
     test "reads nothing set as off" do
       assert sensitive(nil) == false
       assert sensitive({:system, "ES_SENSITIVE_UNSET"}) == false
+      assert sensitive({:system, "ES_SENSITIVE_UNSET", nil}) == false
     end
 
     test "raises on anything else, naming the key" do
