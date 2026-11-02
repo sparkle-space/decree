@@ -192,6 +192,46 @@ defmodule Decree.Decision.AppenderMapTest do
              ) == [{:unchecked_appender, @claimed, ImportCommand, OtherDecision, ClaimDecision}]
     end
 
+    test "every rule of the other decision naming the type has to cover it" do
+      appenders = %{EmailClaimed => [{ImportCommand, OtherDecision}]}
+
+      rules = [
+        {ClaimDecision, [item()]},
+        {OtherDecision, [item()]},
+        {OtherDecision, [item(@claimed, ["tenant:t"])]}
+      ]
+
+      assert AppenderMap.check(rules, appenders, []) ==
+               [{:unchecked_appender, @claimed, ImportCommand, OtherDecision, ClaimDecision}]
+    end
+
+    test "two rules of the other decision, both covering, answer nothing" do
+      appenders = %{EmailClaimed => [{ImportCommand, OtherDecision}]}
+
+      rules = [
+        {ClaimDecision, [item()]},
+        {OtherDecision, [item()]},
+        {OtherDecision, [item(@claimed, ["email:e", "tenant:t"])]}
+      ]
+
+      assert AppenderMap.check(rules, appenders, []) == []
+    end
+
+    test "a rule of the other decision not naming the type says nothing" do
+      appenders = %{
+        EmailClaimed => [{ImportCommand, OtherDecision}],
+        NoExports => [{ImportCommand, OtherDecision}]
+      }
+
+      rules = [
+        {ClaimDecision, [item()]},
+        {OtherDecision, [item()]},
+        {OtherDecision, [item(@no_exports, [])]}
+      ]
+
+      assert AppenderMap.check(rules, appenders, []) == []
+    end
+
     test "a type with no row is a problem, and so is an empty one" do
       for appenders <- [%{}, %{EmailClaimed => []}] do
         assert AppenderMap.check([{ClaimDecision, [item()]}], appenders, []) ==
@@ -354,6 +394,50 @@ defmodule Decree.Decision.AppenderMapTest do
       appenders = %{EmailClaimed => [{ImportCommand, CreateDecision}]}
 
       rules = [{ClaimDecision, [item(@claimed, [])]}, {CreateDecision, [item()]}]
+
+      assert AppenderMap.check(rules, appenders, []) == []
+    end
+
+    test "two rules of one create, one a fact item alone, do not cover another rule" do
+      appenders = %{EmailClaimed => [{ImportCommand, CreateDecision}]}
+
+      fact = item(@claimed, ["tenant:t"])
+
+      rules = [
+        {ClaimDecision, [item()]},
+        {CreateDecision, [fact, item()]},
+        {CreateDecision, [fact]}
+      ]
+
+      assert AppenderMap.check(rules, appenders, []) ==
+               [{:unchecked_appender, @claimed, ImportCommand, CreateDecision, ClaimDecision}]
+    end
+
+    test "two rules of one create, both covering, answer nothing" do
+      appenders = %{EmailClaimed => [{ImportCommand, CreateDecision}]}
+
+      fact = item(@claimed, ["tenant:t"])
+
+      rules = [
+        {ClaimDecision, [item()]},
+        {CreateDecision, [fact, item()]},
+        {CreateDecision, [fact, item(@claimed, ["email:e", "tenant:t"])]}
+      ]
+
+      assert AppenderMap.check(rules, appenders, []) == []
+    end
+
+    test "a rule of one create not naming the type says nothing" do
+      appenders = %{
+        EmailClaimed => [{ImportCommand, CreateDecision}],
+        NoExports => [{ImportCommand, CreateDecision}]
+      }
+
+      rules = [
+        {ClaimDecision, [item(@no_exports, ["correlation:c"])]},
+        {CreateDecision, [item(), item(@no_exports, ["correlation:c"])]},
+        {CreateDecision, [item()]}
+      ]
 
       assert AppenderMap.check(rules, appenders, []) == []
     end

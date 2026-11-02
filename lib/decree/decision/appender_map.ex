@@ -45,9 +45,11 @@ defmodule Decree.Decision.AppenderMap do
 
   **Condition coverage.** A type with no row is `{:no_appender_row, type, decision}`. Every
   row must be the rule's own decision, or another rule's decision whose items name that type
-  with at least these kinds, or a command in `conditional:`, or a pair in `dominant:`.
-  Otherwise the problem is `{:unchecked_appender, type, command, target, decision}`. A rule's
-  fact item covers nothing for another rule, because a dispatch asks no event for its kinds.
+  with at least these kinds, or a command in `conditional:`, or a pair in `dominant:`. Every
+  rule of that other decision naming the type must, because each stands for a dispatch
+  appending it, and a rule not naming it says nothing. Otherwise the problem is
+  `{:unchecked_appender, type, command, target, decision}`. A rule's fact item covers nothing
+  for another rule, because a dispatch asks no event for its kinds.
 
   A type that names no event module is `{:unknown_type, type, decision}`.
   """
@@ -160,12 +162,15 @@ defmodule Decree.Decision.AppenderMap do
     target == decision or
       command in Keyword.get(opts, :conditional, []) or
       {module, command} in Keyword.get(opts, :dominant, []) or
-      Enum.any?(rules, &covers?(&1, target, type, kinds))
+      covers?(rules, target, type, kinds)
   end
 
-  defp covers?({decision, items}, target, type, kinds) do
-    decision == target and type in Read.named_types(items) and
-      kinds -- Read.kinds_naming(asked_items(decision, items), type) == []
+  # Each rule naming the type is a dispatch appending it, so one short of `kinds` is a miss.
+  defp covers?(rules, target, type, kinds) do
+    naming = for {^target, items} <- rules, type in Read.named_types(items), do: items
+
+    naming != [] and
+      Enum.all?(naming, &(kinds -- Read.kinds_naming(asked_items(target, &1), type) == []))
   end
 
   # As a dispatch asks: the target's condition reads the fact item, and no event is asked for it.
