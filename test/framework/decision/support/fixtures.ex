@@ -4,6 +4,11 @@ defmodule Decree.DecisionFixtures do
   # Fixtures for the decision tests. A `Scripted` command carries the functions its decision's
   # callbacks run, so a test states the behaviour it needs, and can block a callback on a
   # message to interleave another writer.
+
+  @doc """
+  The window every fixture decision answers. A test moves it with `with_window/1`.
+  """
+  def command_window_ms, do: Application.get_env(:decree, :decision_test_window_ms, 300_000)
 end
 
 defmodule Decree.DecisionFixtures.Claimed do
@@ -49,6 +54,18 @@ defmodule Decree.DecisionFixtures.Burning do
   defstruct [:scope]
 end
 
+defmodule Decree.DecisionFixtures.Secret do
+  @moduledoc false
+
+  # Carries a tag of the kind `DeletableApp` declares.
+  @derive Jason.Encoder
+  defstruct [:secret]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{secret: secret}, _context), do: {:ok, ["secret:" <> secret]}
+  end
+end
+
 defmodule Decree.DecisionFixtures.TagsAnswering do
   @moduledoc false
 
@@ -86,6 +103,11 @@ defmodule Decree.DecisionFixtures.Tight do
   defstruct [:command_id, :claim_id, :scope, script: %{}]
 end
 
+defmodule Decree.DecisionFixtures.Create do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
 defmodule Decree.DecisionFixtures.ByFunction do
   @moduledoc false
   defstruct [:command_id, :claim_id, :scope, script: %{}]
@@ -102,9 +124,12 @@ defmodule Decree.DecisionFixtures.ClaimDecision do
   @moduledoc false
 
   # A plain decision with no optional callback: one claim per scope.
-  use Decree.Decision
+  use Decree.Decision, create: false
 
   alias Decree.DecisionFixtures.{Claim, Claimed}
+
+  @impl Decree.Decision
+  def command_window_ms, do: Decree.DecisionFixtures.command_window_ms()
 
   @impl Decree.Decision
   def query(%Claim{scope: scope}, %Decree.Event.TagContext{}) do
@@ -132,9 +157,18 @@ defmodule Decree.DecisionFixtures.Scripting do
   # `ClaimDecision` does. The state is the list of events folded.
   defmacro __using__(opts) do
     quote do
-      use Decree.Decision, unquote(opts)
+      use Decree.Decision, unquote(Keyword.put_new(opts, :create, false))
 
       alias Decree.DecisionFixtures.{Burning, Claimed}
+
+      def command_window_ms, do: Decree.DecisionFixtures.command_window_ms()
+
+      def scope_tags(command) do
+        case command.script do
+          %{scope_tags: scope_tags} -> scope_tags.(command)
+          _script -> []
+        end
+      end
 
       def query(command, tag_context) do
         case command.script do
@@ -191,13 +225,24 @@ defmodule Decree.DecisionFixtures.TightDecision do
     max_batch_events: 2
 end
 
+defmodule Decree.DecisionFixtures.CreateDecision do
+  @moduledoc false
+
+  # Makes a `Claimed` fact per route identity.
+  use Decree.DecisionFixtures.Scripting,
+    create: [types: ["Elixir.Decree.DecisionFixtures.Claimed"]]
+end
+
 defmodule Decree.DecisionFixtures.RecordingDecision do
   @moduledoc false
 
   # Tells the process registered as `:decision_recorder` about every callback, in order.
-  use Decree.Decision
+  use Decree.Decision, create: false
 
   alias Decree.DecisionFixtures.{Claimed, Released, Scripted}
+
+  @impl Decree.Decision
+  def command_window_ms, do: Decree.DecisionFixtures.command_window_ms()
 
   @impl Decree.Decision
   def query(%Scripted{scope: scope}, _tag_context) do
@@ -248,6 +293,8 @@ defmodule Decree.DecisionFixtures.Router do
     ByFunction,
     Claim,
     ClaimDecision,
+    Create,
+    CreateDecision,
     Scripted,
     ScriptedDecision,
     Tight,
@@ -263,6 +310,7 @@ defmodule Decree.DecisionFixtures.Router do
   )
 
   decide(Tight, to: TightDecision, identity: :claim_id, identity_prefix: "tight-")
+  decide(Create, to: CreateDecision, identity: :claim_id, identity_prefix: "create-")
 
   decide(ByFunction,
     to: Decree.DecisionFixtures.FunctionDecision,
@@ -318,9 +366,12 @@ end
 
 defmodule Decree.DecisionFixtures.ParityDecision do
   @moduledoc false
-  use Decree.Decision
+  use Decree.Decision, create: false
 
   alias Decree.DecisionFixtures.{ParityCommand, ParityEvent}
+
+  @impl Decree.Decision
+  def command_window_ms, do: Decree.DecisionFixtures.command_window_ms()
 
   @impl Decree.Decision
   def query(%ParityCommand{scope: scope}, _tag_context) do
@@ -436,6 +487,7 @@ defmodule Decree.DecisionFixtures.App do
           "claim-",
           "scripted-",
           "tight-",
+          "create-",
           "function-",
           "parity-decision-"
         ]
@@ -461,6 +513,31 @@ defmodule Decree.DecisionFixtures.DeletableApp do
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [tag_kinds: ["secret"]]
+    ],
+    pubsub: :local,
+    registry: :local
+
+  router Decree.DecisionFixtures.Router
+
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
+defmodule Decree.DecisionFixtures.DeletableStreamsApp do
+  @moduledoc false
+
+  # A prefix both conditional and deletable, so a hard delete can reach a decision's stream.
+  # `Claimed` is declared, so a query here must not name it.
+  use Decree.Application,
+    otp_app: :decree,
+    event_store: [
+      adapter: Decree.EventStore.Adapters.EventStore,
+      event_store: Decree.FrameworkEventStore,
+      conditional_appends: [stream_prefixes: ["scripted-"]],
+      deletable: [
+        stream_prefixes: ["scripted-"],
+        event_types: ["Elixir.Decree.DecisionFixtures.Claimed"]
+      ],
+      enable_hard_deletes: true
     ],
     pubsub: :local,
     registry: :local

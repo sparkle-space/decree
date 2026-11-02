@@ -90,7 +90,7 @@ defmodule Decree.Decision.RetryTest do
       seed(%Released{scope: "x"}, ["command:" <> command.command_id])
       send(pid, :go)
 
-      assert {:error, :unclassified_command_match} = Task.await(task, :infinity)
+      assert {:error, :reused_command_id} = Task.await(task, :infinity)
       assert stored("scripted-" <> command.claim_id) == []
     end
 
@@ -213,7 +213,7 @@ defmodule Decree.Decision.RetryTest do
       assert_receive {:between_reads, ^pid}
       send(pid, :go)
 
-      assert {:error, :unclassified_command_match} = Task.await(task, :infinity)
+      assert {:error, :reused_command_id} = Task.await(task, :infinity)
 
       assert_received {:telemetry, @retry, %{attempt: 1}, %{reason: :new_command_match}}
       refute_received {:telemetry, @retry, _, _}

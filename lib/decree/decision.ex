@@ -9,7 +9,7 @@ defmodule Decree.Decision do
   dispatch and answers that dispatch.
 
       defmodule ClaimEmail do
-        use Decree.Decision
+        use Decree.Decision, create: false
 
         defmodule State do
           defstruct claimed?: false
@@ -18,6 +18,8 @@ defmodule Decree.Decision do
         def query(%ClaimEmailCommand{digest: digest}, _tag_context) do
           [[types: ["Elixir.EmailClaimed"], tags: ["email:" <> digest]]]
         end
+
+        def command_window_ms, do: :timer.minutes(5)
 
         def initial_state, do: %State{}
 
@@ -43,6 +45,10 @@ defmodule Decree.Decision do
     - `c:evolve/2` folds one event into the state.
     - `c:admit/2`, optional, answers `:ok` or `{:error, reason}`.
     - `c:decide/2` answers what to append.
+    - `c:command_window_ms/0` says how long a command match counts as this command's. See
+      "The command window".
+    - `c:scope_tags/1`, optional, names the tags a command's events must carry besides the
+      route's stream tag. See "The command window".
 
   The state comes first, as in an aggregate's `execute/2` and `apply/2`. These callbacks
   receive the command, the tag context, which holds the dispatch metadata, and what the
@@ -55,8 +61,11 @@ defmodule Decree.Decision do
   optional `:tags` and optional `replay: true`. `:types` and `:tags` are those of
   `Decree.Store.Query`, which has the rest of what they mean. An item naming no types
   answers `{:error, :invalid_query}`, and so does `c:query/2` answering `[]`: a decision
-  that reads nothing has nothing to decide on. `replay: true` marks an item as finding this
-  command's own earlier work. Nothing reads it yet: any command match refuses at step 7.
+  that reads nothing has nothing to decide on, unless it is a create. `replay: true` marks an
+  item as finding this command's own earlier work, and sends a resend to `c:decide/2` to say
+  what its first answer was: see "Replay safety". Its `:tags` must hold a `command_kind:` tag
+  and a tag of the command's scope, the route's stream tag or one of `c:scope_tags/1`, or it
+  answers `{:error, :invalid_query}`.
 
   **Lead with the narrowest tag.** An item's first tag is the one the index searches, and
   what a condition costs under the `$all` lock is that tag's hits after `after`. So a broad
@@ -71,12 +80,14 @@ defmodule Decree.Decision do
   Middleware runs as it does on an aggregate route, then, in a task as an aggregate command
   runs but with no aggregate process and no registry entry:
 
-    0. Refuse a command with no `command_id`, `{:error, :missing_command_id}`, and a
-       route identity that is not a canonical UUID, `{:error, :invalid_decision_identity}`.
-       Neither sends a statement.
-    1. Call `c:query/2`. Its error is the answer. Refuse an item naming no types. Refuse
-       more condition items than `max_items` and more probes than `max_probes`. Read the
-       items and the command item.
+    0. Refuse a command with no `command_id`, `{:error, :missing_command_id}`, a route
+       identity that is not a canonical UUID or has no stream tag,
+       `{:error, :invalid_decision_identity}`, and a `c:scope_tags/1` answer that is not a
+       list of non-empty strings, `{:error, :invalid_scope_tags}`. None sends a statement.
+    1. Call `c:query/2`. Its error is the answer. On a create, put the fact item first.
+       Refuse an item naming no types or a malformed `replay: true` item. Refuse more
+       condition items than `max_items` and more probes than `max_probes`. Read the items and
+       the command item.
     2. Call `c:followup_query/3` if it is defined, with the events the first read's own
        items matched, those the decision lists decrypted. Check both bounds again across both
        reads, and read the items and the command item. A command match the first read did
@@ -88,12 +99,17 @@ defmodule Decree.Decision do
        matched is not shown to `c:evolve/2`.
     5. Decrypt the ones the decision lists, and fold them all with `c:evolve/2`.
     6. Call `c:admit/2`. Its error is the answer.
-    7. Classify the command matches. Any match refuses with
-       `{:error, :unclassified_command_match}`: this command's events are already in the
-       store, and nothing here can tell which outcome the caller is owed.
-    8. Call `c:decide/2` and apply the new events to the state. Prepare them, per member,
-       which takes their tags from the plaintext and encrypts what they declare. Its error
-       is the answer. Append them at `:any_version` under the condition.
+    7. Classify the command matches inside the window, with the database's stamps, in this
+       order. None: go on to step 8. An event of another kind, or a scope tag no event
+       carries: `{:error, :reused_command_id}`. A `replay: true` item selected one of them:
+       a replay, for step 8. Otherwise a duplicate, `{:error, :duplicate_command}`.
+    8. Call `c:decide/2`. On a replay its error or `:duplicate` is the answer, and events
+       answer `{:error, :reused_command_id}`, with nothing appended. Otherwise apply the new
+       events to the state and prepare them, per member, which takes their tags from the
+       plaintext and encrypts what they declare. Its error is the answer. Refuse a batch
+       lacking a scope tag, `{:error, :batch_lacks_scope_tag}`, and on a create a batch with
+       no event of a declared type on the stream tag, `{:error, :batch_lacks_fact}`. Append
+       them at `:any_version` under the condition.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
@@ -114,9 +130,93 @@ defmodule Decree.Decision do
     - `{:streams, [{kind, identity, event_or_events}]}`, appended to several streams
       atomically. Each member lands on `<route prefix><identity>`, `kind` is that member's
       entity tag kind, an atom of the grammar of `stream_tag:` on the route, and `identity` a
-      canonical UUID. Each member's events carry its own stream tag and not another's.
+      canonical UUID. Each member's events carry its own stream tag and not another's. Every
+      scope tag has to land on some event of the batch, so the route's stream tag needs a
+      member for the route's entity, with the route's kind, or an event whose own tags carry
+      it.
     - `:duplicate`, which answers `{:error, :duplicate_command}` and appends nothing.
     - `{:error, reason}`, which is the answer as it stands and never retries.
+
+  After a replay exit it may answer only `:duplicate` or `{:error, reason}`. Events answer
+  `{:error, :reused_command_id}`: an event at or before `after` escapes the condition, so
+  appending there could commit one `command_id` twice. `[]` and a return it may not give keep
+  their own atoms.
+
+  ## Creates
+
+  `create:` is required on every decision. A decision whose command makes a fact, with the
+  route identity as the fact's id, names the fact's event types:
+
+      use Decree.Decision, create: [types: ["Elixir.EmailClaimed"]]
+
+  The first read's items then start with `[types: types, tags: [stream_tag]]`, the stream tag
+  being the route's. That is the decision's own item: it folds, it counts against `max_items`,
+  and the condition holds it, so a racing create with another `command_id` fails its append.
+  `c:query/2` may answer `[]`. Past the window a resend is a new command, and this item is what
+  still finds the fact, so `c:decide/2` answers its own "already exists".
+
+  What that item reads has to land. A create's batch needs at least one event whose type is
+  declared and whose own tags hold the stream tag, or the dispatch answers
+  `{:error, :batch_lacks_fact}` with nothing appended. One event has to do both: a declared
+  type on another member and the stream tag on another event add up to nothing the item finds.
+  A create that records a refusal as an event lists that type in `create:` too, so a later
+  create folds it, and is otherwise refused the same way: the rule fails closed.
+
+  Anything else says `create: false`. The item cannot be `replay: true`, which fails the build,
+  and a `replay: true` item of `c:query/2` or `c:followup_query/3` naming the stream tag on a
+  create answers `{:error, :invalid_query}` before that read is sent. So a create's replay item
+  takes its scope tag from `c:scope_tags/1`.
+
+  ## Replay safety
+
+  A resend inside the window is answered from the window. Past it, or for a process that
+  replays hours later, the command is new, so what makes it safe is a fact it can find. An
+  aggregate keeps its four cases. A decision-owned fact has a fifth: a scoped lifetime tag
+  query, with a `replay: true` item per command kind sharing the gate, no lower bound and no
+  window:
+
+      [types: ["Elixir.BoardGated"], tags: [key_tag, target_tag, "command_kind:CloseBoard"],
+       replay: true]
+
+  The item needs its `command_kind:` tag and a scope tag. `target_tag` is that one: past the
+  window nothing else keeps another entity's gate out of the fold, so a target other than the
+  route goes in `c:scope_tags/1`.
+
+  It folds what the first run recorded, so `c:decide/2` can reproduce a refusal it recorded as
+  an event, or answer `:duplicate`. A batch of a gate event and another answers from the gate.
+  The same `command_id` on another kind or entity is still reused: the kind and the scope are
+  checked before the item is.
+
+  ## The command window
+
+  `c:command_window_ms/0` is how long a command match counts as this command's, a positive
+  integer of milliseconds. Decree has no default for it. It is read at step 7 of each attempt
+  and only for a match, and anything else answers `{:error, :invalid_command_window}`.
+
+  A match is inside when the read's `read_at` less its stamp is under the window. Both are the
+  database's clock, never the host's, and the decision is the framework's: `c:evolve/2`,
+  `c:admit/2` and `c:decide/2` see no time. What a decision sees is the outcome. Inside, a
+  resend never reaches `c:decide/2` unless a replay item selected it. Outside, the match is
+  not classified at all, and shows up only if the decision's own items matched it.
+
+    - The edge is outside, a negative age is inside, and a nil stamp is outside.
+    - A clock step or a failover between the stamp and the check shifts the window. This is a
+      named residual: the window is a bound on a lost reply, not a proof of order.
+    - After the window a reused id is a new command, and it commits.
+    - A condition failure crossing the edge decides from the new read, whose window is the
+      only one that counts.
+    - An event of a deletable type, or a scope tag of a deletable kind, reads as reused and
+      fails closed, because the one tag fetch leaves them out.
+    - A hard delete takes a stream's `command:` rows, so a resend after it is a new command.
+      A hard delete of a stream linking a decision's events takes those events too, with their
+      `command:` rows, wherever they were appended, so a resend after that is a new command
+      as well.
+
+  The scope is the route's stream tag and `c:scope_tags/1`, deduplicated. Each tag must be on
+  some event of the matches inside the window, so a batch whose reply was lost is a duplicate
+  though no event of it carries every tag, and a batch that lands must carry them the same way.
+  A route entity that was a member of an earlier batch under the same id reads as that batch's
+  duplicate, since its tag is on an event in the window, and nothing commits.
 
   ## Personal fields
 
@@ -130,7 +230,7 @@ defmodule Decree.Decision do
   aggregate uses:
 
       defmodule ClaimEmail do
-        use Decree.Decision
+        use Decree.Decision, create: false
         use Decree.PersonalFields.Aggregate
 
         @personal_fold [EmailClaimed]
@@ -189,28 +289,34 @@ defmodule Decree.Decision do
       `max_probes`, or more matched events than `max_events`.
     - `:decision_batch_too_large` - more new events than `max_batch_events`.
     - `:too_many_attempts` - retries are spent.
-    - `:unclassified_command_match` - this command already left events in the store.
+    - `:reused_command_id` - this `command_id` already left events inside the window, for
+      another kind or entity, or a genuine resend's fold has moved past its gate and
+      `c:decide/2` answers events on the replay exit. A handler's in-place retry resends the
+      same id, so it stops or parks here instead of spinning.
     - `:key_unknown` - a personal value it reads or writes has no key to hand. Only the key
       coming back changes that.
 
-  `:reused_command_id` and `:tag_index_not_enabled` are reserved. Nothing answers them yet,
-  and a handler that names them now has an arm that never runs.
+  `:tag_index_not_enabled` is reserved. Nothing answers it yet, and a handler that names it
+  now has an arm that never runs.
 
   The other refusals are a bug in a command or a decision: `:missing_command_id`,
   `:invalid_decision_identity`, `:invalid_query`, `:decision_returned_no_events` for `[]`,
   `:ok` or `nil` from `c:decide/2` and `[]` for a member, `:invalid_decision_return` for
-  anything else it may not answer, and `:invalid_decision_stream` for a malformed member.
+  anything else it may not answer, `:invalid_decision_stream` for a malformed member,
+  `:batch_lacks_scope_tag`, `:batch_lacks_fact`, `:invalid_scope_tags` and
+  `:invalid_command_window`.
 
   ## Bounds
 
       use Decree.Decision,
+        create: false,
         max_items: 16,
         max_probes: 48,
         max_events: 1_000,
         max_batch_events: 100,
         bound_reason: "..."
 
-  Those are the defaults. Lowering one is free. Raising one past its default needs a
+  Those bounds are the defaults. Lowering one is free. Raising one past its default needs a
   non-empty `bound_reason:`, and the build fails without it, because the default is what
   was measured.
 
@@ -311,10 +417,21 @@ defmodule Decree.Decision do
   """
   @callback decide(state(), command()) :: decided()
 
-  @optional_callbacks followup_query: 3, admit: 2
+  @doc """
+  How long, in milliseconds, a command match counts as this command's. See "The command window".
+  """
+  @callback command_window_ms() :: pos_integer()
+
+  @doc """
+  The tags a command's events must carry besides the route's stream tag. See "The command
+  window". Defaults to `[]`.
+  """
+  @callback scope_tags(command()) :: [String.t()]
+
+  @optional_callbacks followup_query: 3, admit: 2, scope_tags: 1
 
   @bounds [max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100]
-  @options [:bound_reason | Keyword.keys(@bounds)]
+  @options [:bound_reason, :create | Keyword.keys(@bounds)]
 
   @doc false
   defmacro __using__(opts) do
@@ -323,11 +440,15 @@ defmodule Decree.Decision do
       @before_compile Decree.Decision
 
       @decree_decision_bounds Decree.Decision.__bounds__!(__MODULE__, opts)
+      @decree_decision_create Decree.Decision.__create__!(__MODULE__, opts)
 
       @doc false
       def admit(_state, _command), do: :ok
 
-      defoverridable admit: 2
+      @doc false
+      def scope_tags(_command), do: []
+
+      defoverridable admit: 2, scope_tags: 1
     end
   end
 
@@ -341,12 +462,21 @@ defmodule Decree.Decision do
               "to no event, so it may not define `handle/2` or declare Decree.Event.Handler"
     end
 
+    if not Module.defines?(module, {:command_window_ms, 0}, :def) do
+      raise ArgumentError,
+            "#{inspect(module)} uses Decree.Decision and does not define " <>
+              "`command_window_ms/0`: decree has no default for it"
+    end
+
     followup_query? = Module.defines?(module, {:followup_query, 3}, :def)
 
     quote do
       @doc false
       def __decision__ do
-        Map.put(@decree_decision_bounds, :followup_query?, unquote(followup_query?))
+        Map.merge(@decree_decision_bounds, %{
+          create: @decree_decision_create,
+          followup_query?: unquote(followup_query?)
+        })
       end
     end
   end
@@ -369,6 +499,45 @@ defmodule Decree.Decision do
 
     bounds
   end
+
+  @doc false
+  def __create__!(module, opts) do
+    case Keyword.fetch(opts, :create) do
+      {:ok, false} ->
+        false
+
+      {:ok, create} ->
+        create_types!(module, create)
+
+      :error ->
+        raise ArgumentError,
+              "#{inspect(module)} has no `create:` option, expected `create: [types: [...]]` " <>
+                "for a command that makes a fact, or `create: false`"
+    end
+  end
+
+  defp create_types!(module, create) do
+    cond do
+      Keyword.keyword?(create) and Keyword.has_key?(create, :replay) ->
+        raise ArgumentError,
+              "#{inspect(module)} has `replay:` in `create:`: the fact item is what a resend " <>
+                "past the window still finds, so it cannot be a replay item"
+
+      match?([types: _types], create) and types?(create[:types]) ->
+        create[:types]
+
+      true ->
+        raise ArgumentError,
+              "#{inspect(module)} has an invalid `create`: #{inspect(create)}, expected " <>
+                "`false` or `[types: types]`, a non-empty list of non-empty strings"
+    end
+  end
+
+  defp types?([_type | _types] = types) do
+    not List.improper?(types) and Enum.all?(types, &(is_binary(&1) and &1 != ""))
+  end
+
+  defp types?(_types), do: false
 
   defp bound!(module, opts, bound, default) do
     case Keyword.get(opts, bound, default) do

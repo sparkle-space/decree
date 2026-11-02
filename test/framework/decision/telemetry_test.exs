@@ -113,12 +113,15 @@ defmodule Decree.Decision.TelemetryTest do
       decide = fn _state, _command ->
         {:streams,
          [
-           {:user, user, %Claimed{note: secret}},
+           {:claim, user, %Claimed{note: secret}},
            {:order, order, %Claimed{note: secret}}
          ]}
       end
 
-      assert :ok = App.dispatch(scripted(decide: decide), metadata: %{"actor" => secret})
+      assert :ok =
+               App.dispatch(scripted(claim_id: user, decide: decide),
+                 metadata: %{"actor" => secret}
+               )
 
       for event <- [@append_start, @append_stop] do
         assert_received {:telemetry, ^event, _measurements, metadata}

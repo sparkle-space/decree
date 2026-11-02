@@ -31,6 +31,9 @@ defmodule Decree.Decision.Dispatch do
     :context,
     :tag_context,
     :command_tag,
+    :kind_tag,
+    :stream_tag,
+    :scope,
     :bounds,
     :fold,
     attempt: 1
@@ -157,25 +160,43 @@ defmodule Decree.Decision.Dispatch do
 
   # Step 0.
   defp ready(%__MODULE__{context: context} = dispatch) do
-    %ExecutionContext{command: command, aggregate_identity: identity, metadata: metadata} =
-      context
+    %ExecutionContext{command: command, aggregate_identity: identity} = context
 
-    case {Append.command_tag(command), UUID.canonical?(identity)} do
-      {nil, _canonical?} ->
+    case {Append.command_tag(command), UUID.canonical?(identity), Append.stream_tag(context)} do
+      {nil, _canonical?, _stream_tag} ->
         {:error, :missing_command_id}
 
-      {_command_tag, false} ->
+      {_command_tag, false, _stream_tag} ->
         {:error, :invalid_decision_identity}
 
-      {command_tag, true} ->
-        {:ok,
-         %__MODULE__{
-           dispatch
-           | tag_context: %TagContext{metadata: metadata, command: command},
-             command_tag: command_tag,
-             bounds: dispatch.decision.__decision__(),
-             fold: PersonalFields.fold_events(dispatch.decision)
-         }}
+      {_command_tag, true, nil} ->
+        {:error, :invalid_decision_identity}
+
+      {command_tag, true, stream_tag} ->
+        with {:ok, scope_tags} <- scope_tags(dispatch) do
+          {:ok,
+           %__MODULE__{
+             dispatch
+             | tag_context: %TagContext{metadata: context.metadata, command: command},
+               command_tag: command_tag,
+               kind_tag: Append.kind_tag(command),
+               stream_tag: stream_tag,
+               scope: Enum.uniq([stream_tag | scope_tags]),
+               bounds: dispatch.decision.__decision__(),
+               fold: PersonalFields.fold_events(dispatch.decision)
+           }}
+        end
+    end
+  end
+
+  defp scope_tags(%__MODULE__{decision: decision, context: context}) do
+    scope_tags = decision.scope_tags(context.command)
+
+    if is_list(scope_tags) and not List.improper?(scope_tags) and
+         Enum.all?(scope_tags, &(is_binary(&1) and &1 != "")) do
+      {:ok, scope_tags}
+    else
+      {:error, :invalid_scope_tags}
     end
   end
 
@@ -218,7 +239,7 @@ defmodule Decree.Decision.Dispatch do
          read_time = System.monotonic_time() - started,
          {:ok, state} <- fold(dispatch, merged, reads, read_time, answers),
          :ok <- admit(dispatch, state),
-         {:ok, mode} <- classify(merged, tags) do
+         {:ok, mode} <- classify(dispatch, merged, tags) do
       decide(mode, dispatch, state, merged, reads)
     end
   end
@@ -230,9 +251,32 @@ defmodule Decree.Decision.Dispatch do
         error
 
       items ->
-        with {:ok, parsed} <- Read.parse(items) do
+        with {:ok, parsed} <- Read.parse(own_items(dispatch, items)),
+             :ok <- replays_in_scope(dispatch, parsed) do
           bounded(dispatch, [], Read.layout(parsed, framework_items(dispatch)))
         end
+    end
+  end
+
+  # A create's fact item is the decision's own, in the first read only. Anything but a list
+  # makes an improper one here, which `Read.parse/1` refuses as it refuses anything else.
+  defp own_items(%__MODULE__{bounds: %{create: false}}, items), do: items
+
+  defp own_items(%__MODULE__{bounds: %{create: types}, stream_tag: stream_tag}, items) do
+    [[types: types, tags: [stream_tag]] | items]
+  end
+
+  # Past the window step 7 checks nothing, so a replay item's own scope tag is what keeps
+  # another entity's gate out of it. On a create the stream tag is the fact's, and a replay item
+  # may not name it, so its scope tag comes from `scope_tags/1`.
+  defp replays_in_scope(%__MODULE__{bounds: %{create: create}} = dispatch, parsed) do
+    %__MODULE__{stream_tag: stream_tag, scope: scope} = dispatch
+
+    if Read.replays_outside?(parsed, scope) or
+         (create != false and Read.replays_tag?(parsed, stream_tag)) do
+      {:error, :invalid_query}
+    else
+      :ok
     end
   end
 
@@ -254,6 +298,7 @@ defmodule Decree.Decision.Dispatch do
 
         items ->
           with {:ok, parsed} <- Read.parse(items),
+               :ok <- replays_in_scope(dispatch, parsed),
                read = Read.layout(parsed, framework_items(dispatch)),
                {:ok, read} <- bounded(dispatch, [first], read) do
             reads = [first, read]
@@ -354,15 +399,42 @@ defmodule Decree.Decision.Dispatch do
 
   defp callback_answer(%__MODULE__{}, answer), do: answer
 
-  # Step 7: any command match refuses, and the mode is what step 8 takes.
-  defp classify(%Merged{} = merged, _tags) do
+  # Step 7: the mode is what step 8 takes. The window is read per attempt, and only for a match.
+  defp classify(%__MODULE__{} = dispatch, %Merged{} = merged, tags) do
     case Read.command_positions(merged) do
-      [] -> {:ok, :open}
-      [_position | _] -> {:error, :unclassified_command_match}
+      [] ->
+        {:ok, :open}
+
+      [_position | _] ->
+        with {:ok, window_ms} <- command_window(dispatch) do
+          %__MODULE__{kind_tag: kind_tag, scope: scope} = dispatch
+
+          case Read.classify(merged, tags, kind_tag, scope, window_ms) do
+            :reused -> {:error, :reused_command_id}
+            mode -> {:ok, mode}
+          end
+        end
+    end
+  end
+
+  defp command_window(%__MODULE__{decision: decision}) do
+    case decision.command_window_ms() do
+      window_ms when is_integer(window_ms) and window_ms > 0 -> {:ok, window_ms}
+      _invalid -> {:error, :invalid_command_window}
     end
   end
 
   # Step 8.
+  defp decide(:duplicate, %__MODULE__{}, _state, _merged, _reads), do: shape(:duplicate)
+
+  # A replay exit may answer only a refusal: an event at or before `after` escapes the
+  # condition, so anything appended here could commit one `command_id` twice.
+  defp decide(:replay, %__MODULE__{decision: decision} = dispatch, state, _merged, _reads) do
+    answer = callback_answer(dispatch, decision.decide(state, dispatch.context.command))
+
+    with {:ok, _shape} <- shape(answer), do: {:error, :reused_command_id}
+  end
+
   defp decide(:open, %__MODULE__{decision: decision} = dispatch, state, merged, reads) do
     with {:ok, shape} <-
            shape(callback_answer(dispatch, decision.decide(state, dispatch.context.command))),
@@ -370,9 +442,41 @@ defmodule Decree.Decision.Dispatch do
          :ok <- within_batch(dispatch, events),
          # Before anything commits: a raise here has to leave the store as it was.
          state = Enum.reduce(events, state, &decision.evolve(&2, &1)),
-         {:ok, appends} <- prepare_members(dispatch, shape) do
+         {:ok, appends} <- prepare_members(dispatch, shape),
+         :ok <- within_scope(dispatch, appends),
+         :ok <- lands_fact(dispatch, appends) do
       append(dispatch, appends, merged, reads, events, state)
     end
+  end
+
+  # What step 7 asks of a resend, asked of the batch that lands: each scope tag on some event.
+  defp within_scope(%__MODULE__{scope: scope}, appends) do
+    carried =
+      for {_stream_uuid, _version, prepared} <- appends,
+          %EventStore.EventData{tags: tags} <- prepared,
+          tag <- tags,
+          into: MapSet.new(),
+          do: tag
+
+    if Enum.all?(scope, &MapSet.member?(carried, &1)) do
+      :ok
+    else
+      {:error, :batch_lacks_scope_tag}
+    end
+  end
+
+  # What a create's fact item reads, asked of one event that lands: its type and the stream tag
+  # together, or a racing create reads nothing and commits too.
+  defp lands_fact(%__MODULE__{bounds: %{create: false}}, _appends), do: :ok
+
+  defp lands_fact(%__MODULE__{bounds: %{create: types}, stream_tag: stream_tag}, appends) do
+    facts =
+      for {_stream_uuid, _version, prepared} <- appends,
+          %EventStore.EventData{event_type: event_type, tags: tags} <- prepared,
+          event_type in types and stream_tag in tags,
+          do: event_type
+
+    if facts == [], do: {:error, :batch_lacks_fact}, else: :ok
   end
 
   # The one prepare step, per member, each with its own stream. Its error is answered here, ahead

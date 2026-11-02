@@ -10,6 +10,8 @@ defmodule Decree.Event.Append do
   alias Decree.PersonalFields.RedactedError
   alias Decree.UUID
 
+  @kind_prefix "command_kind:"
+
   @doc """
   Answers a copy of `event_data` ready for the store.
 
@@ -120,6 +122,26 @@ defmodule Decree.Event.Append do
   @spec command_tag(struct()) :: String.t() | nil
   def command_tag(command), do: key_tag("command", Map.get(command, :command_id))
 
+  # The same for the command's kind, always present.
+  @doc false
+  @spec kind_tag(struct()) :: String.t()
+  def kind_tag(command), do: @kind_prefix <> inspect(command.__struct__)
+
+  # Whether a tag is a kind tag, for a read that has to tell one from any other tag.
+  @doc false
+  @spec kind_tag?(term()) :: boolean()
+  def kind_tag?(tag), do: is_binary(tag) and String.starts_with?(tag, @kind_prefix)
+
+  # The same for the stream's entity tag: nil when the context names no kind or the identity
+  # is not canonical, as it is on the append.
+  @doc false
+  @spec stream_tag(ExecutionContext.t()) :: String.t() | nil
+  def stream_tag(%ExecutionContext{aggregate_identity: nil}), do: nil
+
+  def stream_tag(%ExecutionContext{aggregate_identity: identity} = context) do
+    entity_tag(kind(context), identity)
+  end
+
   # `plan` is nil for an event with no declaration.
   defp event_tags(%EventData{} = data, nil, %ExecutionContext{} = context) do
     tags(data, context)
@@ -151,7 +173,7 @@ defmodule Decree.Event.Append do
     Enum.reject(
       [
         command_tag(command),
-        "command_kind:" <> inspect(command.__struct__),
+        kind_tag(command),
         key_tag("correlation", Map.get(command, :correlation_id)),
         stream_tag(context)
       ],
@@ -161,12 +183,6 @@ defmodule Decree.Event.Append do
 
   defp key_tag(kind, key) when is_binary(key) and key != "", do: kind <> ":" <> key
   defp key_tag(_kind, _key), do: nil
-
-  defp stream_tag(%ExecutionContext{aggregate_identity: nil}), do: nil
-
-  defp stream_tag(%ExecutionContext{aggregate_identity: identity} = context) do
-    entity_tag(kind(context), identity)
-  end
 
   defp kind(%ExecutionContext{stream_tag: kind}) when not is_nil(kind), do: kind
   defp kind(%ExecutionContext{identity: nil}), do: nil

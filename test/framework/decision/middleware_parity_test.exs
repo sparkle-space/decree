@@ -119,6 +119,43 @@ defmodule Decree.Decision.MiddlewareParityTest do
       assert pipeline_fields(aggregate_pipeline) == pipeline_fields(decision_pipeline)
     end
 
+    test "on a duplicate" do
+      command = %ParityCommand{command_id: UUID.uuid4(), id: UUID.uuid4(), scope: scope()}
+
+      assert :ok = App.dispatch(command)
+      assert [:before_dispatch, :after_dispatch] = stages() |> stage_names()
+
+      assert {:error, :duplicate_command} = App.dispatch(command)
+
+      duplicate = stages()
+
+      assert stage_names(duplicate) == [:before_dispatch, :after_failure]
+
+      {:after_failure, pipeline} = List.last(duplicate)
+
+      assert pipeline.assigns.error == :duplicate_command
+      assert pipeline.response == {:error, :duplicate_command}
+    end
+
+    test "on a reused id" do
+      command = %ParityCommand{command_id: UUID.uuid4(), id: UUID.uuid4(), scope: scope()}
+
+      assert :ok = App.dispatch(command)
+      assert [:before_dispatch, :after_dispatch] = stages() |> stage_names()
+
+      assert {:error, :reused_command_id} =
+               App.dispatch(%ParityCommand{command | id: UUID.uuid4()})
+
+      reused = stages()
+
+      assert stage_names(reused) == [:before_dispatch, :after_failure]
+
+      {:after_failure, pipeline} = List.last(reused)
+
+      assert pipeline.assigns.error == :reused_command_id
+      assert pipeline.response == {:error, :reused_command_id}
+    end
+
     test "on a halted pipeline" do
       {aggregate_answer, aggregate, decision_answer, decision} = both(halt: true)
 
@@ -219,10 +256,10 @@ defmodule Decree.Decision.MiddlewareParityTest do
     test "`:strong` waits for every member of a batch" do
       with_consistency_timeout(30_000)
 
-      decide = fn _state, _command ->
+      decide = fn _state, command ->
         {:streams,
          [
-           {:user, UUID.uuid4(), %Claimed{scope: "a"}},
+           {:claim, command.claim_id, %Claimed{scope: "a"}},
            {:order, UUID.uuid4(), %Claimed{scope: "b"}}
          ]}
       end
@@ -235,10 +272,10 @@ defmodule Decree.Decision.MiddlewareParityTest do
     test "`:strong` answers a timeout when the handler holds a later member" do
       with_consistency_timeout(1_000)
 
-      decide = fn _state, _command ->
+      decide = fn _state, command ->
         {:streams,
          [
-           {:user, UUID.uuid4(), %Claimed{scope: "a"}},
+           {:claim, command.claim_id, %Claimed{scope: "a"}},
            {:order, UUID.uuid4(), %Claimed{scope: "held"}}
          ]}
       end
@@ -260,7 +297,7 @@ defmodule Decree.Decision.MiddlewareParityTest do
       decide = fn _state, _command ->
         {:streams,
          [
-           {:user, late, %Claimed{scope: "late", note: div(timeout * 92, 100)}},
+           {:claim, late, %Claimed{scope: "late", note: div(timeout * 92, 100)}},
            {:order, held, %Claimed{scope: "held"}}
          ]}
       end
@@ -268,7 +305,7 @@ defmodule Decree.Decision.MiddlewareParityTest do
       started = System.monotonic_time(:millisecond)
 
       assert {:error, :consistency_timeout} =
-               App.dispatch(scripted(decide: decide), consistency: :strong)
+               App.dispatch(scripted(claim_id: late, decide: decide), consistency: :strong)
 
       assert System.monotonic_time(:millisecond) - started < timeout * 1.9
     end
@@ -276,10 +313,10 @@ defmodule Decree.Decision.MiddlewareParityTest do
     test "a batch takes an infinite timeout" do
       with_consistency_timeout(:infinity)
 
-      decide = fn _state, _command ->
+      decide = fn _state, command ->
         {:streams,
          [
-           {:user, UUID.uuid4(), %Claimed{scope: "a"}},
+           {:claim, command.claim_id, %Claimed{scope: "a"}},
            {:order, UUID.uuid4(), %Claimed{scope: "b"}}
          ]}
       end

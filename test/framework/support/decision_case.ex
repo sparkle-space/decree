@@ -39,7 +39,7 @@ defmodule Decree.DecisionStoreCase do
   alias Decree.DecisionFixtures.{App, Claimed, Scripted}
   alias Decree.EventStore
   alias Decree.EventStore.EventData
-  alias Decree.Store.AppendResult
+  alias Decree.Store.{AppendResult, Config}
   alias Decree.UUID
 
   using do
@@ -51,6 +51,7 @@ defmodule Decree.DecisionStoreCase do
         ByFunction,
         Claim,
         Claimed,
+        Create,
         Released,
         Scripted,
         Tight
@@ -73,7 +74,7 @@ defmodule Decree.DecisionStoreCase do
   A `Scripted` command, its script made of the options named after its callbacks.
   """
   def scripted(opts \\ [], module \\ Scripted) do
-    {script, fields} = Keyword.split(opts, [:query, :followup, :admit, :decide])
+    {script, fields} = Keyword.split(opts, [:query, :followup, :admit, :decide, :scope_tags])
 
     struct!(
       module,
@@ -127,6 +128,57 @@ defmodule Decree.DecisionStoreCase do
     {:ok, events} = Decree.FrameworkEventStore.read_all_streams_forward(0, 1_000, name: store)
 
     Enum.filter(events, &(&1.stream_uuid == stream_uuid))
+  end
+
+  @doc """
+  Sets the window every fixture decision answers, for the rest of the test.
+  """
+  def with_window(window) do
+    previous = Application.fetch_env(:decree, :decision_test_window_ms)
+
+    Application.put_env(:decree, :decision_test_window_ms, window)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:decree, :decision_test_window_ms, value)
+        :error -> Application.delete_env(:decree, :decision_test_window_ms)
+      end
+    end)
+  end
+
+  @doc """
+  Moves a command's stamps `seconds` into the past, so a test leaves no clock to wait on. A
+  stamp cannot be updated, so the one statement runs with that trigger off, in a transaction
+  that puts it back.
+  """
+  def age_stamps(command_id, seconds) do
+    {:ok, conn} =
+      Decree.FrameworkStorage.config() |> Config.default_postgrex_opts() |> Postgrex.start_link()
+
+    try do
+      {:ok, rows} =
+        Postgrex.transaction(conn, fn tx ->
+          Postgrex.query!(tx, "ALTER TABLE event_tags DISABLE TRIGGER no_update_event_tags", [])
+
+          %Postgrex.Result{num_rows: rows} =
+            Postgrex.query!(
+              tx,
+              "UPDATE event_tags SET stamped_at = stamped_at - make_interval(secs => $2) " <>
+                "WHERE tag = $1",
+              ["command:" <> command_id, seconds * 1.0]
+            )
+
+          Postgrex.query!(tx, "ALTER TABLE event_tags ENABLE TRIGGER no_update_event_tags", [])
+
+          rows
+        end)
+
+      true = rows > 0
+    after
+      GenServer.stop(conn)
+    end
+
+    :ok
   end
 
   @doc """

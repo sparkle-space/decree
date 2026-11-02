@@ -8,6 +8,7 @@ defmodule Decree.Decision.Read do
   #
   # The struct is one read's layout. `Merged` is what the reads answered, together.
 
+  alias Decree.Event.Append
   alias Decree.EventStore.RecordedEvent
   alias Decree.Store.{Query, ReadResult}
 
@@ -50,7 +51,9 @@ defmodule Decree.Decision.Read do
 
   @doc """
   Checks a decision's items: each a keyword list or a map naming `:types` and at most
-  `:tags` and `:replay`. The store checks the rest, so a repeated key is left for it.
+  `:tags` and `:replay`. A `replay: true` item names a `command_kind:` tag and at least one
+  other, and that it names a scope tag is `replays_outside?/2`, which needs the dispatch. The
+  store checks the rest, so a repeated key is left for it.
   """
   @spec parse(term()) :: {:ok, [parsed()]} | {:error, :invalid_query}
   def parse([_item | _items] = items) do
@@ -69,7 +72,8 @@ defmodule Decree.Decision.Read do
     if Keyword.keyword?(item) do
       with {:ok, replay} <- replay_flag(Keyword.get_values(item, :replay)),
            :ok <- names_types(List.keyfind(item, :types, 0)),
-           :ok <- known_keys(Keyword.keys(item)) do
+           :ok <- known_keys(Keyword.keys(item)),
+           :ok <- replay_shape(replay, item_tags(item)) do
         %{item: Keyword.delete(item, :replay), replay: replay}
       end
     else
@@ -80,7 +84,8 @@ defmodule Decree.Decision.Read do
   defp parse_item(item) when is_map(item) and not is_struct(item) do
     with {:ok, replay} <- replay_flag(item |> Map.take([:replay]) |> Map.values()),
          :ok <- names_types(item |> Map.take([:types]) |> Map.to_list() |> List.first()),
-         :ok <- known_keys(Map.keys(item)) do
+         :ok <- known_keys(Map.keys(item)),
+         :ok <- replay_shape(replay, item_tags(item)) do
       %{item: Map.delete(item, :replay), replay: replay}
     end
   end
@@ -96,6 +101,42 @@ defmodule Decree.Decision.Read do
 
   defp known_keys(keys) do
     if Enum.all?(keys, &(&1 in [:types, :tags, :replay])), do: :ok, else: :error
+  end
+
+  defp replay_shape(false, _tags), do: :ok
+
+  defp replay_shape(true, [_tag | _tags] = tags) do
+    if not List.improper?(tags) and Enum.any?(tags, &Append.kind_tag?/1) and
+         not Enum.all?(tags, &Append.kind_tag?/1) do
+      :ok
+    else
+      :error
+    end
+  end
+
+  defp replay_shape(true, _tags), do: :error
+
+  defp item_tags(item) when is_list(item), do: Keyword.get(item, :tags)
+  defp item_tags(item), do: Map.get(item, :tags)
+
+  @doc """
+  Whether a `replay: true` item names `tag`.
+  """
+  @spec replays_tag?([parsed()], String.t()) :: boolean()
+  def replays_tag?(parsed, tag) do
+    Enum.any?(parsed, fn %{item: item, replay: replay} ->
+      replay and tag in item_tags(item)
+    end)
+  end
+
+  @doc """
+  Whether a `replay: true` item names no tag of `scope`.
+  """
+  @spec replays_outside?([parsed()], [String.t()]) :: boolean()
+  def replays_outside?(parsed, scope) do
+    Enum.any?(parsed, fn %{item: item, replay: replay} ->
+      replay and not Enum.any?(item_tags(item), &(&1 in scope))
+    end)
   end
 
   @doc """
@@ -258,6 +299,47 @@ defmodule Decree.Decision.Read do
     merged.matched_items
     |> Map.get(position, [])
     |> Enum.any?(&MapSet.member?(merged.replay, &1))
+  end
+
+  @doc """
+  Whether a stamp is inside the window at `read_at`. Both are the database's clock. The edge
+  is outside, a negative age is inside, and a nil stamp is outside.
+  """
+  @spec within_window?(DateTime.t(), DateTime.t() | nil, pos_integer()) :: boolean()
+  def within_window?(_read_at, nil, _window_ms), do: false
+
+  def within_window?(%DateTime{} = read_at, %DateTime{} = stamp, window_ms) do
+    DateTime.diff(read_at, stamp, :microsecond) < window_ms * 1_000
+  end
+
+  @doc """
+  Step 7. What the command matches inside the window mean for this dispatch: `:open` for none,
+  and otherwise `:reused`, `:replay` or `:duplicate`. `tags` is the one fetch, where a position
+  with no entry carries nothing, so it reads as `:reused`. A scope may be split across the
+  matches, as a batch's is.
+
+  A command position always has a stamp entry, since a match only a second read has restarts
+  the dispatch, so a miss raises rather than classify on nothing.
+  """
+  @spec classify(%Merged{}, map(), String.t(), [String.t()], pos_integer()) ::
+          :open | :replay | :duplicate | :reused
+  def classify(%Merged{} = merged, tags, kind_tag, scope, window_ms) do
+    window =
+      merged
+      |> command_positions()
+      |> Enum.filter(fn position ->
+        within_window?(merged.read_at, Map.fetch!(merged.command_stamps, position), window_ms)
+      end)
+
+    carried = Enum.map(window, &Map.get(tags, &1, []))
+
+    cond do
+      window == [] -> :open
+      not Enum.all?(carried, &(kind_tag in &1)) -> :reused
+      not Enum.all?(scope, fn tag -> Enum.any?(carried, &(tag in &1)) end) -> :reused
+      Enum.any?(window, &replay?(merged, &1)) -> :replay
+      true -> :duplicate
+    end
   end
 
   defp positions_matching(matched_items, indexes) do
