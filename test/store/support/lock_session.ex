@@ -89,6 +89,27 @@ defmodule Decree.Store.LockSession do
     end)
   end
 
+  # Waits until `count` sessions of this database wait, on `blocker` or on each other. A second
+  # waiter on one row queues behind the first, so a blocker is `blocker` or another waiter.
+  def wait_until_waiting(observer, blocker, count) do
+    Wait.until(5_000, fn ->
+      %Postgrex.Result{rows: rows} =
+        Postgrex.query!(
+          observer,
+          "SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity " <>
+            "WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0",
+          []
+        )
+
+      waiters = Enum.map(rows, fn [pid, _blockers] -> pid end)
+      blockers = Enum.flat_map(rows, fn [_pid, blockers] -> blockers end)
+
+      assert length(waiters) == count
+      assert blocker in blockers
+      assert Enum.all?(blockers, &(&1 == blocker or &1 in waiters))
+    end)
+  end
+
   defp loop(tx) do
     receive do
       {:run, from, ref, fun} ->

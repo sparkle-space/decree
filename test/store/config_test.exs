@@ -282,6 +282,41 @@ defmodule Decree.Store.ConfigTest do
     )
   end
 
+  describe "parse `:enable_hard_deletes`" do
+    defp hard_deletes(value) do
+      [enable_hard_deletes: value] |> Config.parse() |> Keyword.fetch!(:enable_hard_deletes)
+    end
+
+    test "takes a boolean" do
+      assert hard_deletes(true) == true
+      assert hard_deletes(false) == false
+    end
+
+    test "takes its text, as an environment variable gives it" do
+      set_envs(%{"ES_HARD_DELETES_ON" => "true", "ES_HARD_DELETES_OFF" => "false"})
+
+      assert hard_deletes("true") == true
+      assert hard_deletes("false") == false
+      assert hard_deletes({:system, "ES_HARD_DELETES_ON"}) == true
+      assert hard_deletes({:system, "ES_HARD_DELETES_OFF"}) == false
+    end
+
+    test "reads nothing set as off" do
+      assert hard_deletes(nil) == false
+      assert hard_deletes({:system, "ES_HARD_DELETES_UNSET"}) == false
+      assert hard_deletes({:system, "ES_HARD_DELETES_UNSET", false}) == false
+      assert hard_deletes({:system, "ES_HARD_DELETES_UNSET", "true"}) == true
+    end
+
+    test "raises on anything else, because no other value says what was meant" do
+      set_envs(%{"ES_HARD_DELETES_JUNK" => "0"})
+
+      for value <- ["", "TRUE", "1", "on", 1, :on, {:system, "ES_HARD_DELETES_JUNK"}] do
+        assert_raise ArgumentError, ~r/`:enable_hard_deletes`/, fn -> hard_deletes(value) end
+      end
+    end
+  end
+
   describe "setting application parameters" do
     setup do
       postgrex_config = TestEventStore.config()

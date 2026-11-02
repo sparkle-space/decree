@@ -67,6 +67,7 @@ defmodule Decree.Commands.CompositeRouter do
       @default_dispatch_opts default_dispatch_opts
       @registered_commands %{}
       @stream_prefixes %{decision: [], other: []}
+      @conditional_targets []
     end
   end
 
@@ -93,6 +94,11 @@ defmodule Decree.Commands.CompositeRouter do
                          unquote(router_module).__stream_prefixes__(),
                          __MODULE__
                        )
+
+      @conditional_targets Enum.uniq(
+                             @conditional_targets ++
+                               unquote(router_module).__conditional_targets__()
+                           )
     end
   end
 
@@ -105,6 +111,9 @@ defmodule Decree.Commands.CompositeRouter do
 
       @doc false
       def __stream_prefixes__, do: @stream_prefixes
+
+      @doc false
+      def __conditional_targets__, do: @conditional_targets
 
       @doc """
       Dispatch a registered command.

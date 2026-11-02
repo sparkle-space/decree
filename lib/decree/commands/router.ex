@@ -101,6 +101,11 @@ defmodule Decree.Commands.Router do
   aggregate's events: `"<identity_prefix><aggregate_uuid>"`. It can be a string or
   a zero arity function returning a string.
 
+  ## Check a command against a rule
+
+  A route can name a `Decree.Decision.Rule`, which an aggregate's append for that command has
+  to hold to, beyond its own stream. See "Rule" in `dispatch/2`.
+
   ## Decide a command with a decision
 
   A command can be routed to a `Decree.Decision`, which has no aggregate process: it reads
@@ -398,6 +403,23 @@ defmodule Decree.Commands.Router do
   tag only when the route declares `stream_tag:`. The id is then what the function
   answered when the dispatch resolved the identity, once, before the aggregate is called.
 
+  ## Rule
+
+  `rule:` names a `Decree.Decision.Rule` for this route alone, so the aggregate's other commands
+  stay plain:
+
+      dispatch RegisterUser, to: User, identity: :user_id, rule: EmailRule
+
+  The aggregate reads what the rule names, `execute/2` finds the events in the command's
+  `:rule_result` field, and the append goes in under a condition on what was read. The event
+  store's `conditional_appends` must name the route's aggregate in `targets:`, and an application
+  that includes the route will not start without it. See "Two declarations" in
+  `Decree.Decision.Rule`.
+
+  `dispatch` refuses, with an `ArgumentError` when the router compiles, a `rule:` that is not a
+  compiled `Decree.Decision.Rule`, and a command with no `:rule_result` field. `decide/2` takes
+  no `rule:`: a decision is its own rule.
+
   """
   defmacro dispatch(command_module_or_modules, opts) do
     register(command_module_or_modules, parse_opts(opts))
@@ -460,6 +482,7 @@ defmodule Decree.Commands.Router do
         command_opts = Keyword.merge(@default_dispatch_opts, unquote(opts))
 
         Router.validate_stream_tag!(unquote(command_module), command_opts)
+        Router.validate_rule!(unquote(command_module), command_opts)
 
         @registered_commands {unquote(command_module), command_opts}
       end
@@ -581,6 +604,11 @@ defmodule Decree.Commands.Router do
       @doc false
       def __stream_prefixes__, do: @stream_prefixes
 
+      @conditional_targets Router.conditional_targets(@registered_commands)
+
+      @doc false
+      def __conditional_targets__, do: @conditional_targets
+
       @doc false
       def dispatch(command, opts \\ [])
 
@@ -611,6 +639,7 @@ defmodule Decree.Commands.Router do
         @identity Keyword.get(command_opts, :identity)
         @identity_prefix Keyword.get(command_opts, :identity_prefix)
         @stream_tag Keyword.get(command_opts, :stream_tag)
+        @rule Keyword.get(command_opts, :rule)
 
         @command_module command_module
         @command_opts command_opts
@@ -679,6 +708,7 @@ defmodule Decree.Commands.Router do
             identity: identity,
             identity_prefix: identity_prefix,
             stream_tag: @stream_tag,
+            rule: @rule,
             returning: returning,
             timeout: timeout,
             lifespan: @lifespan,
@@ -747,6 +777,41 @@ defmodule Decree.Commands.Router do
 
         :ok
     end
+  end
+
+  # Here and not at the route's first dispatch: the field is what carries the read to
+  # `execute/2`, and a missing one would raise on every attempt.
+  @doc false
+  def validate_rule!(command_module, command_opts) do
+    case Keyword.get(command_opts, :rule) do
+      nil ->
+        :ok
+
+      rule ->
+        unless is_atom(rule) and match?({:module, _}, Code.ensure_compiled(rule)) and
+                 function_exported?(rule, :__rule__, 0) do
+          raise ArgumentError,
+                "#{inspect(command_module)} has an invalid `rule` option: #{inspect(rule)}, " <>
+                  "expected a compiled module that uses Decree.Decision.Rule"
+        end
+
+        unless Map.has_key?(struct(command_module), :rule_result) do
+          raise ArgumentError,
+                "#{inspect(command_module)} is routed to the rule #{inspect(rule)} and has no " <>
+                  "`:rule_result` field, which is where what the rule read reaches `execute/2`"
+        end
+
+        :ok
+    end
+  end
+
+  # What a condition on this router's rule routes names as its target.
+  @doc false
+  def conditional_targets(registered_commands) do
+    registered_commands
+    |> Enum.filter(fn {_command, opts} -> opts[:rule] end)
+    |> Enum.map(fn {_command, opts} -> opts[:aggregate] end)
+    |> Enum.uniq()
   end
 
   @doc false
@@ -889,6 +954,7 @@ defmodule Decree.Commands.Router do
     :identity,
     :identity_prefix,
     :stream_tag,
+    :rule,
     :timeout,
     :lifespan,
     :consistency

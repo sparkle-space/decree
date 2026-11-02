@@ -5,6 +5,8 @@ defmodule Decree.Application.Supervisor do
 
   alias Decree.Application.Config
 
+  require Logger
+
   # Options read from the `use` line and nowhere else: they name what protects personal
   # data, so neither the environment, nor start options, nor `init/1` can change them.
   @source_opts [:key_source, :personal_metadata_keys]
@@ -73,6 +75,7 @@ defmodule Decree.Application.Supervisor do
     case runtime_config(application, otp_app, config, opts) do
       {:ok, config} ->
         {event_store_child_spec, config} = event_store_child_spec(name, config)
+        :ok = check_conditional_targets!(application, config)
         {pubsub_child_spec, config} = pubsub_child_spec(name, config)
         {registry_child_spec, config} = registry_child_spec(name, config)
 
@@ -89,6 +92,30 @@ defmodule Decree.Application.Supervisor do
       :ignore ->
         :ignore
     end
+  end
+
+  # A rule route's half and the store's half of one declaration. See "Two declarations" in
+  # `Decree.Decision.Rule`.
+  defp check_conditional_targets!(application, config) do
+    {adapter, adapter_meta} = Keyword.fetch!(config, :event_store)
+
+    routed = application.__conditional_targets__()
+    declared = adapter.conditional_targets(adapter_meta)
+
+    with [aggregate | _] <- routed -- declared do
+      raise ArgumentError,
+            "#{inspect(application)} routes a rule to #{inspect(aggregate)}, which its event " <>
+              "store does not declare: add it to `conditional_appends: [targets: [...]]`"
+    end
+
+    for target <- declared -- routed do
+      Logger.warning(fn ->
+        "#{inspect(application)}'s event store declares the conditional target " <>
+          "#{inspect(target)}, and no route in it names a rule for that aggregate"
+      end)
+    end
+
+    :ok
   end
 
   defp app_child_spec(name, config) do

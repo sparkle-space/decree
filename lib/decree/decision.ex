@@ -36,6 +36,9 @@ defmodule Decree.Decision do
   stream prefix must be declared in the event store's `conditional_appends`, which is also
   what keeps every other writer out of those streams.
 
+  An aggregate that keeps its process and its stream, and has one command to check beyond
+  that stream, wants a `Decree.Decision.Rule`, which reads through the same path.
+
   ## Callbacks
 
     - `c:query/2` names what to read: a list of items, or `{:error, reason}`.

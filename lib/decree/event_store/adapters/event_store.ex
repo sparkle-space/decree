@@ -27,7 +27,12 @@ defmodule Decree.EventStore.Adapters.EventStore do
       end
 
     child_spec = [{event_store, config}]
-    adapter_meta = %{event_store: event_store, name: name}
+
+    adapter_meta = %{
+      event_store: event_store,
+      name: name,
+      conditional_targets: declared_targets(event_store, config)
+    }
 
     {:ok, child_spec, adapter_meta}
   end
@@ -100,7 +105,7 @@ defmodule Decree.EventStore.Adapters.EventStore do
     {_event_store, name} = extract_adapter_meta(adapter_meta)
 
     # `delete_stream/4` refuses a hard delete without this setting, so what a store declares
-    # could never be deleted. Truthy, as it tests there: a `{:system, _}` value parses to a string.
+    # could never be deleted. The config's parse makes it a boolean.
     if Config.lookup(name, :enable_hard_deletes) do
       case Config.lookup(name, :deletable) do
         nil -> []
@@ -110,6 +115,9 @@ defmodule Decree.EventStore.Adapters.EventStore do
       []
     end
   end
+
+  @impl Decree.EventStore.Adapter
+  def conditional_targets(%{conditional_targets: targets}), do: targets
 
   @impl Decree.EventStore.Adapter
   def subscribe(adapter_meta, :all), do: subscribe(adapter_meta, @all_stream)
@@ -215,6 +223,17 @@ defmodule Decree.EventStore.Adapters.EventStore do
           Mapper.from_recorded_event(event) |> partition_by.()
         end
     end)
+  end
+
+  # Through `config/1`, because the store has not started when an application asks.
+  defp declared_targets(event_store, config) do
+    case event_store.config(config) do
+      :ignore ->
+        []
+
+      parsed ->
+        parsed |> Keyword.get(:conditional_appends, []) |> Keyword.get(:targets, [])
+    end
   end
 
   defp extract_adapter_meta(adapter_meta) do

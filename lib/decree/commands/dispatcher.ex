@@ -27,6 +27,7 @@ defmodule Decree.Commands.Dispatcher do
       :identity,
       :identity_prefix,
       :stream_tag,
+      :rule,
       :timeout,
       :lifespan,
       :metadata,
@@ -227,6 +228,7 @@ defmodule Decree.Commands.Dispatcher do
       lifespan: lifespan,
       retry_attempts: retry_attempts,
       returning: returning,
+      rule: rule,
       stream_tag: stream_tag
     } = payload
 
@@ -245,6 +247,8 @@ defmodule Decree.Commands.Dispatcher do
       stream_tag: stream_tag,
       lifespan: lifespan,
       retry_attempts: retry_attempts,
+      rule: rule,
+      rule_retries: retry_attempts,
       returning: returning
     }
   end

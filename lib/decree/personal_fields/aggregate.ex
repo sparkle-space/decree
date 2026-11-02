@@ -41,6 +41,10 @@ defmodule Decree.PersonalFields.Aggregate do
   `@personal_fold` means there what it means here, and a raise from a decision that uses it is
   redacted the same way. `@personal_state` and `@personal_state_subject` don't apply, because a
   decision has no snapshot. See "Personal fields" in `Decree.Decision`.
+
+  A `Decree.Decision.Rule` uses it for what `followup_query/3` and `execute/2` read, the same
+  way. Using it or not changes nothing about a rule route's raises, which are always redacted.
+  See "Leaks" there.
   """
 
   @doc false

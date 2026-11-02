@@ -28,6 +28,9 @@ defmodule Decree.PersonalFields do
       reach `evolve/2` and `followup_query/3` decrypted, body only. Every other event reaches
       them as stored. There is no snapshot.
 
+    - **Rules.** A `Decree.Decision.Rule` lists the events it reads the same way, and those
+      reach `followup_query/3` and `execute/2` decrypted, body only. See "Personal fields" there.
+
     - **Snapshots.** The state an aggregate lists is encrypted on the way to the store and
       decrypted on the way back.
 

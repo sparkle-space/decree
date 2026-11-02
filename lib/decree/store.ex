@@ -1019,7 +1019,11 @@ defmodule Decree.Store do
   option.
 
   A declared prefix also keeps every other writer out: an append with no condition to a
-  stream starting with one is refused.
+  stream starting with one is refused. A target keeps nobody out. It is compared on a
+  conditional append and nowhere else, so a stream it covers takes plain appends, links and
+  hard deletes as any other does. A `Decree.Decision.Rule` route's condition names its
+  aggregate as the target, and an application will not start while its store leaves one out:
+  see "Two declarations" there.
 
   Returns `:ok` on success, `{:ok, %Decree.Store.AppendResult{}}` with
   `returning: :append_result`, or an `{:error, reason}` tagged tuple:
@@ -1669,6 +1673,10 @@ defmodule Decree.Store do
 
       # config/config.exs
       config :my_app, MyApp.EventStore, enable_hard_deletes: true
+
+  The value is a boolean, or `"true"` or `"false"` as an environment variable gives them, with
+  `{:system, "VAR"}`. Nothing set is off. Anything else raises an `ArgumentError` when the
+  config is parsed.
 
   Hard delete a stream at any version:
 

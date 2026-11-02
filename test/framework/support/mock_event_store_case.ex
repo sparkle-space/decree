@@ -36,6 +36,8 @@ defmodule Decree.MockEventStoreCase do
       {:ok, [], %{}}
     end)
 
+    stub(MockEventStore, :conditional_targets, fn _event_store_meta -> [] end)
+
     stub(MockEventStore, :subscribe_to, fn
       _event_store_meta, _stream, _handler_name, subscriber, _subscribe_from, _opts ->
         send(subscriber, {:subscribed, self()})

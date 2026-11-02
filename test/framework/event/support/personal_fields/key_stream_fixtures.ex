@@ -170,6 +170,9 @@ defmodule Decree.PersonalFields.Fixtures.FailingAdapter do
   end
 
   @impl Decree.EventStore.Adapter
+  defdelegate conditional_targets(adapter_meta), to: Adapter
+
+  @impl Decree.EventStore.Adapter
   defdelegate append_to_streams(adapter_meta, appends, opts), to: Adapter
 
   @impl Decree.EventStore.Adapter

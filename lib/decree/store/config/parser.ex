@@ -34,6 +34,9 @@ defmodule Decree.Store.Config.Parser do
 
         Keyword.merge(config, parsed_value)
 
+      {:enable_hard_deletes, value}, config ->
+        Keyword.put(config, :enable_hard_deletes, get_config_boolean!(value))
+
       {:deletable, value}, config ->
         Keyword.put(config, :deletable, validate_deletable!(value))
 
@@ -193,6 +196,27 @@ defmodule Decree.Store.Config.Parser do
 
   defp get_config_value(nil, default), do: default
   defp get_config_value(value, _default), do: value
+
+  # Raises, because a `{:system, _}` value is text, and the text "false" is truthy: read as it
+  # stands it would turn on what it names as off.
+  defp get_config_boolean!(value) do
+    case get_config_value(value, false) do
+      boolean when is_boolean(boolean) ->
+        boolean
+
+      "true" ->
+        true
+
+      "false" ->
+        false
+
+      invalid ->
+        raise ArgumentError,
+          message:
+            "expected `:enable_hard_deletes` to be a boolean, \"true\" or \"false\", got: " <>
+              inspect(invalid)
+    end
+  end
 
   defp get_config_integer(value, default \\ nil) do
     case get_config_value(value) do
