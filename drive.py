@@ -4,13 +4,19 @@
 # what to subtract, each within its round: b's block minus a's.
 #
 # The trace samples the 1-minute load and the busiest processes at the start, every 50 counted
-# rounds and at the end. Void (sparklespace#7627, coordinator rule): any BEAM or `mix` outside the
-# rig, any other process above 10% CPU, or a 1-minute load above 15; the run stops at the first.
-# A foreign BEAM or `mix` before the arms start refuses the run. The rig is this driver and its
-# descendants (the arms), Postgres (native or in Docker) and the sampling tools.
+# rounds and at the end. Void (sparklespace#7627, coordinator ruling 2026-11-03): a BEAM or `mix`
+# outside the rig, a container other than the rig's own above 10% CPU, or a 1-minute load above
+# 15; the run stops at the first. OS and desktop processes never void a run; the trace lists them.
+# A foreign BEAM or `mix` before the arms start refuses the run. The rig's own processes are this
+# driver and its descendants (the arms).
+#
+# Every run that starts the arms writes its raw per-round blocks to gate-rows.json, void or not;
+# the results block prints numbers only on a VALID verdict.
+import datetime
+import hashlib
+import json
 import os
 import platform
-import re
 import shutil
 import statistics
 import subprocess
@@ -22,15 +28,11 @@ pairs = [p.split('-') for p in os.environ['PAIRS'].split(',')]
 home = os.environ['GATE_HOME']
 work = os.environ['WORK']
 container = os.environ.get('GATE_PG_CONTAINER', '')
+rows_path = os.path.join(home, 'gate-rows.json')
 FLAGS = '+sbwt none +sbwtdcpu none +sbwtdio none'
 THRESHOLD_US = 500.0
 CPU_LIMIT = 10.0
 LOAD_LIMIT = 15.0
-# Process names that belong to the rig when they are not the rig's own pids: the database server
-# and the container runtime around it, and the tools this script runs to sample.
-RIG_NAMES = re.compile(
-    r'postgres|postmaster|com\.docker|docker|qemu|vpnkit|virtualization|com\.apple\.virtua|containerd|'
-    r'^top$|^ps$|pgrep', re.I)
 
 
 def start(name, path, mode, build):
@@ -158,55 +160,75 @@ print('beam.smp at start', len(pids('beam.smp')), 'for', len(procs), 'arms', flu
 def sample(label):
     load = os.getloadavg()[0]
     mine = own()
-    foreign = []
+    void = []
     for pid in foreign_beams():
-        foreign.append('BEAM or mix pid %s: %s' % (pid, command_of(pid)[:100]))
-    busy = top_processes()
-    for pid, cpu, command in busy:
-        if cpu > CPU_LIMIT and pid not in mine and not RIG_NAMES.search(os.path.basename(command.split()[0])):
-            foreign.append('process %s %.1f%% %s' % (pid, cpu, command[:60]))
+        void.append('BEAM or mix pid %s: %s' % (pid, command_of(pid)[:100]))
     boxes = containers()
     for name, cpu in boxes:
         if name != container and cpu > CPU_LIMIT:
-            foreign.append('container %s %.1f%%' % (name, cpu))
+            void.append('container %s %.1f%%' % (name, cpu))
+    if load > LOAD_LIMIT:
+        void.append('load1 %.2f' % load)
+    busy = top_processes()
+    # Listed, never void: OS, desktop, Postgres and Docker's VM all land here.
+    others = ', '.join('%s %.1f%% %s' % (pid, cpu, c[:40]) for pid, cpu, c in busy
+                       if cpu > CPU_LIMIT and pid not in mine) or 'none'
     top5 = ', '.join('%s %.0f%% %s' % (pid, cpu, os.path.basename(c.split()[0])[:24]) for pid, cpu, c in busy[:5])
     box = ', '.join('%s %.1f%%' % b for b in boxes) or 'no docker'
-    print('TRACE %-10s load1 %5.2f | foreign: %s | top: %s | containers: %s' %
-          (label, load, '; '.join(foreign) or 'none', top5, box), flush=True)
-    return load, foreign
+    print('TRACE %-10s load1 %5.2f | void: %s | others >10%% (not void): %s | top: %s | containers: %s' %
+          (label, load, '; '.join(void) or 'none', others, top5, box), flush=True)
+    trace_log.append({'label': label, 'load1': load, 'void': void, 'others': others, 'top': top5,
+                      'containers': box})
+    return void
 
 
-def void_now(trace):
-    load, foreign = trace[-1]
-    return load > LOAD_LIMIT or bool(foreign)
+def write_rows(rows, verdict):
+    """The raw blocks, void or not. An earlier file is kept under a new name, never overwritten."""
+    if os.path.exists(rows_path):
+        stamp = datetime.datetime.fromtimestamp(os.path.getmtime(rows_path)).strftime('%Y%m%d-%H%M%S')
+        os.rename(rows_path, os.path.join(home, 'gate-rows.%s.json' % stamp))
+    doc = {'main': os.environ.get('MAIN_SHA'), 'branch': os.environ.get('BRANCH_SHA'),
+           'arms': names, 'pairs': ['-'.join(p) for p in pairs], 'block_n': os.environ.get('BENCH_N'),
+           'smoke': os.environ.get('SMOKE', '0') == '1', 'verdict': verdict, 'trace': trace_log,
+           'rows': rows}
+    data = json.dumps(doc, indent=1).encode()
+    with open(rows_path, 'wb') as f:
+        f.write(data)
+    print('rows written: %s, %d rounds, sha256 %s' % (rows_path, len(rows), hashlib.sha256(data).hexdigest()),
+          flush=True)
 
 
-for _ in range(3):
-    for name in names:
-        block(name, procs[name])
-
+trace_log = []
 rows = []
-trace = [sample('start')]
-# A void condition voids the whole run, so the run stops at the first one: measuring on would
-# report nothing.
-stopped_early = void_now(trace)
-for i in range(rounds):
-    if stopped_early:
-        break
-    k = i % len(names)
-    order = names[k:] + names[:k]
-    rows.append({name: block(name, procs[name]) for name in order})
-    if (i + 1) % 50 == 0:
-        trace.append(sample('round %d' % (i + 1)))
-        stopped_early = void_now(trace)
-if not stopped_early:
-    trace.append(sample('end'))
-for p in procs.values():
-    p.terminate()
+verdict = 'INCOMPLETE'
+try:
+    for _ in range(3):
+        for name in names:
+            block(name, procs[name])
 
-peak = max(load for load, _ in trace)
-interfered = [f for _, fs in trace for f in fs]
-void = peak > LOAD_LIMIT or bool(interfered)
+    interfered = sample('start')
+    # A void condition voids the whole run, so the run stops at the first one: measuring on would
+    # report nothing.
+    stopped_early = bool(interfered)
+    for i in range(rounds):
+        if stopped_early:
+            break
+        k = i % len(names)
+        order = names[k:] + names[:k]
+        rows.append({'round': i + 1, 'order': order, 'us': {name: block(name, procs[name]) for name in order}})
+        if (i + 1) % 50 == 0:
+            interfered = sample('round %d' % (i + 1))
+            stopped_early = bool(interfered)
+    if not stopped_early:
+        interfered = sample('end')
+    void = bool(interfered)
+    verdict = 'VOID' if void else 'VALID'
+finally:
+    for p in procs.values():
+        p.terminate()
+    write_rows(rows, verdict)
+
+peak = max(t['load1'] for t in trace_log)
 
 
 def stat(values):
@@ -216,17 +238,17 @@ def stat(values):
 
 
 print('=== RESULTS (paste everything from here to END RESULTS)')
-print('verdict', 'VOID' if void else 'VALID', '(stopped at the first void sample)' if stopped_early else '', '| load1 max %.2f (limit %.0f)' % (peak, LOAD_LIMIT),
-      '| foreign', interfered if interfered else 'none')
+print('verdict', verdict, '(stopped at the first void sample)' if stopped_early else '', '| load1 max %.2f (limit %.0f)' % (peak, LOAD_LIMIT),
+      '| void', interfered if interfered else 'none')
 if void:
     print('VOID: per the rule, no numbers are reported from this run.')
 else:
     for name in names:
-        print('level', name, round(statistics.median(r[name] for r in rows), 1), 'us')
+        print('level', name, round(statistics.median(r['us'][name] for r in rows), 1), 'us')
     half = len(rows) // 2
     gate = {'dec_main-dec_fw6': 'Q2', 'rcold_main-rcold_fw6': 'Q3'}
     for a, b in pairs:
-        d = [r[b] - r[a] for r in rows]
+        d = [r['us'][b] - r['us'][a] for r in rows]
         m, p10, p90 = stat(d)
         h1 = statistics.median(d[:half])
         h2 = statistics.median(d[half:])

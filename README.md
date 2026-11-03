@@ -56,11 +56,15 @@ SMOKE=1 ./run.sh   # optional: checks the run path in about a minute; its number
 - **Start:**
   - **No BEAM or `mix` may be running anywhere on the machine.** `run.sh` checks this first, and the driver checks it again just before it starts the arms. Either check prints `START RULE NOT MET: foreign BEAM`, with each PID's full command line, and exits without running. Check yourself beforehand with `pgrep -fl 'beam\.smp|(^|/)mix( |$)'`.
   - Then `run.sh` waits until the 1-, 5- and 15-minute load averages are all under 4. It waits up to 60 minutes and otherwise exits without running.
-- **Void:** the run is void if, in any trace sample, **any BEAM or `mix` outside the rig is running**, **any other process outside the rig is above 10% CPU**, or **the 1-minute load is above 15**.
-  - The rig is the driver and its descendants, which are the four arms; Postgres (native, or the container and Docker's VM); and the sampling tools.
-  - The run **stops at the first void sample**, because measuring on would report nothing.
-  - The trace samples at the start, every 50 counted rounds and at the end. Each sample records the 1-minute load, the five busiest processes, every container's CPU, and anything foreign.
-  - **A void run reports no numbers.** The results block says `VOID`.
+- **Void** (coordinator ruling, 2026-11-03): the run is void if, in any trace sample, any of these holds:
+  - **a BEAM or `mix` outside the rig is running** (the rig's own are the driver and its descendants, which are the four arms);
+  - **a container other than the rig's own Postgres container (`GATE_PG_CONTAINER`) is above 10% CPU**;
+  - **the 1-minute load is above 15**.
+- **Not void:** OS and desktop processes (`loginwindow`, `WindowServer`, `kernel_task` and so on), Docker's VM, Postgres and the sampling tools, at any CPU. Each sample lists every process outside the rig above 10% under `others >10% (not void)`.
+- The run **stops at the first void sample**, because measuring on would report nothing.
+- The trace samples at the start, every 50 counted rounds and at the end. Each sample records the 1-minute load, its void reasons (or `none`), the other busy processes, the five busiest processes and every container's CPU.
+- **A void run prints no numbers.** The results block says `VOID`.
+- **Raw rows:** every run that starts the arms, void or not, writes `gate-rows.json` next to the scripts: the commits, the arms, the trace, the verdict and every counted round's order and block values. It prints `rows written:` with the path, the round count and the file's sha256. An earlier `gate-rows.json` is renamed to `gate-rows.<time>.json`, never overwritten. The file is for the coordinator: the operator neither reads nor interprets it.
 - Keep the machine otherwise idle for the run: no builds, tests, browsers or video.
 
 ## What to send back
@@ -70,16 +74,17 @@ Everything `run.sh` prints from `=== FW-6 gate run` to `=== END RESULTS`:
 - the start and end loads;
 - every `TRACE` line;
 - the verdict;
-- each arm's level, and Q2 and Q3 as paired medians with both halves, p10, p90, rounds, and passes or TRIPPED.
+- each arm's level, and Q2 and Q3 as paired medians with both halves, p10, p90, rounds, and passes or TRIPPED (only on a VALID verdict);
+- the `rows written:` line.
 
-Also send the md5, Postgres and `facts appended` lines from `setup.sh`.
+Also send the md5, Postgres and `facts appended` lines from `setup.sh`. Keep `gate-rows.json` unread and unchanged for the coordinator to ask for.
 
 ## Files
 
 - `env.sh`: the settings.
 - `setup.sh`: export, build, fresh store.
 - `run.sh`: the start rule and the run.
-- `drive.py`: the rotation, the trace and the results.
+- `drive.py`: the rotation, the trace, `gate-rows.json` and the results.
 - `server.exs`: one arm.
 - `init.exs`: store setup and the facts.
 - `lib/gate.ex` and `config/config.exs`: the fixture decision, rule, events and store.
