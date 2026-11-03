@@ -1,4 +1,7 @@
 # One long-lived arm. BENCH_MODE: noop (quantity 2), rule_cold, rule_warm, decision (quantity 3).
+# The decomposition modes (branch only) isolate the index facts' `read_tags` round trip:
+# decision_rt (a decision, then one more `read_tags` of the facts, both timed), decision_tel (a
+# decision; the value is its own `read_tags` span from telemetry) and read_tags (that call alone).
 # On each stdin line runs one block and prints its median in µs.
 Logger.configure(level: :warning)
 mode = System.fetch_env!("BENCH_MODE")
@@ -87,6 +90,35 @@ one =
         c = %Gate.Claim{user_id: uuid.(), digest: seed.(), command_id: uuid.()}
         time.(fn -> :ok = Gate.App.dispatch(c) end)
       end
+
+    "decision_rt" ->
+      {:ok, _} = Gate.App.start_link()
+      positions = Gate.Decompose.fact_positions()
+
+      fn ->
+        c = %Gate.Claim{user_id: uuid.(), digest: seed.(), command_id: uuid.()}
+
+        time.(fn ->
+          :ok = Gate.App.dispatch(c)
+          Gate.Decompose.read_facts(positions)
+        end)
+      end
+
+    "decision_tel" ->
+      {:ok, _} = Gate.App.start_link()
+      Gate.Decompose.attach()
+
+      fn ->
+        c = %Gate.Claim{user_id: uuid.(), digest: seed.(), command_id: uuid.()}
+        :ok = Gate.App.dispatch(c)
+        Gate.Decompose.one_span()
+      end
+
+    "read_tags" ->
+      {:ok, _} = Gate.App.start_link()
+      positions = Gate.Decompose.fact_positions()
+
+      fn -> time.(fn -> Gate.Decompose.read_facts(positions) end) end
   end
 
 for _ <- 1..String.to_integer(System.get_env("BENCH_WARM", "300")), do: one.()

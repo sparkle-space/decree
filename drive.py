@@ -31,6 +31,9 @@ container = os.environ.get('GATE_PG_CONTAINER', '')
 rows_path = os.path.join(home, 'gate-rows.json')
 FLAGS = '+sbwt none +sbwtdcpu none +sbwtdio none'
 THRESHOLD_US = 500.0
+# Not the gate (run.sh DECOMPOSE=1): void conditions are traced but void nothing, the run never
+# stops early, and every number prints, with no threshold.
+DECOMPOSE = os.environ.get('DECOMPOSE', '0') == '1'
 CPU_LIMIT = 10.0
 LOAD_LIMIT = 15.0
 
@@ -146,7 +149,9 @@ def command_of(pid):
 
 # The start rule's last check, before any arm exists: a BEAM or `mix` here is someone else's.
 early = foreign_beams()
-if early:
+if early and DECOMPOSE:
+    print('note: BEAM or mix outside the rig (not void in a decomposition run):', ', '.join(early), flush=True)
+elif early:
     print('START RULE NOT MET: foreign BEAM', flush=True)
     for pid in early:
         print('  pid %s: %s' % (pid, command_of(pid)), flush=True)
@@ -175,8 +180,9 @@ def sample(label):
                        if cpu > CPU_LIMIT and pid not in mine) or 'none'
     top5 = ', '.join('%s %.0f%% %s' % (pid, cpu, os.path.basename(c.split()[0])[:24]) for pid, cpu, c in busy[:5])
     box = ', '.join('%s %.1f%%' % b for b in boxes) or 'no docker'
-    print('TRACE %-10s load1 %5.2f | void: %s | others >10%% (not void): %s | top: %s | containers: %s' %
-          (label, load, '; '.join(void) or 'none', others, top5, box), flush=True)
+    print('TRACE %-10s load1 %5.2f | %s: %s | others >10%% (not void): %s | top: %s | containers: %s' %
+          (label, load, 'would void the gate' if DECOMPOSE else 'void', '; '.join(void) or 'none', others, top5, box),
+          flush=True)
     trace_log.append({'label': label, 'load1': load, 'void': void, 'others': others, 'top': top5,
                       'containers': box})
     return void
@@ -189,7 +195,7 @@ def write_rows(rows, verdict):
         os.rename(rows_path, os.path.join(home, 'gate-rows.%s.json' % stamp))
     doc = {'main': os.environ.get('MAIN_SHA'), 'branch': os.environ.get('BRANCH_SHA'),
            'arms': names, 'pairs': ['-'.join(p) for p in pairs], 'block_n': os.environ.get('BENCH_N'),
-           'smoke': os.environ.get('SMOKE', '0') == '1', 'verdict': verdict, 'trace': trace_log,
+           'smoke': os.environ.get('SMOKE', '0') == '1', 'decompose': DECOMPOSE, 'verdict': verdict, 'trace': trace_log,
            'rows': rows}
     data = json.dumps(doc, indent=1).encode()
     with open(rows_path, 'wb') as f:
@@ -209,7 +215,7 @@ try:
     interfered = sample('start')
     # A void condition voids the whole run, so the run stops at the first one: measuring on would
     # report nothing.
-    stopped_early = bool(interfered)
+    stopped_early = bool(interfered) and not DECOMPOSE
     for i in range(rounds):
         if stopped_early:
             break
@@ -218,11 +224,11 @@ try:
         rows.append({'round': i + 1, 'order': order, 'us': {name: block(name, procs[name]) for name in order}})
         if (i + 1) % 50 == 0:
             interfered = sample('round %d' % (i + 1))
-            stopped_early = bool(interfered)
+            stopped_early = bool(interfered) and not DECOMPOSE
     if not stopped_early:
         interfered = sample('end')
-    void = bool(interfered)
-    verdict = 'VOID' if void else 'VALID'
+    void = bool(interfered) and not DECOMPOSE
+    verdict = 'DECOMPOSITION' if DECOMPOSE else 'VOID' if void else 'VALID'
 finally:
     for p in procs.values():
         p.terminate()
@@ -238,22 +244,33 @@ def stat(values):
 
 
 print('=== RESULTS (paste everything from here to END RESULTS)')
-print('verdict', verdict, '(stopped at the first void sample)' if stopped_early else '', '| load1 max %.2f (limit %.0f)' % (peak, LOAD_LIMIT),
-      '| void', interfered if interfered else 'none')
+if DECOMPOSE:
+    seen = [f for t in trace_log for f in t['void']]
+    print('verdict DECOMPOSITION (not the gate) | load1 max %.2f | would void the gate:' % peak,
+          '; '.join(dict.fromkeys(seen)) or 'none')
+else:
+    print('verdict', verdict, '(stopped at the first void sample)' if stopped_early else '', '| load1 max %.2f (limit %.0f)' % (peak, LOAD_LIMIT),
+          '| void', interfered if interfered else 'none')
 if void:
     print('VOID: per the rule, no numbers are reported from this run.')
 else:
     for name in names:
         print('level', name, round(statistics.median(r['us'][name] for r in rows), 1), 'us')
     half = len(rows) // 2
-    gate = {'dec_main-dec_fw6': 'Q2', 'rcold_main-rcold_fw6': 'Q3'}
+    gate = {'dec_main-dec_fw6': 'Q2', 'rcold_main-rcold_fw6': 'Q3', 'dec_fw6-dec_fw6_rt': 'RT'}
+    medians = {}
     for a, b in pairs:
         d = [r['us'][b] - r['us'][a] for r in rows]
         m, p10, p90 = stat(d)
         h1 = statistics.median(d[:half])
         h2 = statistics.median(d[half:])
         label = gate.get(a + '-' + b, 'pair')
-        result = 'TRIPPED' if m > THRESHOLD_US else 'passes'
+        medians[label] = m
+        result = 'no threshold' if DECOMPOSE else 'TRIPPED' if m > THRESHOLD_US else 'passes'
         print(f'{label} {b} minus {a}: median {m:.1f} us, halves {h1:.1f} {h2:.1f}, '
-              f'p10 {p10:.1f}, p90 {p90:.1f}, rounds {len(d)}: {result} (threshold +{THRESHOLD_US:.0f} us)')
+              f'p10 {p10:.1f}, p90 {p90:.1f}, rounds {len(d)}: {result}' +
+              ('' if DECOMPOSE else f' (threshold +{THRESHOLD_US:.0f} us)'))
+    if DECOMPOSE and 'RT' in medians and 'Q2' in medians:
+        print('round-trip share of Q2: one more read_tags of the facts costs %.1f us, %.0f%% of this run\'s Q2 %.1f us'
+              % (medians['RT'], 100 * medians['RT'] / medians['Q2'] if medians['Q2'] else float('nan'), medians['Q2']))
 print('=== END RESULTS')

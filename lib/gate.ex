@@ -206,3 +206,40 @@ if Code.ensure_loaded?(Decree.Decision.Rule) do
     router Gate.ConditionalRouter
   end
 end
+
+defmodule Gate.Decompose do
+  # The decomposition arms' helpers (branch only): the eight index facts' positions, the same
+  # `read_tags` call a dispatch makes for them, and the dispatch's own `read_tags` span.
+  @span [:decree, :event_store, :read_tags, :stop]
+
+  def fact_positions do
+    {:ok, %{events: events}} = Decree.EventStore.read_query(Gate.App, [[tags: ["tag_index:fact"]]])
+    positions = Enum.map(events, & &1.event_number)
+    8 = length(positions)
+    positions
+  end
+
+  # The facts' tags through the dispatch's own path, checked so an empty answer can't pass.
+  def read_facts(positions) do
+    {:ok, tags} = Decree.EventStore.read_tags(Gate.App, positions)
+    8 = map_size(tags)
+    :ok
+  end
+
+  def attach do
+    :ets.new(:gate_spans, [:public, :named_table, :duplicate_bag])
+
+    :ok =
+      :telemetry.attach("gate-read-tags", @span, &__MODULE__.handle/4, nil)
+  end
+
+  def handle(_event, %{duration: duration}, _meta, _config) do
+    :ets.insert(:gate_spans, {:span, duration})
+  end
+
+  # The one `read_tags` span of the dispatch just run, in µs.
+  def one_span do
+    [{:span, duration}] = :ets.take(:gate_spans, :span)
+    System.convert_time_unit(duration, :native, :nanosecond) / 1000
+  end
+end
