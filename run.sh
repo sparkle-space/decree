@@ -11,13 +11,15 @@ export PATH
 GATE_MIX="$(command -v mix)" GATE_PATH="$PATH"
 export GATE_MIX GATE_PATH
 echo "toolchain: $GATE_MIX; $(elixir --version | tail -1)"
-export ARMS="dec_main:$WORK/main:decision:main,dec_fw6:$WORK/branch:decision:branch,rcold_main:$WORK/main:rule_cold:main,rcold_fw6:$WORK/branch:rule_cold:branch"
-export PAIRS="dec_main-dec_fw6,rcold_main-rcold_fw6"
-# DECOMPOSE=1 is not the gate: three more branch arms isolate the index facts' `read_tags` round
-# trip, nothing voids or stops the run, and every number prints.
+# The four gated arms, then the span arms: each dispatch's own read_query time, on each side.
+export ARMS="dec_main:$WORK/main:decision:main,dec_fw6:$WORK/branch:decision:branch,rcold_main:$WORK/main:rule_cold:main,rcold_fw6:$WORK/branch:rule_cold:branch,\
+tel_dec_main:$WORK/main:decision_span:main,tel_dec_fw6:$WORK/branch:decision_span:branch,\
+tel_rcold_main:$WORK/main:rule_cold_span:main,tel_rcold_fw6:$WORK/branch:rule_cold_span:branch"
+export PAIRS="dec_main-dec_fw6,rcold_main-rcold_fw6,tel_dec_main-tel_dec_fw6,tel_rcold_main-tel_rcold_fw6"
+# DECOMPOSE=1 is not the gate: nothing voids or stops the run, and every number prints. It adds
+# the index facts' read_tags call alone, the round trip FW-6's dispatch no longer sends.
 if [ "${DECOMPOSE:-0}" = 1 ]; then
-  ARMS="$ARMS,dec_fw6_rt:$WORK/branch:decision_rt:branch,tel_fw6:$WORK/branch:decision_tel:branch,tel_rcold_fw6:$WORK/branch:rule_cold_tel:branch,rt_fw6:$WORK/branch:read_tags:branch"
-  PAIRS="$PAIRS,dec_fw6-dec_fw6_rt"
+  ARMS="$ARMS,rt_fw6:$WORK/branch:read_tags:branch"
 fi
 export BLOCKS=${BLOCKS:-401} BENCH_N=${BENCH_N:-51} BENCH_WARM=${BENCH_WARM:-300}
 # SMOKE=1 checks the run path only: two tiny rounds, no start rule, numbers meaningless.

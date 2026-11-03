@@ -208,9 +208,10 @@ if Code.ensure_loaded?(Decree.Decision.Rule) do
 end
 
 defmodule Gate.Decompose do
-  # The decomposition arms' helpers (branch only): the eight index facts' positions, the same
-  # `read_tags` call a dispatch makes for them, and the dispatch's own `read_tags` span.
-  @span [:decree, :event_store, :read_tags, :stop]
+  # The span arms' helpers, on either side: the store spans one dispatch emits, read through
+  # telemetry, and the eight index facts' `read_tags` call on its own.
+  @read_query [:decree, :event_store, :read_query, :stop]
+  @read_tags [:decree, :event_store, :read_tags, :stop]
 
   def fact_positions do
     {:ok, %{events: events}} = Decree.EventStore.read_query(Gate.App, [[tags: ["tag_index:fact"]]])
@@ -219,7 +220,7 @@ defmodule Gate.Decompose do
     positions
   end
 
-  # The facts' tags through the dispatch's own path, checked so an empty answer can't pass.
+  # The facts' tags through `Decree.EventStore.read_tags`, checked so an empty answer can't pass.
   def read_facts(positions) do
     {:ok, tags} = Decree.EventStore.read_tags(Gate.App, positions)
     8 = map_size(tags)
@@ -228,18 +229,22 @@ defmodule Gate.Decompose do
 
   def attach do
     :ets.new(:gate_spans, [:public, :named_table, :duplicate_bag])
-
-    :ok =
-      :telemetry.attach("gate-read-tags", @span, &__MODULE__.handle/4, nil)
+    :ok = :telemetry.attach_many("gate-spans", [@read_query, @read_tags], &__MODULE__.handle/4, nil)
   end
 
-  def handle(_event, %{duration: duration}, _meta, _config) do
-    :ets.insert(:gate_spans, {:span, duration})
+  def handle([:decree, :event_store, kind, :stop], %{duration: duration}, _meta, _config) do
+    :ets.insert(:gate_spans, {kind, duration})
   end
 
-  # The one `read_tags` span of the dispatch just run, in µs.
-  def one_span do
-    [{:span, duration}] = :ets.take(:gate_spans, :span)
-    System.convert_time_unit(duration, :native, :nanosecond) / 1000
+  # Runs one dispatch and answers its `read_query` time in µs, all its reads together. A
+  # dispatch must send no `read_tags`: one would end the arm.
+  def read_query_us(dispatch) do
+    :ets.delete_all_objects(:gate_spans)
+    :ok = dispatch.()
+    [] = :ets.take(:gate_spans, :read_tags)
+    reads = :ets.take(:gate_spans, :read_query)
+    true = reads != []
+    total = reads |> Enum.map(fn {:read_query, d} -> d end) |> Enum.sum()
+    System.convert_time_unit(total, :native, :nanosecond) / 1000
   end
 end

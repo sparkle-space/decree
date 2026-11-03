@@ -2,7 +2,7 @@
 GATE_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export GATE_HOME
 export MAIN_SHA=${MAIN_SHA:-0b41deec8a06882343db7cea97e004061bfd39ad}
-export BRANCH_SHA=${BRANCH_SHA:-e5d1998834381b4b41cc439a8f4e1831cd0d965e}
+export BRANCH_SHA=${BRANCH_SHA:-57cc85c27f207c955ceca5eb55b902962eb92bfc}
 export GATE_PG_HOST=${GATE_PG_HOST:-127.0.0.1}
 export GATE_PG_PORT=${GATE_PG_PORT:-5432}
 export GATE_PG_USER=${GATE_PG_USER:-postgres}

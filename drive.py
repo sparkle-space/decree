@@ -257,28 +257,20 @@ else:
     for name in names:
         print('level', name, round(statistics.median(r['us'][name] for r in rows), 1), 'us')
     half = len(rows) // 2
-    gate = {'dec_main-dec_fw6': 'Q2', 'rcold_main-rcold_fw6': 'Q3', 'dec_fw6-dec_fw6_rt': 'RT'}
-    medians = {}
+    gate = {'dec_main-dec_fw6': 'Q2', 'rcold_main-rcold_fw6': 'Q3'}
+    spans = {'tel_dec_main-tel_dec_fw6': 'RQ', 'tel_rcold_main-tel_rcold_fw6': 'RQR'}
     for a, b in pairs:
         d = [r['us'][b] - r['us'][a] for r in rows]
         m, p10, p90 = stat(d)
         h1 = statistics.median(d[:half])
         h2 = statistics.median(d[half:])
-        label = gate.get(a + '-' + b, 'pair')
-        medians[label] = m
-        result = 'no threshold' if DECOMPOSE else 'TRIPPED' if m > THRESHOLD_US else 'passes'
-        print(f'{label} {b} minus {a}: median {m:.1f} us, halves {h1:.1f} {h2:.1f}, '
-              f'p10 {p10:.1f}, p90 {p90:.1f}, rounds {len(d)}: {result}' +
-              ('' if DECOMPOSE else f' (threshold +{THRESHOLD_US:.0f} us)'))
-    # The round trip's share is the dispatch's own read_tags span against its pair. RT, a call
-    # placed after the dispatch, is marginal cost after the append, not the share.
-    spans = {'Q2': ('dec_main', 'dec_fw6', 'tel_fw6'), 'Q3': ('rcold_main', 'rcold_fw6', 'tel_rcold_fw6')}
-    for label, (a, b, span) in spans.items() if DECOMPOSE else []:
-        if span not in names:
-            continue
-        sv = statistics.median(r['us'][span] for r in rows)
-        rest = [r['us'][b] - r['us'][a] - r['us'][span] for r in rows]
-        print(f'round-trip share of {label}: span {span} median {sv:.1f} us, {100 * sv / medians[label] if medians[label] else float("nan"):.0f}% of '
-              f'{medians[label]:.1f} us; {label} minus span per round: median {statistics.median(rest):.1f} us, '
-              f'halves {statistics.median(rest[:half]):.1f} {statistics.median(rest[half:]):.1f}')
+        key = a + '-' + b
+        line = (f'{gate.get(key) or spans.get(key) or "pair"} {b} minus {a}: median {m:.1f} us, '
+                f'halves {h1:.1f} {h2:.1f}, p10 {p10:.1f}, p90 {p90:.1f}, rounds {len(d)}')
+        # Only Q2 and Q3 are gated; a span pair is read_query time alone and carries no verdict.
+        if key in gate and not DECOMPOSE:
+            line += f": {'TRIPPED' if m > THRESHOLD_US else 'passes'} (threshold +{THRESHOLD_US:.0f} us)"
+        print(line)
+    if any(n.startswith('tel_') for n in names):
+        print('read_tags spans in span-arm dispatches: 0 (each span arm ends itself on one)')
 print('=== END RESULTS')

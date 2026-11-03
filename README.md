@@ -5,11 +5,11 @@
 | Side | Commit |
 |---|---|
 | main | `0b41deec8a06882343db7cea97e004061bfd39ad` (FW-5's merge) |
-| branch | `e5d1998834381b4b41cc439a8f4e1831cd0d965e` (decree#20's head when this rig was written) |
+| branch | `57cc85c27f207c955ceca5eb55b902962eb92bfc` (decree#20 after the founder's design change: the dispatch's read returns the framework hits' tags, with no separate `read_tags`) |
 
 ## What it measures
 
-Four long-lived BEAMs, one per arm, share **one store**. FW-6 has no migration, and `append_events*` is identical on both sides; setup prints its md5 twice to show it.
+Eight long-lived BEAMs, one per arm, share **one store**. FW-6 has no migration, and `append_events*` is identical on both sides; setup prints its md5 twice to show it.
 
 | Arm | Code | Shape |
 |---|---|---|
@@ -17,6 +17,10 @@ Four long-lived BEAMs, one per arm, share **one store**. FW-6 has no migration, 
 | `dec_fw6` | branch | the same decision, with the index item and an enabled index |
 | `rcold_main` | main | a rule route with the same query, and a new aggregate per dispatch (cold) |
 | `rcold_fw6` | branch | the same rule route, with the index item and an enabled index |
+| `tel_dec_main`, `tel_dec_fw6` | main, branch | the decision again; the value is the dispatch's own `read_query` time, from decree's telemetry |
+| `tel_rcold_main`, `tel_rcold_fw6` | main, branch | the same for the cold rule route |
+
+The four `tel_` arms are span arms. Each attaches a telemetry handler in its own BEAM, so the handlers never touch the four gated arms. A span arm also ends itself if a dispatch sends any `read_tags` statement: FW-6's dispatch sends none, and main's fresh dispatch sends none either.
 
 Every arm uses the same tags (`email:<fp>:<digest>`) and the same `index_families/0` (`%{"email" => :digest}`). The only difference within a pair is decree's code.
 
@@ -25,6 +29,9 @@ Every arm uses the same tags (`email:<fp>:<digest>`) and the same `index_familie
 - **Gated quantities**, each a paired median with a threshold of **+500 µs**:
   - **Q2:** `dec_fw6 − dec_main`.
   - **Q3:** `rcold_fw6 − rcold_main`.
+- **Span pairs**, ungated and printed without a verdict:
+  - **RQ:** `tel_dec_fw6 − tel_dec_main`, what FW-6 adds to a decision's `read_query` time (the index item's rows and the tags returned with them).
+  - **RQR:** the same for the rule route.
 
 ## Requirements
 
@@ -46,7 +53,7 @@ git fetch origin main feature/fw6-index-facts   # both commits must be present
 ./setup.sh    # exports both sides, builds them, and makes a fresh store with the eight index facts
 SMOKE=1 ./run.sh   # optional: checks the run path in about a minute; its numbers mean nothing
 ./setup.sh         # again: a fresh store for the real run
-./run.sh      # waits for the start rule, then runs; about 25 to 40 minutes
+./run.sh      # waits for the start rule, then runs; about 25 to 45 minutes
 ```
 
 `setup.sh` ends with `SETUP OK`. Before that it prints the two `append_events functions md5` lines, which must be equal, the Postgres version and `shared_buffers`, and `facts appended: 8`. **Run `setup.sh` again before every run**: the store must be fresh.
@@ -69,19 +76,7 @@ SMOKE=1 ./run.sh   # optional: checks the run path in about a minute; its number
 
 ## Decomposition run (not the gate)
 
-`DECOMPOSE=1 ./run.sh` asks how much of the FW-6 delta is the index facts' `read_tags` round trip. On main, a fresh dispatch's framework items match nothing, so it sends no `read_tags` statement. On the branch, the index item always matches the eight facts, so every dispatch sends one.
-
-- **Arms:** the gate's four, plus three on the branch:
-  - `dec_fw6_rt`: the `dec_fw6` decision, then one more `read_tags` of the eight facts through the same `Decree.EventStore.read_tags` path, both timed;
-  - `tel_fw6`: the `dec_fw6` decision; the value is that dispatch's own `read_tags` span, from telemetry;
-  - `tel_rcold_fw6`: the same for the `rcold_fw6` cold rule route;
-  - `rt_fw6`: the `read_tags` call alone.
-  - Each extra call checks it got eight answers, and each span arm checks there is exactly one span per dispatch.
-- **Pairs:** Q2 and Q3 as in the gate, plus `RT` = `dec_fw6_rt − dec_fw6`, the marginal cost of one more such call placed after the dispatch's append.
-- **The share** is each span arm's median against its pair (`tel_fw6` for Q2, `tel_rcold_fw6` for Q3), with the per-round remainder (pair minus span). RT is not the share: at `834b3f1` it measured about twice the in-dispatch span, likely because the extra call competes with the store's post-append Publisher read for the pool's two connections (unverified).
-- **What RT leaves out:** the index item's extra rows in `read_query`, the in-BEAM `Index.check`, and the index item in the append condition. Q2 minus RT is that remainder.
-- **Rules:** the same blocks, rotation, warm-up and flags. No start rule and no threshold. Nothing voids or stops the run: the trace still records each condition that would void the gate, as `would void the gate:`. Every number prints, and `gate-rows.json` is written as usual.
-- Run `./setup.sh` before it, as before any run.
+`DECOMPOSE=1 ./run.sh` runs the same arms ungated: no start rule, no threshold, and nothing voids or stops the run. The trace still records each condition that would void the gate, as `would void the gate:`. Every number prints, and `gate-rows.json` is written as usual. It adds `rt_fw6`, the index facts' `read_tags` call alone: the round trip FW-6's dispatch no longer sends. Run `./setup.sh` before it, as before any run.
 
 ## What to send back
 
@@ -90,7 +85,7 @@ Everything `run.sh` prints from `=== FW-6 gate run` to `=== END RESULTS`:
 - the start and end loads;
 - every `TRACE` line;
 - the verdict;
-- each arm's level, and Q2 and Q3 as paired medians with both halves, p10, p90, rounds, and passes or TRIPPED (only on a VALID verdict);
+- each arm's level, Q2 and Q3 as paired medians with both halves, p10, p90, rounds, and passes or TRIPPED, and the RQ and RQR span pairs (only on a VALID verdict);
 - the `rows written:` line.
 
 Also send the md5, Postgres and `facts appended` lines from `setup.sh`. Keep `gate-rows.json` unread and unchanged for the coordinator to ask for.
