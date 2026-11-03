@@ -20,7 +20,7 @@ Eight long-lived BEAMs, one per arm, share **one store**. FW-6 has no migration,
 | `tel_dec_main`, `tel_dec_fw6` | main, branch | the decision again; the value is the dispatch's own `read_query` time, from decree's telemetry |
 | `tel_rcold_main`, `tel_rcold_fw6` | main, branch | the same for the cold rule route |
 
-The four `tel_` arms are span arms. Each attaches a telemetry handler in its own BEAM, so the handlers never touch the four gated arms. A span arm also ends itself if a dispatch sends any `read_tags` statement: FW-6's dispatch sends none, and main's fresh dispatch sends none either.
+The four `tel_` arms are span arms. Each attaches a telemetry handler in its own BEAM, so the handlers never touch the four gated arms. A span arm also ends itself if a dispatch sends any `read_tags` statement: FW-6's dispatch sends none, and main's fresh dispatch sends none either (it calls `read_tags` with no positions, which sends no statement and isn't counted).
 
 Every arm uses the same tags (`email:<fp>:<digest>`) and the same `index_families/0` (`%{"email" => :digest}`). The only difference within a pair is decree's code.
 

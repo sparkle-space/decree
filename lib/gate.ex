@@ -232,6 +232,11 @@ defmodule Gate.Decompose do
     :ok = :telemetry.attach_many("gate-spans", [@read_query, @read_tags], &__MODULE__.handle/4, nil)
   end
 
+  # A `read_tags` call with no positions sends no statement (main's fresh dispatch makes one), so
+  # only a call asking for positions counts as a round trip.
+  def handle([:decree, :event_store, :read_tags, :stop], _measurements, %{positions: []}, _config),
+    do: :ok
+
   def handle([:decree, :event_store, kind, :stop], %{duration: duration}, _meta, _config) do
     :ets.insert(:gate_spans, {kind, duration})
   end
