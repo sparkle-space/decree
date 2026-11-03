@@ -380,6 +380,33 @@ defmodule Decree.Decision.TagIndexTest do
       assert [_one] = stored(stream(command))
     end
 
+    test "an activation committed between the two reads is not counted: it refuses" do
+      test = self()
+      held = make_ref()
+
+      followup = fn command, _context, _events ->
+        if not Process.get(held, false) do
+          Process.put(held, true)
+          hold(test, :between_reads)
+        end
+
+        [claimed_item(command.scope)]
+      end
+
+      command = scripted([followup: followup], Activating)
+      task = Task.async(fn -> App.dispatch(command, timeout: 60_000) end)
+
+      assert_receive {:between_reads, pid}
+      activate!()
+      send(pid, :go)
+
+      # An activation above `after` is not this read's state, as an index fact above it is not.
+      assert {:error, :decision_not_activated} = Task.await(task, :infinity)
+
+      refute_received {:telemetry, @retry, _, _}
+      assert stored(stream(command)) == []
+    end
+
     test "comes after the index check" do
       activate!()
       disable_index!("entity")
