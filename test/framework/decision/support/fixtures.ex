@@ -621,6 +621,27 @@ defmodule Decree.DecisionFixtures.IndexDeletableApp do
   def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
 end
 
+defmodule Decree.DecisionFixtures.DisableDeletableApp do
+  @moduledoc false
+
+  # The fixture disable declared deletable, so the fetch leaves out a disable's tags and keeps
+  # the enable before it.
+  use Decree.Application,
+    otp_app: :decree,
+    event_store: [
+      adapter: Decree.EventStore.Adapters.EventStore,
+      event_store: Decree.FrameworkEventStore,
+      conditional_appends: [stream_prefixes: ["scripted-"]],
+      deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexDisabled"]]
+    ],
+    pubsub: :local,
+    registry: :local
+
+  router Decree.DecisionFixtures.Router
+
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
 defmodule Decree.DecisionFixtures.DeletableStreamsApp do
   @moduledoc false
 

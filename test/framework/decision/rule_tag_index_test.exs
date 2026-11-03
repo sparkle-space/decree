@@ -69,6 +69,24 @@ defmodule Decree.Decision.RuleTagIndexTest do
     end
   end
 
+  describe "the second read's items" do
+    test "require their families too: a disabled one refuses" do
+      disable_index!("tenant_slug")
+
+      followup = fn _command, _context, _events ->
+        [[types: [Atom.to_string(Read)], tags: ["tenant_slug:acme"]]]
+      end
+
+      # Every family the first read requires is enabled.
+      assert :ok = App.dispatch(ruled())
+
+      command = ruled(followup: followup)
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored(ruled_stream(command), App) == []
+    end
+  end
+
   describe "the index item" do
     test "is read after the rule's own items, and its facts' tags in the one fetch" do
       Process.register(self(), :rule_recorder)

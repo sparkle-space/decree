@@ -8,13 +8,14 @@ defmodule Decree.Decision.TagIndexTest do
     Activating,
     Burning,
     Digesting,
+    DisableDeletableApp,
     HardDeletesApp,
     IndexDeletableApp
   }
 
   alias Decree.Event.Append
   alias Decree.FrameworkStorage
-  alias Decree.Store.Config
+  alias Decree.Store.{Config, TagIndex}
 
   @retry [:decree, :decision, :retry]
   @read [:decree, :decision, :read]
@@ -240,6 +241,49 @@ defmodule Decree.Decision.TagIndexTest do
 
       # The same store, with nothing declared deletable, reads the same facts as enabled.
       assert :ok = App.dispatch(scripted())
+    end
+
+    test "a later disable whose state tags the fetch leaves out refuses, though an enable shows" do
+      start_supervised!({DisableDeletableApp, []})
+
+      disable_index!("entity")
+
+      # The enable before it still reads, so skipping the disable would read as enabled.
+      command = scripted()
+
+      assert {:error, :tag_index_not_enabled} = DisableDeletableApp.dispatch(command)
+      assert stored(stream(command), DisableDeletableApp) == []
+    end
+
+    test "one naming a family both ways reads as disabled" do
+      seed(%Released{scope: "both"}, [
+        TagIndex.fact_tag(),
+        TagIndex.state_tag("entity", nil, :enabled),
+        TagIndex.state_tag("entity", nil, :disabled)
+      ])
+
+      command = scripted()
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored(stream(command)) == []
+    end
+  end
+
+  describe "the second read's items" do
+    test "require their families too: a disabled one refuses" do
+      disable_index!("tenant_slug")
+
+      followup = fn _command, _context, _events ->
+        [[types: [Atom.to_string(Released)], tags: ["tenant_slug:acme"]]]
+      end
+
+      # Every family the first read requires is enabled.
+      assert :ok = App.dispatch(scripted())
+
+      command = scripted(followup: followup)
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored(stream(command)) == []
     end
   end
 
