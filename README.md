@@ -44,6 +44,8 @@ Every arm uses the same tags (`email:<fp>:<digest>`) and the same `index_familie
 ```bash
 git fetch origin main feature/fw6-index-facts   # both commits must be present
 ./setup.sh    # exports both sides, builds them, and makes a fresh store with the eight index facts
+SMOKE=1 ./run.sh   # optional: checks the run path in about a minute; its numbers mean nothing
+./setup.sh         # again: a fresh store for the real run
 ./run.sh      # waits for the start rule, then runs; about 25 to 40 minutes
 ```
 

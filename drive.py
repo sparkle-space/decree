@@ -35,8 +35,9 @@ RIG_NAMES = re.compile(
 def start(name, path, mode, build):
     env = dict(os.environ)
     env.update(DECREE_PATH=path, GATE_BUILD=work + '/build-' + build, BENCH_ARM=name,
-               BENCH_MODE=mode, MIX_ENV='prod', ELIXIR_ERL_OPTIONS=FLAGS)
-    p = subprocess.Popen(['mix', 'run', '--no-compile', '--no-deps-check', '--no-start', 'server.exs'],
+               BENCH_MODE=mode, MIX_ENV='prod', ELIXIR_ERL_OPTIONS=FLAGS,
+               PATH=os.environ['GATE_PATH'])
+    p = subprocess.Popen([os.environ['GATE_MIX'], 'run', '--no-compile', '--no-deps-check', '--no-start', 'server.exs'],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env, bufsize=1,
                          cwd=home)
     while True:

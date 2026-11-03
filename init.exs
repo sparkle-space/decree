@@ -8,7 +8,7 @@ config = Decree.Store.Config.parsed(Gate.Store, :gate_bench)
 if System.get_env("GATE_RESET") == "1" do
   admin = Keyword.put(Decree.Store.Config.default_postgrex_opts(config), :database, "postgres")
   {:ok, a} = Postgrex.start_link(admin)
-  Postgrex.query!(a, ~s(DROP DATABASE IF EXISTS "#{config[:database]}" WITH (FORCE)), [])
+  Postgrex.query!(a, ~s[DROP DATABASE IF EXISTS "#{config[:database]}" WITH (FORCE)], [])
   IO.puts("dropped #{config[:database]}")
   GenServer.stop(a)
 end
