@@ -18,6 +18,7 @@ defmodule Decree.Store.Sql.Statements do
         {:soft_delete_stream, [:schema]},
         {:lock_stream, [:schema]},
         {:lock_deleted_events, [:schema]},
+        {:query_index_facts, [:schema]},
         {:hard_delete_stream, [:schema]},
         {:delete_stream_row, [:schema]},
         {:delete_stream_tags, [:schema]},

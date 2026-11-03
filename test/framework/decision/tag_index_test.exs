@@ -8,6 +8,7 @@ defmodule Decree.Decision.TagIndexTest do
     Activating,
     Burning,
     Digesting,
+    HardDeletesApp,
     IndexDeletableApp
   }
 
@@ -239,6 +240,50 @@ defmodule Decree.Decision.TagIndexTest do
 
       # The same store, with nothing declared deletable, reads the same facts as enabled.
       assert :ok = App.dispatch(scripted())
+    end
+  end
+
+  describe "a hard delete" do
+    setup do
+      start_supervised!({HardDeletesApp, []})
+
+      [store: Module.concat([HardDeletesApp, "FrameworkEventStore"])]
+    end
+
+    test "of a stream linking a disable is refused, and the decision still refuses", context do
+      %{store: store} = context
+
+      disable_index!("entity")
+
+      {:ok, facts} =
+        Decree.FrameworkEventStore.read_stream_forward(TagIndexFixtures.ledger_stream(), 0, 100,
+          name: store
+        )
+
+      disable = List.last(facts)
+
+      :ok =
+        Decree.FrameworkEventStore.link_to_stream("fact-link", :any_version, [disable],
+          name: store
+        )
+
+      assert {:error, :hard_delete_of_index_fact} =
+               Decree.FrameworkEventStore.delete_stream("fact-link", :any_version, :hard,
+                 name: store
+               )
+
+      assert {:error, :hard_delete_of_index_fact} =
+               Decree.FrameworkEventStore.delete_stream(
+                 TagIndexFixtures.ledger_stream(),
+                 :any_version,
+                 :hard,
+                 name: store
+               )
+
+      command = scripted()
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored(stream(command)) == []
     end
   end
 

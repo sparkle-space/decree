@@ -452,6 +452,15 @@ defmodule Decree.Store do
   `conditional_appends` prefix also covers that stream, and that link goes with the event when
   a hard delete takes it.
 
+  **Tag index facts.** A stream holding or linking an event tagged `tag_index:fact` can never
+  be hard-deleted, whatever its prefix or its declarations, the stream an application keeps
+  its facts on, a `Platform` singleton's included. The delete answers
+  `{:error, :hard_delete_of_index_fact}` from inside its transaction, which rolls back with
+  every row standing, a caller's transaction with it. A hard delete of a stream holding links
+  deletes the linked events everywhere, so a deleted disable would leave an earlier enable
+  standing: see `Decree.Store.TagIndex`. The check reads after the stream's row and the event
+  rows are locked, so no append or link into the stream can slip past it.
+
   **The limit.** The refusal is by name. An item of tags alone, naming a kind that is not
   declared, can still match a deletable event. So the declaration must list every kind a
   deletable event carries.
@@ -1701,6 +1710,10 @@ defmodule Decree.Store do
   before any statement is sent, at every expected version. See "Conditional appends" in
   `Decree.Store`.
 
+  A hard delete of a stream holding or linking an event tagged `tag_index:fact` answers
+  `{:error, :hard_delete_of_index_fact}` from inside its transaction, which rolls back with
+  every row standing. See "Deletable streams" in `Decree.Store`.
+
   """
   @callback delete_stream(
               stream_uuid :: String.t(),
@@ -1713,6 +1726,7 @@ defmodule Decree.Store do
               | {:error, :stream_deleted}
               | {:error, :wrong_expected_version}
               | {:error, :hard_delete_of_conditional_prefix}
+              | {:error, :hard_delete_of_index_fact}
               | {:error, term}
 
   @doc """

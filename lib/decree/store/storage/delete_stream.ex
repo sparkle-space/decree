@@ -5,6 +5,7 @@ defmodule Decree.Store.Storage.DeleteStream do
 
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Stream, as: StreamStorage
+  alias Decree.Store.TagIndex
 
   @all_stream_id 0
 
@@ -35,7 +36,7 @@ defmodule Decree.Store.Storage.DeleteStream do
     end
   end
 
-  # Four statements in the caller's transaction, each with a snapshot of its own.
+  # Five statements in the caller's transaction, each with a snapshot of its own.
   #
   # The stream's row comes first and alone, so everything after it sees what an append or a
   # link committed while holding the row. NO KEY UPDATE, as an append takes it, serialises
@@ -47,6 +48,11 @@ defmodule Decree.Store.Storage.DeleteStream do
   # does not conflict with a link's KEY SHARE. A link takes the same rows in the same order
   # after its own stream's row, so the two cannot cycle, and neither can two hard deletes that
   # meet on events through a link stream. An event a concurrent delete removed is skipped.
+  #
+  # Then the check for a tag index fact, held or linked, which refuses the delete: a disable it
+  # removed would leave an earlier enable standing. There is no window. The stream's row holds
+  # off any append or link into this stream, the event rows any link of them, and the check's
+  # snapshot starts after both waits, so it sees every one that committed.
   #
   # The delete's snapshot then starts after that wait, so a link that committed during it is
   # seen and removed with the event, and every `stream_events` row of an event is touched only
@@ -60,6 +66,7 @@ defmodule Decree.Store.Storage.DeleteStream do
     with :ok <- StreamStorage.lock_at_version(conn, stream_id, expected_version, schema, opts),
          {:ok, %Postgrex.Result{}} <-
            Postgrex.query(conn, Statements.lock_deleted_events(schema), [stream_id], opts),
+         :ok <- no_index_facts(conn, stream_id, schema, opts),
          {:ok, %Postgrex.Result{}} <-
            Postgrex.query(conn, Statements.hard_delete_stream(schema), [stream_id], opts),
          {:ok, %Postgrex.Result{num_rows: 1, rows: [[^stream_id]]}} <-
@@ -82,6 +89,16 @@ defmodule Decree.Store.Storage.DeleteStream do
         log_failed_hard_delete(stream_id, inspect(error))
 
         reply
+    end
+  end
+
+  defp no_index_facts(conn, stream_id, schema, opts) do
+    query = Statements.query_index_facts(schema)
+
+    case Postgrex.query(conn, query, [stream_id, TagIndex.fact_tag()], opts) do
+      {:ok, %Postgrex.Result{num_rows: 0}} -> :ok
+      {:ok, %Postgrex.Result{}} -> {:error, :hard_delete_of_index_fact}
+      {:error, _error} = reply -> reply
     end
   end
 
