@@ -270,7 +270,15 @@ else:
         print(f'{label} {b} minus {a}: median {m:.1f} us, halves {h1:.1f} {h2:.1f}, '
               f'p10 {p10:.1f}, p90 {p90:.1f}, rounds {len(d)}: {result}' +
               ('' if DECOMPOSE else f' (threshold +{THRESHOLD_US:.0f} us)'))
-    if DECOMPOSE and 'RT' in medians and 'Q2' in medians:
-        print('round-trip share of Q2: one more read_tags of the facts costs %.1f us, %.0f%% of this run\'s Q2 %.1f us'
-              % (medians['RT'], 100 * medians['RT'] / medians['Q2'] if medians['Q2'] else float('nan'), medians['Q2']))
+    # The round trip's share is the dispatch's own read_tags span against its pair. RT, a call
+    # placed after the dispatch, is marginal cost after the append, not the share.
+    spans = {'Q2': ('dec_main', 'dec_fw6', 'tel_fw6'), 'Q3': ('rcold_main', 'rcold_fw6', 'tel_rcold_fw6')}
+    for label, (a, b, span) in spans.items() if DECOMPOSE else []:
+        if span not in names:
+            continue
+        sv = statistics.median(r['us'][span] for r in rows)
+        rest = [r['us'][b] - r['us'][a] - r['us'][span] for r in rows]
+        print(f'round-trip share of {label}: span {span} median {sv:.1f} us, {100 * sv / medians[label] if medians[label] else float("nan"):.0f}% of '
+              f'{medians[label]:.1f} us; {label} minus span per round: median {statistics.median(rest):.1f} us, '
+              f'halves {statistics.median(rest[:half]):.1f} {statistics.median(rest[half:]):.1f}')
 print('=== END RESULTS')

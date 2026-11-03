@@ -16,7 +16,7 @@ export PAIRS="dec_main-dec_fw6,rcold_main-rcold_fw6"
 # DECOMPOSE=1 is not the gate: three more branch arms isolate the index facts' `read_tags` round
 # trip, nothing voids or stops the run, and every number prints.
 if [ "${DECOMPOSE:-0}" = 1 ]; then
-  ARMS="$ARMS,dec_fw6_rt:$WORK/branch:decision_rt:branch,tel_fw6:$WORK/branch:decision_tel:branch,rt_fw6:$WORK/branch:read_tags:branch"
+  ARMS="$ARMS,dec_fw6_rt:$WORK/branch:decision_rt:branch,tel_fw6:$WORK/branch:decision_tel:branch,tel_rcold_fw6:$WORK/branch:rule_cold_tel:branch,rt_fw6:$WORK/branch:read_tags:branch"
   PAIRS="$PAIRS,dec_fw6-dec_fw6_rt"
 fi
 export BLOCKS=${BLOCKS:-401} BENCH_N=${BENCH_N:-51} BENCH_WARM=${BENCH_WARM:-300}

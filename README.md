@@ -74,9 +74,11 @@ SMOKE=1 ./run.sh   # optional: checks the run path in about a minute; its number
 - **Arms:** the gate's four, plus three on the branch:
   - `dec_fw6_rt`: the `dec_fw6` decision, then one more `read_tags` of the eight facts through the same `Decree.EventStore.read_tags` path, both timed;
   - `tel_fw6`: the `dec_fw6` decision; the value is that dispatch's own `read_tags` span, from telemetry;
+  - `tel_rcold_fw6`: the same for the `rcold_fw6` cold rule route;
   - `rt_fw6`: the `read_tags` call alone.
-  - Each extra call checks it got eight answers, and `tel_fw6` checks there is exactly one span per dispatch.
-- **Pairs:** Q2 and Q3 as in the gate, plus `RT` = `dec_fw6_rt − dec_fw6`, the marginal cost of one such round trip under the same conditions. The results also print RT as a share of the same run's Q2.
+  - Each extra call checks it got eight answers, and each span arm checks there is exactly one span per dispatch.
+- **Pairs:** Q2 and Q3 as in the gate, plus `RT` = `dec_fw6_rt − dec_fw6`, the marginal cost of one more such call placed after the dispatch's append.
+- **The share** is each span arm's median against its pair (`tel_fw6` for Q2, `tel_rcold_fw6` for Q3), with the per-round remainder (pair minus span). RT is not the share: at `834b3f1` it measured about twice the in-dispatch span, likely because the extra call competes with the store's post-append Publisher read for the pool's two connections (unverified).
 - **What RT leaves out:** the index item's extra rows in `read_query`, the in-BEAM `Index.check`, and the index item in the append condition. Q2 minus RT is that remainder.
 - **Rules:** the same blocks, rotation, warm-up and flags. No start rule and no threshold. Nothing voids or stops the run: the trace still records each condition that would void the gate, as `would void the gate:`. Every number prints, and `gate-rows.json` is written as usual.
 - Run `./setup.sh` before it, as before any run.

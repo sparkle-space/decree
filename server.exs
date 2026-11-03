@@ -1,7 +1,8 @@
 # One long-lived arm. BENCH_MODE: noop (quantity 2), rule_cold, rule_warm, decision (quantity 3).
 # The decomposition modes (branch only) isolate the index facts' `read_tags` round trip:
 # decision_rt (a decision, then one more `read_tags` of the facts, both timed), decision_tel (a
-# decision; the value is its own `read_tags` span from telemetry) and read_tags (that call alone).
+# decision; the value is its own `read_tags` span from telemetry), rule_cold_tel (the same for a
+# cold rule route) and read_tags (that call alone).
 # On each stdin line runs one block and prints its median in µs.
 Logger.configure(level: :warning)
 mode = System.fetch_env!("BENCH_MODE")
@@ -110,6 +111,16 @@ one =
 
       fn ->
         c = %Gate.Claim{user_id: uuid.(), digest: seed.(), command_id: uuid.()}
+        :ok = Gate.App.dispatch(c)
+        Gate.Decompose.one_span()
+      end
+
+    "rule_cold_tel" ->
+      {:ok, _} = Gate.App.start_link()
+      Gate.Decompose.attach()
+
+      fn ->
+        c = %Gate.Register{user_id: uuid.(), digest: seed.(), command_id: uuid.()}
         :ok = Gate.App.dispatch(c)
         Gate.Decompose.one_span()
       end
