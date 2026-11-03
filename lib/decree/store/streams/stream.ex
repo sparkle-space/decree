@@ -10,6 +10,7 @@ defmodule Decree.Store.Streams.Stream do
     ReadResult,
     RecordedEvent,
     Storage,
+    TagIndex,
     UUID
   }
 
@@ -25,6 +26,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         :ok <- validate_tag_index_facts(events),
          :ok <- validate_required_tags(events),
          :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
          :ok <- validate_returning(new_opts),
@@ -39,6 +41,7 @@ defmodule Decree.Store.Streams.Stream do
     {serializer, new_opts} = Keyword.pop(opts, :serializer)
 
     with :ok <- validate_tags(events),
+         :ok <- validate_tag_index_facts(events),
          :ok <- validate_required_tags(events),
          :ok <- validate_deletable_types([{stream_uuid, expected_version, events}], new_opts),
          :ok <- validate_returning(new_opts),
@@ -74,6 +77,7 @@ defmodule Decree.Store.Streams.Stream do
     with :ok <- validate_appends(appends),
          events = Enum.flat_map(appends, fn {_stream, _version, events} -> events end),
          :ok <- validate_tags(events),
+         :ok <- validate_tag_index_facts(events),
          :ok <- validate_required_tags(events),
          :ok <- validate_deletable_types(appends, new_opts),
          :ok <- validate_returning(new_opts),
@@ -354,6 +358,17 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   defp any_tag?(events, fun), do: Enum.any?(events, &Enum.any?(&1.tags, fun))
+
+  # Runs straight after `validate_tags/1`, for the same reason. A disable whose state tag lacks
+  # the fact tag is invisible to the read that finds the facts, so an enable before it would
+  # stand: see `Decree.Store.TagIndex`.
+  defp validate_tag_index_facts(events) do
+    if Enum.all?(events, &TagIndex.valid_tags?(&1.tags)) do
+      :ok
+    else
+      {:error, :invalid_tag_index_fact}
+    end
+  end
 
   # Runs straight after `validate_tags/1`, for the same reason, and on what that let through:
   # every tag is a valid binary. The kinds are checked in this function because a condition
@@ -820,7 +835,8 @@ defmodule Decree.Store.Streams.Stream do
   # `command` rows are what a decision reads to refuse a resend, so erasing them would let one
   # `command_id` commit twice.
   defp validate_tag_kinds([_kind | _kinds] = tag_kinds) do
-    if Query.tag_kinds?(tag_kinds) and "command" not in tag_kinds do
+    if Query.tag_kinds?(tag_kinds) and "command" not in tag_kinds and
+         not Enum.any?(tag_kinds, &(&1 in TagIndex.reserved_kinds())) do
       :ok
     else
       {:error, :invalid_tag_kinds}

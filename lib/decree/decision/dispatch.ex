@@ -5,11 +5,12 @@ defmodule Decree.Decision.Dispatch do
   # `Decree.Decision`'s moduledoc, and each is named below by its number there.
   #
   # `read_rule/3` and `append_rule/5` are the same steps for a `Decree.Decision.Rule`, in an
-  # aggregate's process: a dispatch with no command tag, so no command item and no scope.
+  # aggregate's process: a dispatch with no command tag, so no command item and no scope. Its
+  # one framework item is the index item.
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Commands.Router
-  alias Decree.Decision.Read
+  alias Decree.Decision.{Index, Read}
   alias Decree.Decision.Read.Merged
   alias Decree.Decision.Rule.Result
   alias Decree.Event.{Append, RequiredTags, TagContext}
@@ -329,7 +330,8 @@ defmodule Decree.Decision.Dispatch do
          :ok <- within_events(dispatch, merged, [read], started),
          {:ok, merged, reads, answers} <- second_read(dispatch, merged, read, started),
          {:ok, tags} <- fetch_tags(dispatch, merged),
-         :ok <- check_tag_index(tags) do
+         :ok <- check_tag_index(dispatch, merged, reads, tags),
+         :ok <- Index.activated(merged) do
       {:ok, merged, reads, answers, tags}
     end
   end
@@ -425,8 +427,16 @@ defmodule Decree.Decision.Dispatch do
     end
   end
 
-  defp framework_items(%__MODULE__{command_tag: nil}), do: []
-  defp framework_items(%__MODULE__{command_tag: command_tag}), do: [[tags: [command_tag]]]
+  # The command item, then the index item, then any activation item. A rule has the index item
+  # alone.
+  defp framework_items(%__MODULE__{command_tag: nil}), do: [Read.index_item()]
+
+  defp framework_items(%__MODULE__{command_tag: command_tag, bounds: bounds}) do
+    [[tags: [command_tag]], Read.index_item() | activation_items(bounds)]
+  end
+
+  defp activation_items(%{activation: [_ | _] = activation}), do: [activation]
+  defp activation_items(_bounds), do: []
 
   defp read_query(%__MODULE__{command_tag: nil} = dispatch, %Read{items: items}) do
     %__MODULE__{application: application, bounds: bounds} = dispatch
@@ -449,8 +459,14 @@ defmodule Decree.Decision.Dispatch do
     EventStore.read_tags(application, Read.framework_positions(merged))
   end
 
-  # Step 3: the place a tag index check reads the fetched tags.
-  defp check_tag_index(_tags), do: :ok
+  # Step 3: the facts the index item found, against what every read's own items require, then
+  # the activation item. Before filter, fold, admit and classify, so a disabled index refuses a
+  # resend as it refuses a new command.
+  defp check_tag_index(%__MODULE__{} = dispatch, %Merged{} = merged, reads, tags) do
+    %__MODULE__{command_tag: command_tag, bounds: %{index_families: families}} = dispatch
+
+    Index.check(not is_nil(command_tag), reads, merged, tags, families)
+  end
 
   # Steps 4 and 5.
   defp fold(%__MODULE__{} = dispatch, %Merged{} = merged, reads, read_time, answers) do

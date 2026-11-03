@@ -70,19 +70,19 @@ defmodule Decree.Decision.RuleRefusalsTest do
   end
 
   describe "the bounds" do
-    test "17 items refuse, with nothing read" do
-      assert_refused_cleanly(ruled(query: querying(items(17))), :decision_query_too_large)
+    test "16 items and the index item refuse, with nothing read" do
+      assert_refused_cleanly(ruled(query: querying(items(16))), :decision_query_too_large)
 
       refute_received {:read_query, _items, _opts}
       assert [{%{value: 17, limit: 16}, %{bound: :items}}] = received(@refused)
     end
 
-    test "16 items pass" do
-      assert :ok = App.dispatch(ruled(query: querying(items(16))))
+    test "15 items and the index item pass" do
+      assert :ok = App.dispatch(ruled(query: querying(items(15))))
     end
 
-    test "49 probes from one item refuse: the bound counts the compiled form" do
-      types = for index <- 1..49, do: "T#{index}"
+    test "48 probes from one item and the index item refuse: the bound counts the compiled form" do
+      types = for index <- 1..48, do: "T#{index}"
 
       assert_refused_cleanly(
         ruled(query: querying([[types: types, tags: ["scope:x"]]])),
@@ -97,14 +97,14 @@ defmodule Decree.Decision.RuleRefusalsTest do
       assert decision == Decree.RuleFixtures.ScriptedRule
     end
 
-    test "48 probes from one item pass" do
-      types = for index <- 1..48, do: "T#{index}"
+    test "47 probes from one item and the index item pass" do
+      types = for index <- 1..47, do: "T#{index}"
 
       assert :ok = App.dispatch(ruled(query: querying([[types: types, tags: ["scope:x"]]])))
     end
 
     test "both reads count together" do
-      command = ruled(query: querying(items(9)), followup: following(items(8, 9)))
+      command = ruled(query: querying(items(9)), followup: following(items(7, 9)))
 
       assert_refused_cleanly(command, :decision_query_too_large)
 
@@ -118,8 +118,10 @@ defmodule Decree.Decision.RuleRefusalsTest do
 
       assert_refused_cleanly(ruled([scope: scope], Tight), :decision_query_too_large)
 
-      assert [{%{value: 4, limit: 3}, %{bound: :events}}] = received(@refused)
-      assert [{%{matched_events: 4, fold_time: 0}, _metadata}] = received(@read)
+      matched = 4 + fact_count()
+
+      assert [{%{value: ^matched, limit: 12}, %{bound: :events}}] = received(@refused)
+      assert [{%{matched_events: ^matched, fold_time: 0}, _metadata}] = received(@read)
     end
 
     test "`max_events + 1` across both reads refuses" do

@@ -1,7 +1,7 @@
 defmodule Decree.Store.Config.Parser do
   @moduledoc false
 
-  alias Decree.Store.Query
+  alias Decree.Store.{Query, TagIndex}
 
   @config_defaults [
     column_data_type: "bytea",
@@ -56,7 +56,8 @@ defmodule Decree.Store.Config.Parser do
   # Raises, because a declaration that misses its mark refuses nothing and fails open: a
   # misspelt key, a repeated one of which only the first counts, or a module atom where its
   # string belongs. `command` cannot be declared, because the `command:` item is the one
-  # exception to the refusal, so declaring it could not take effect.
+  # exception to the refusal, so declaring it could not take effect. Nor can a tag index kind,
+  # because a fact whose state tag is gone could have been a disable.
   defp validate_deletable!(declared) do
     if not well_formed_deletable?(declared) do
       raise ArgumentError,
@@ -73,8 +74,17 @@ defmodule Decree.Store.Config.Parser do
             "is the one exception to the refusal"
     end
 
+    with [reserved | _] <- reserved_kinds(Keyword.get(declared, :tag_kinds, [])) do
+      raise ArgumentError,
+        message:
+          "`:deletable` cannot declare the tag kind `#{reserved}`: a tag index fact whose " <>
+            "state tag is gone could have been a disable"
+    end
+
     declared
   end
+
+  defp reserved_kinds(kinds), do: Enum.filter(kinds, &(&1 in TagIndex.reserved_kinds()))
 
   defp well_formed_deletable?(declared) do
     Keyword.keyword?(declared) and

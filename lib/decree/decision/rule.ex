@@ -56,27 +56,31 @@ defmodule Decree.Decision.Rule do
   process and hold up its mailbox, as a rebuild does.
 
   The build fails on anything a rule does not have: `evolve/2`, `decide/2`, `admit/2`,
-  `scope_tags/1`, `initial_state/0`, `command_window_ms/0`, `handle/2` and `create:`.
+  `scope_tags/1`, `initial_state/0`, `command_window_ms/0`, `handle/2`, `create:` and
+  `activation:`.
 
   ## What a dispatch does
 
   In the aggregate's process, after `before_execute`, on each attempt:
 
     1. Call `c:query/2`. Its error is the answer. Refuse an item naming no types, a
-       `replay: true` item, and more items or probes than the bounds allow. Read the items.
-       `[]` skips to step 4 with no statement, and step 5 is then the batch bound and a plain
-       append.
+       `replay: true` item, and more items or probes than the bounds allow. Read the items
+       with the index item. `[]` skips to step 4 with no statement and no index check, and
+       step 5 is then the batch bound and a plain append.
     2. Call `c:followup_query/3` if it is defined, with the events the first read matched, those
-       the rule lists decrypted. Check both bounds again across both reads, read the items,
-       and merge by position. The first read's `after` stands for both. More matched events
-       than `max_events`, both reads together, refuses.
-    3. Keep the events the rule's own items matched, and decrypt the ones it lists.
+       the rule lists decrypted. Check both bounds again across both reads, read the items
+       with the index item, and merge by position. The first read's `after` stands for both.
+       More matched events than `max_events`, both reads together, refuses.
+    3. Fetch the facts' tags, in one read by position, and check the index as "Index facts" in
+       `Decree.Decision` says, with no `command` requirement: a family the rule's items require
+       with no enabled index answers `{:error, :tag_index_not_enabled}`, before `execute/2`.
+       Keep the events the rule's own items matched, and decrypt the ones it lists.
     4. Call `execute/2` with those events on a local copy of the command. Everything
        after that is the aggregate's as on any other route: `apply/2`, preparing, tags.
     5. Refuse more new events than `max_batch_events`, compare the digests and require the
        tags, as "Required tags" says, and append at the expected version under the condition.
-       Its items are the rule's own from both reads, and its `after` is the first read's: the
-       store's head at that read, and never 0 on an empty store. After `[]` there is no
+       Its items are the rule's own from both reads and the index item, and its `after` is the
+       first read's: the store's head at that read, and never 0 on an empty store. After `[]` there is no
        condition: past the bound, the append is the one a route with no rule makes, with no
        digest comparison and no required tags but the event's own.
 
@@ -148,7 +152,9 @@ defmodule Decree.Decision.Rule do
 
   `max_items`, `max_probes`, `max_events`, `max_batch_events` and `bound_reason:` are those of
   "Bounds" in `Decree.Decision`, with the same defaults, the same rule for raising one, and the
-  same answers: `:decision_query_too_large` and `:decision_batch_too_large`. `max_batch_events`
+  same answers: `:decision_query_too_large` and `:decision_batch_too_large`. `max_items` counts
+  the index item, so 15 of a rule's own make 16, and `max_events` counts the facts it matches.
+  `max_batch_events`
   holds on every append a rule route makes, a plain one after `[]` included. A condition's items
   run under the `$all` lock on an aggregate route as on a decision's, so lead each item with
   its narrowest tag.
@@ -233,11 +239,11 @@ defmodule Decree.Decision.Rule do
 
   ## The appender map
 
-  `Decree.Decision.AppenderMap` audits a rule as it does a decision, and a rule, having no
-  `__decision__/0`, is no create. List it as `{EmailRule, items}` with the row
+  `Decree.Decision.AppenderMap` audits a rule as it does a decision. List it as
+  `{{:rule, EmailRule}, items}`, which is no create and covers no row, with the row
   `{RegisterUser, User}` and each command its route decides in `conditional:`, here
-  `[RegisterUser]`; never list the aggregate `User` as a key, which would certify all of its
-  commands, a plain one included.
+  `[RegisterUser]`. An `{:aggregate, User}` key has its items checked and certifies none of
+  its own commands, so it never stands in for `conditional:`.
 
   ## Telemetry
 
@@ -245,7 +251,8 @@ defmodule Decree.Decision.Rule do
   and `[:decree, :decision, :read]`, `[:decree, :decision, :retry]` and
   `[:decree, :decision, :refused]` are those of `Decree.Decision`, with `decision` being the rule:
 
-    - `:read` fires once per attempt that read anything, and `fold_time` is what step 3 took.
+    - `:read` fires once per attempt that read anything and passed the index check, and
+      `fold_time` is what step 3 took after it.
     - `:retry` fires only for `:append_condition_failed`. A lost expected version has no event of
       its own, on this route as on a plain one.
     - `attempt` counts every run of the command in this dispatch, for either reason.
@@ -363,6 +370,12 @@ defmodule Decree.Decision.Rule do
       raise ArgumentError,
             "#{inspect(module)} uses Decree.Decision.Rule with `create:`: the aggregate's own " <>
               "guard keeps a rule route's fact"
+    end
+
+    if Keyword.has_key?(opts, :activation) do
+      raise ArgumentError,
+            "#{inspect(module)} uses Decree.Decision.Rule with `activation:`: a rule route is " <>
+              "the aggregate's, and an activation is a decision's"
     end
 
     Decree.Decision.__bounds__!(module, opts)

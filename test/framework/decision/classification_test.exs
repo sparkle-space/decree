@@ -131,7 +131,11 @@ defmodule Decree.Decision.ClassificationTest do
       assert :ok = App.dispatch(fresh)
 
       # The read held the old match, so the filter is what kept it from the fold.
-      assert_received {:telemetry, [:decree, :decision, :read], %{matched_events: 1}, _metadata}
+      matched = 1 + fact_count()
+
+      assert_received {:telemetry, [:decree, :decision, :read], %{matched_events: ^matched},
+                       _metadata}
+
       assert_received {:state, []}
       assert [_one] = stored(stream(fresh))
       assert [_one] = stored(stream(context.old))
@@ -570,7 +574,11 @@ defmodule Decree.Decision.ClassificationTest do
 
       assert_received {:telemetry, @read_query, _, %{items: items}}
 
-      assert items == [fact_item(command), [tags: ["command:" <> command.command_id]]]
+      assert items == [
+               fact_item(command),
+               [tags: ["command:" <> command.command_id]],
+               [tags: ["tag_index:fact"]]
+             ]
     end
 
     test "the fact item leads `query`'s items, in the first read only" do
@@ -586,12 +594,13 @@ defmodule Decree.Decision.ClassificationTest do
       assert :ok = App.dispatch(command)
 
       command_item = [tags: ["command:" <> command.command_id]]
+      index_item = [tags: ["tag_index:fact"]]
 
       assert_received {:telemetry, @read_query, _, %{items: first}}
-      assert first == [fact_item(command), item, command_item]
+      assert first == [fact_item(command), item, command_item, index_item]
 
       assert_received {:telemetry, @read_query, _, %{items: second}}
-      assert second == [followup, command_item]
+      assert second == [followup, command_item, index_item]
     end
 
     test "the condition holds it: a racing create with another id fails its append" do
@@ -623,8 +632,8 @@ defmodule Decree.Decision.ClassificationTest do
     end
 
     test "it counts against `max_items`" do
-      own = Enum.map(1..14, &claimed_item("item-#{&1}"))
-      over = Enum.map(1..15, &claimed_item("item-#{&1}"))
+      own = Enum.map(1..13, &claimed_item("item-#{&1}"))
+      over = Enum.map(1..14, &claimed_item("item-#{&1}"))
 
       assert :ok = App.dispatch(create(query: fn _c, _t -> own end))
 

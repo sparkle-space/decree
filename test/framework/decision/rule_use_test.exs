@@ -28,7 +28,7 @@ defmodule Decree.Decision.RuleUseTest do
       assert %{max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100} =
                ScriptedRule.__rule__()
 
-      assert %{max_events: 3, max_batch_events: 2} = TightRule.__rule__()
+      assert %{max_events: 12, max_batch_events: 2} = TightRule.__rule__()
     end
 
     test "may not be raised past a default without a reason" do
@@ -83,6 +83,14 @@ defmodule Decree.Decision.RuleUseTest do
     test "`create:`, whatever it says" do
       for value <- ["false", ~s([types: ["Elixir.Fact"]])] do
         assert_raise ArgumentError, ~r/with `create:`/, fn -> compile(", create: #{value}") end
+      end
+    end
+
+    test "`activation:`, whatever it says" do
+      for value <- ["nil", ~s([types: ["Elixir.On"], tags: ["feature:x"]])] do
+        assert_raise ArgumentError, ~r/with `activation:`/, fn ->
+          compile(", activation: #{value}")
+        end
       end
     end
   end
@@ -165,6 +173,16 @@ defmodule Decree.Decision.RuleUseTest do
         body = "def index_families, do: #{unquote(answer)}"
 
         assert_raise ArgumentError, ~r/Fixture\d+ has an invalid `index_families/, fn ->
+          compile("", body)
+        end
+      end
+    end
+
+    for kind <- ~w(command command_kind correlation tag_index tag_index_state) do
+      test "fails the build listing `#{kind}`" do
+        body = ~s(def index_families, do: %{"#{unquote(kind)}" => :digest})
+
+        assert_raise ArgumentError, ~r/lists `#{unquote(kind)}` in `index_families\/0`/, fn ->
           compile("", body)
         end
       end

@@ -418,8 +418,9 @@ defmodule Decree.Store do
   Each key is optional and each is a list of non-empty strings. A tag is `<kind>:<value>`:
   the kind has no colon, the value may, and a tag with no colon is its own kind. A malformed
   declaration, such as a misspelt key or a module where its name belongs, raises an
-  `ArgumentError` when the config is parsed, because it would refuse nothing. Only the config
-  declares: `deletable` is no option of any call. A store that declares nothing behaves as
+  `ArgumentError` when the config is parsed, because it would refuse nothing. So does a tag
+  kind of `Decree.Store.TagIndex.reserved_kinds/0`, because a fact whose state tag is gone
+  could have been a disable. Only the config declares: `deletable` is no option of any call. A store that declares nothing behaves as
   if none of this existed. Declaring does not narrow what `enable_hard_deletes` allows: a
   hard delete can still delete a stream outside the prefixes. The one stream a hard delete
   refuses starts with a `conditional_appends` prefix and with no prefix declared here: see
@@ -1052,6 +1053,10 @@ defmodule Decree.Store do
       these is over 512 bytes. Each is answered before any statement is sent, so it wins
       over every answer above that reads the stream, and a caller's transaction stays
       usable.
+    * `{:error, :invalid_tag_index_fact}` when an event carries a `tag_index` tag that is not
+      exactly `tag_index:fact`, a `tag_index_state` tag that does not parse, or one of the two
+      without the other. See `Decree.Store.TagIndex`. It is answered as a tag that is too long
+      is, and after one.
     * `{:error, :invalid_required_tag_kinds}` when an event's `required_tag_kinds` are not
       kinds, and `{:error, :missing_required_tag}` when an event lacks a kind on that list.
       See `Decree.Store.EventData`. Each is answered as a tag that is too long is, after
@@ -1106,6 +1111,7 @@ defmodule Decree.Store do
               | {:error, :append_condition_failed}
               | {:error, :invalid_tag}
               | {:error, :tag_too_long}
+              | {:error, :invalid_tag_index_fact}
               | {:error, :invalid_required_tag_kinds}
               | {:error, :missing_required_tag}
               | {:error, :query_names_deletable}
@@ -1188,6 +1194,7 @@ defmodule Decree.Store do
               | {:error, :append_condition_failed}
               | {:error, :invalid_tag}
               | {:error, :tag_too_long}
+              | {:error, :invalid_tag_index_fact}
               | {:error, :invalid_required_tag_kinds}
               | {:error, :missing_required_tag}
               | {:error, :query_names_deletable}
@@ -1718,7 +1725,9 @@ defmodule Decree.Store do
     - `tag_kinds` a non-empty list of tag kinds. A tag's kind is what precedes its first
       `:`, so `email` does not match `email_verified:x`, and it does match `email:a:b`.
       `command` is refused, alone or among others: those rows are what a decision reads to
-      refuse a resend, so erasing them would let one `command_id` commit twice.
+      refuse a resend, so erasing them would let one `command_id` commit twice. So are
+      `tag_index` and `tag_index_state`: a tag index fact whose state tag is gone could have
+      been a disable. See `Decree.Store.TagIndex`.
 
     - `opts` an optional keyword list containing:
       - `name` the name of the event store if provided to `start_link/1`.
@@ -1736,7 +1745,8 @@ defmodule Decree.Store do
   Returns `{:ok, deleted_row_count}`, which a second call makes `{:ok, 0}`, or:
 
     * `{:error, :invalid_tag_kinds}` when `tag_kinds` is not a non-empty list of non-empty
-      strings without a `:`, or holds `command`, before any statement is sent.
+      strings without a `:`, or holds `command`, `tag_index` or `tag_index_state`, before any
+      statement is sent.
     * `{:error, :not_supported}` when hard deletes are not enabled, also before any
       statement is sent.
     * `{:error, :cannot_delete_all_stream}` for the `$all` stream.

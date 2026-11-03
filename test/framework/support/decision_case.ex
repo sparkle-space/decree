@@ -40,6 +40,7 @@ defmodule Decree.DecisionStoreCase do
   alias Decree.EventStore
   alias Decree.EventStore.EventData
   alias Decree.Store.{AppendResult, Config}
+  alias Decree.TagIndexFixtures
   alias Decree.UUID
 
   using do
@@ -58,17 +59,34 @@ defmodule Decree.DecisionStoreCase do
       }
 
       alias Decree.EventStore
+      alias Decree.TagIndexFixtures
       alias Decree.UUID
     end
   end
 
-  setup do
+  # Every family is enabled unless a test is tagged `:no_index_facts`, as a fresh store's
+  # release step would leave it.
+  setup context do
     Decree.FrameworkStorage.reset!()
 
     start_supervised!(App)
 
+    if not Map.get(context, :no_index_facts, false), do: TagIndexFixtures.enable!(App)
+
     :ok
   end
+
+  @doc """
+  Disables the index of a family and key on the fixture ledger, and answers its id.
+  """
+  def disable_index!(family, key \\ nil, reason \\ "repair") do
+    TagIndexFixtures.disable!(App, family, key, reason)
+  end
+
+  @doc """
+  Enables a family and key again, under a new index id.
+  """
+  def enable_index!(family, key \\ nil), do: TagIndexFixtures.reenable!(App, family, key)
 
   @doc """
   A `Scripted` command, its script made of the options named after its callbacks.
@@ -84,6 +102,16 @@ defmodule Decree.DecisionStoreCase do
   end
 
   def scope, do: "scope-#{System.unique_integer([:positive])}"
+
+  @doc """
+  How many facts the case's setup appends, at positions 1 and up.
+  """
+  def fact_count, do: length(TagIndexFixtures.families())
+
+  @doc """
+  The positions of the facts the case's setup appends.
+  """
+  def fact_positions, do: Enum.to_list(1..fact_count())
 
   def claimed_item(scope), do: [types: [Atom.to_string(Claimed)], tags: ["scope:" <> scope]]
 

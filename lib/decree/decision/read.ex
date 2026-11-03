@@ -2,15 +2,16 @@ defmodule Decree.Decision.Read do
   @moduledoc false
 
   # A decision's merged read, with no store in it. A read's items sit in one fixed layout:
-  # the decision's own at 0..n-1, then the framework's, the command item first, then
-  # read-only narrowing items, which are read and never go in the condition. A second
-  # read's indexes are offset by the first read's item count.
+  # the decision's own at 0..n-1, then the framework's, the command item first, then the
+  # index item and any activation item, then read-only narrowing items, which are read and
+  # never go in the condition. A second read's indexes are offset by the first read's item
+  # count.
   #
   # The struct is one read's layout. `Merged` is what the reads answered, together.
 
   alias Decree.Event.Append
   alias Decree.EventStore.RecordedEvent
-  alias Decree.Store.{Query, ReadResult}
+  alias Decree.Store.{Query, ReadResult, TagIndex}
 
   # `probes` is the condition's probes as of this read: `nil` until they are counted, and for
   # items the store will refuse.
@@ -21,6 +22,8 @@ defmodule Decree.Decision.Read do
     :decision_indexes,
     :framework_indexes,
     :command_index,
+    :index_index,
+    :activation_index,
     :replay_indexes,
     :probes
   ]
@@ -30,8 +33,9 @@ defmodule Decree.Decision.Read do
 
     # `after`, `read_at` and `command_stamps` are always the first read's: `after` is what
     # the condition protects, and a command match the first read did not have restarts
-    # the dispatch instead of being merged. `decision`, `framework`, `command` and `replay`
-    # are sets of merged item indexes. `first_commands` is the first read's command matches.
+    # the dispatch instead of being merged. `decision`, `framework`, `command`, `index`,
+    # `activation` and `replay` are sets of merged item indexes. `first_commands` is the first
+    # read's command matches.
     defstruct [
       :events,
       :after,
@@ -41,6 +45,8 @@ defmodule Decree.Decision.Read do
       :decision,
       :framework,
       :command,
+      :index,
+      :activation,
       :replay,
       :offset,
       :first_commands
@@ -160,15 +166,41 @@ defmodule Decree.Decision.Read do
     replay_indexes =
       for {%{replay: true}, index} <- Enum.with_index(parsed), do: index
 
+    index_index = index_item_index(framework_items, n)
+
     %__MODULE__{
       items: own ++ framework_items ++ read_only_items,
       own: own,
       framework: framework_items,
       decision_indexes: Enum.to_list(0..(n - 1)//1),
       framework_indexes: Enum.to_list(n..(n + length(framework_items) - 1)//1),
+      index_index: index_index,
+      activation_index: activation_index(framework_items, n, index_index),
       replay_indexes: replay_indexes
     }
   end
+
+  # The index item is the framework item finding the facts, and an activation item is the one
+  # after it. A layout without it has no index item, so it reads no fact, and a fold over no
+  # fact enables nothing.
+  defp index_item_index(framework_items, n) do
+    case Enum.find_index(framework_items, &(&1 == index_item())) do
+      nil -> nil
+      index -> n + index
+    end
+  end
+
+  defp activation_index(_framework_items, _n, nil), do: nil
+
+  defp activation_index(framework_items, n, index_index) do
+    if index_index + 1 < n + length(framework_items), do: index_index + 1
+  end
+
+  @doc """
+  The framework item that finds the tag index facts.
+  """
+  @spec index_item() :: keyword()
+  def index_item, do: [tags: [TagIndex.fact_tag()]]
 
   @doc """
   The items of the condition: every read's own, then the framework's once. A second read
@@ -259,6 +291,8 @@ defmodule Decree.Decision.Read do
       decision: MapSet.new(read.decision_indexes),
       framework: MapSet.new(read.framework_indexes),
       command: read |> command_indexes() |> MapSet.new(),
+      index: read.index_index |> List.wrap() |> MapSet.new(),
+      activation: read.activation_index |> List.wrap() |> MapSet.new(),
       replay: MapSet.new(read.replay_indexes),
       offset: length(read.items),
       first_commands:
@@ -291,6 +325,8 @@ defmodule Decree.Decision.Read do
         decision: MapSet.union(merged.decision, shift.(read.decision_indexes)),
         framework: MapSet.union(merged.framework, shift.(read.framework_indexes)),
         command: MapSet.union(merged.command, shift.(command_indexes(read))),
+        index: MapSet.union(merged.index, shift.(List.wrap(read.index_index))),
+        activation: MapSet.union(merged.activation, shift.(List.wrap(read.activation_index))),
         replay: MapSet.union(merged.replay, shift.(read.replay_indexes)),
         offset: offset + length(read.items)
     }
@@ -340,6 +376,22 @@ defmodule Decree.Decision.Read do
   @spec command_positions(%Merged{}) :: [non_neg_integer()]
   def command_positions(%Merged{} = merged) do
     positions_matching(merged.matched_items, merged.command)
+  end
+
+  @doc """
+  The positions matching the index item, in position order.
+  """
+  @spec index_fact_positions(%Merged{}) :: [non_neg_integer()]
+  def index_fact_positions(%Merged{} = merged) do
+    positions_matching(merged.matched_items, merged.index)
+  end
+
+  @doc """
+  The positions matching the activation item, in position order.
+  """
+  @spec activation_positions(%Merged{}) :: [non_neg_integer()]
+  def activation_positions(%Merged{} = merged) do
+    positions_matching(merged.matched_items, merged.activation)
   end
 
   @doc """

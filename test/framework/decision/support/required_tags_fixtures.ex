@@ -4,7 +4,10 @@ defmodule Decree.RequiredTagsFixtures do
   # Fixtures for the required tag tests. `App` is a plain aggregate route on a store that
   # declares nothing, `DecisionApp` the decisions, scripted as `Decree.DecisionFixtures`' are.
 
-  def digest(value), do: Base.encode16(:crypto.hash(:sha256, value))
+  # Under the fixture key, as a decision listing `email` as a digest reads it.
+  def digest(value) do
+    Decree.TagIndexFixtures.fingerprint() <> ":" <> Base.encode16(:crypto.hash(:sha256, value))
+  end
 end
 
 defmodule Decree.RequiredTagsFixtures.Addressed do
