@@ -35,13 +35,16 @@ defmodule Decree.Decision.Read do
     # the condition protects, and a command match the first read did not have restarts
     # the dispatch instead of being merged. `decision`, `framework`, `command`, `index`,
     # `activation` and `replay` are sets of merged item indexes. `first_commands` is the first
-    # read's command matches.
+    # read's command matches. `tags` is both reads' tags of the positions a framework item
+    # matched, each read answering its own: a tag row takes no update, so where both hold a
+    # position either copy will do.
     defstruct [
       :events,
       :after,
       :read_at,
       :command_stamps,
       :matched_items,
+      :tags,
       :decision,
       :framework,
       :command,
@@ -288,6 +291,7 @@ defmodule Decree.Decision.Read do
       read_at: result.read_at,
       command_stamps: result.command_stamps,
       matched_items: result.matched_items,
+      tags: result.tags,
       decision: MapSet.new(read.decision_indexes),
       framework: MapSet.new(read.framework_indexes),
       command: read |> command_indexes() |> MapSet.new(),
@@ -322,6 +326,7 @@ defmodule Decree.Decision.Read do
           Map.merge(merged.matched_items, second, fn _position, indexes, more ->
             Enum.sort(indexes ++ more)
           end),
+        tags: Map.merge(merged.tags, result.tags),
         decision: MapSet.union(merged.decision, shift.(read.decision_indexes)),
         framework: MapSet.union(merged.framework, shift.(read.framework_indexes)),
         command: MapSet.union(merged.command, shift.(command_indexes(read))),
@@ -363,7 +368,8 @@ defmodule Decree.Decision.Read do
   def matched_count(%Merged{events: events}), do: length(events)
 
   @doc """
-  The positions matching a framework item, which is what the one tag fetch reads.
+  The positions matching a framework item, which are the positions whose tags the reads
+  answer, each read asking for its own framework items' with `tag_items:`.
   """
   @spec framework_positions(%Merged{}) :: [non_neg_integer()]
   def framework_positions(%Merged{} = merged) do
@@ -417,8 +423,9 @@ defmodule Decree.Decision.Read do
 
   @doc """
   Step 7. What the command matches inside the window mean for this dispatch: `:open` for none,
-  and otherwise `:reused`, `:replay` or `:duplicate`. `tags` is the one fetch, where a position
-  with no entry carries nothing, so it reads as `:reused`. A scope may be split across the
+  and otherwise `:reused`, `:replay` or `:duplicate`. `tags` is the reads' tags of the
+  framework items' matches, where a position with no entry carries nothing, so it reads as
+  `:reused`. A scope may be split across the
   matches, as a batch's is.
 
   A command position always has a stamp entry, since a match only a second read has restarts

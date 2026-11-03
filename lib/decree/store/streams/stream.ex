@@ -154,6 +154,7 @@ defmodule Decree.Store.Streams.Stream do
 
   def read_query(conn, items, opts) do
     {command_tag, opts} = Keyword.pop(opts, :command_tag)
+    {tag_items, opts} = Keyword.pop(opts, :tag_items, [])
     {direction, bound, opts} = pop_direction_and_bound(opts)
     {count, opts} = Keyword.pop(opts, :count)
 
@@ -161,8 +162,9 @@ defmodule Decree.Store.Streams.Stream do
 
     with {:ok, query} <- Query.compile(items),
          :ok <- validate_deletable(query, opts),
-         :ok <- validate_command_tag(query, command_tag) do
-      read_query_storage(conn, query, direction, bound, count, command_tag, opts)
+         :ok <- validate_command_tag(query, command_tag),
+         :ok <- validate_tag_items(tag_items, length(items)) do
+      read_query_storage(conn, query, direction, bound, count, command_tag, tag_items, opts)
     end
   end
 
@@ -737,11 +739,11 @@ defmodule Decree.Store.Streams.Stream do
     )
   end
 
-  defp read_query_storage(conn, query, direction, bound, count, command_tag, opts) do
+  defp read_query_storage(conn, query, direction, bound, count, command_tag, tag_items, opts) do
     {serializer, opts} = Keyword.pop(opts, :serializer)
 
     with {:ok, %ReadResult{events: events} = result} <-
-           Storage.read_query(conn, query, direction, bound, count, command_tag, opts) do
+           Storage.read_query(conn, query, direction, bound, count, command_tag, tag_items, opts) do
       {:ok, %ReadResult{result | events: deserialize_recorded_events(events, serializer)}}
     end
   end
@@ -756,7 +758,16 @@ defmodule Decree.Store.Streams.Stream do
           {:halt, next_bound}
 
         next_bound ->
-          case read_query_storage(conn, query, direction, next_bound, read_batch_size, nil, opts) do
+          case read_query_storage(
+                 conn,
+                 query,
+                 direction,
+                 next_bound,
+                 read_batch_size,
+                 nil,
+                 [],
+                 opts
+               ) do
             {:ok, %ReadResult{events: []}} -> {:halt, next_bound}
             {:ok, %ReadResult{events: events}} -> {events, next_query_bound(direction, events)}
           end
@@ -821,6 +832,16 @@ defmodule Decree.Store.Streams.Stream do
       {:error, :invalid_query}
     end
   end
+
+  # An index no item has reads no tag for any event, so, as with `command_tag`, a typo must not
+  # reach the database. Walked by hand because an improper list must answer, not raise.
+  defp validate_tag_items([], _count), do: :ok
+
+  defp validate_tag_items([index | indexes], count)
+       when is_integer(index) and index >= 0 and index < count,
+       do: validate_tag_items(indexes, count)
+
+  defp validate_tag_items(_indexes, _count), do: {:error, :invalid_query}
 
   # Walked by hand because an improper list must answer, not raise. `$1` is a `bigint[]`, so
   # a position past a bigint could not be sent, and a refusal here leaves a caller's

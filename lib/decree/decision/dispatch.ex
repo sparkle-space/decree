@@ -329,7 +329,7 @@ defmodule Decree.Decision.Dispatch do
          merged = Read.first(read, result),
          :ok <- within_events(dispatch, merged, [read], started),
          {:ok, merged, reads, answers} <- second_read(dispatch, merged, read, started),
-         {:ok, tags} <- fetch_tags(dispatch, merged),
+         tags = framework_tags(merged),
          :ok <- check_tag_index(dispatch, merged, reads, tags),
          :ok <- Index.activated(merged) do
       {:ok, merged, reads, answers, tags}
@@ -438,25 +438,31 @@ defmodule Decree.Decision.Dispatch do
   defp activation_items(%{activation: [_ | _] = activation}), do: [activation]
   defp activation_items(_bounds), do: []
 
-  defp read_query(%__MODULE__{command_tag: nil} = dispatch, %Read{items: items}) do
+  # Each read answers the tags of the positions its own framework items matched, in its own
+  # statement, by those items' indexes in that read.
+  defp read_query(%__MODULE__{command_tag: nil} = dispatch, %Read{items: items} = read) do
     %__MODULE__{application: application, bounds: bounds} = dispatch
 
-    EventStore.read_query(application, items, count: bounds.max_events + 1)
+    EventStore.read_query(application, items,
+      count: bounds.max_events + 1,
+      tag_items: read.framework_indexes
+    )
   end
 
-  defp read_query(%__MODULE__{} = dispatch, %Read{items: items}) do
+  defp read_query(%__MODULE__{} = dispatch, %Read{items: items} = read) do
     %__MODULE__{application: application, bounds: bounds, command_tag: command_tag} = dispatch
 
     EventStore.read_query(application, items,
       count: bounds.max_events + 1,
-      command_tag: command_tag
+      command_tag: command_tag,
+      tag_items: read.framework_indexes
     )
   end
 
-  # The one tag fetch, for every position a framework item matched. No positions send no
-  # statement.
-  defp fetch_tags(%__MODULE__{application: application}, %Merged{} = merged) do
-    EventStore.read_tags(application, Read.framework_positions(merged))
+  # The tags of every position a framework item matched, as the reads answered them, with no
+  # statement of their own.
+  defp framework_tags(%Merged{} = merged) do
+    Map.take(merged.tags, Read.framework_positions(merged))
   end
 
   # Step 3: the facts the index item found, against what every read's own items require, then

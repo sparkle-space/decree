@@ -272,13 +272,10 @@ defmodule Decree.Decision.RequiredTagsTest do
 
       test = self()
 
-      # Nothing but the facts that enable every family.
-      stub(MockEventStore, :read_query, fn _meta, items, _opts ->
-        {:ok, Decree.TagIndexFixtures.mocked_read(items)}
-      end)
-
-      stub(MockEventStore, :read_tags, fn _meta, positions, _opts ->
-        {:ok, Decree.TagIndexFixtures.mocked_tags(positions)}
+      # Nothing but the facts that enable every family, their tags in the read. No `read_tags`
+      # is stubbed, so a dispatch sending one fails.
+      stub(MockEventStore, :read_query, fn _meta, items, opts ->
+        {:ok, Decree.TagIndexFixtures.mocked_read(items, opts)}
       end)
 
       stub(MockEventStore, :append_to_streams, fn _meta, appends, _opts ->

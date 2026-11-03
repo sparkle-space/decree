@@ -38,13 +38,23 @@ defmodule Decree.Store.Storage.Reader do
   end
 
   @doc """
-  Read the events matching a compiled query, with the `$all` head of the same snapshot.
+  Read the events matching a compiled query, with the `$all` head of the same snapshot, and
+  the tags of the matches any of `tag_items` matched.
   """
-  def read_query(conn, query, direction, bound, count, command_tag, opts) do
+  def read_query(conn, query, direction, bound, count, command_tag, tag_items, opts) do
     {correlation_id_type, opts} = Keyword.pop(opts, :correlation_id_type, "uuid")
     {causation_id_type, opts} = Keyword.pop(opts, :causation_id_type, "uuid")
 
-    case Reader.Query.read_query(conn, query, direction, bound, count, command_tag, opts) do
+    case Reader.Query.read_query(
+           conn,
+           query,
+           direction,
+           bound,
+           count,
+           command_tag,
+           tag_items,
+           opts
+         ) do
       # The head comes from `$all`'s row, which every store has, so a read answers a row.
       {:ok, []} -> failed_to_read(@all_stream_id, :stream_not_found)
       {:ok, rows} -> {:ok, map_rows_to_read_result(rows, correlation_id_type, causation_id_type)}
@@ -67,24 +77,33 @@ defmodule Decree.Store.Storage.Reader do
     {:ok, Reader.EventAdapter.to_event_data(rows, correlation_id_type, causation_id_type)}
   end
 
-  # Rows are `[head, read_at, items, command_row_found, stamp | event columns]`. An empty
-  # match is one row with `nil` in every column after `read_at`.
+  # Rows are `[head, read_at, items, command_row_found, stamp, tags | event columns]`. An
+  # empty match is one row with `nil` in every column after `read_at`, and `tags` is `nil` for
+  # a match with no tag to answer.
   defp map_rows_to_read_result([[head, read_at | _row] | _rows] = rows, correlation, causation) do
     matches = Enum.filter(rows, fn [_head, _read_at, items | _row] -> items end)
 
-    event_rows = Enum.map(matches, &Enum.drop(&1, 5))
+    event_rows = Enum.map(matches, &Enum.drop(&1, 6))
 
     %ReadResult{
       events: Reader.EventAdapter.to_event_data(event_rows, correlation, causation),
       after: head,
       read_at: read_at,
       command_stamps:
-        for [_head, _read_at, _items, true, stamp, position | _row] <- matches, into: %{} do
+        for [_head, _read_at, _items, true, stamp, _tags, position | _row] <- matches,
+            into: %{} do
           {position, stamp}
         end,
       matched_items:
-        for [_head, _read_at, items, _found, _stamp, position | _row] <- matches, into: %{} do
+        for [_head, _read_at, items, _found, _stamp, _tags, position | _row] <- matches,
+            into: %{} do
           {position, Enum.sort(items)}
+        end,
+      tags:
+        for [_head, _read_at, _items, _found, _stamp, tags, position | _row] <- matches,
+            is_list(tags),
+            into: %{} do
+          {position, tags}
         end
     }
   end
@@ -187,8 +206,12 @@ defmodule Decree.Store.Storage.Reader do
       do_query(conn, query, [stream_id, start_version, count], opts)
     end
 
-    def read_query(conn, query, direction, bound, count, command_tag, opts) do
+    def read_query(conn, query, direction, bound, count, command_tag, tag_items, opts) do
       {schema, opts} = Keyword.pop(opts, :schema)
+
+      deletable = Keyword.get(opts, :deletable, [])
+      tag_kinds = Keyword.get(deletable, :tag_kinds, [])
+      event_types = Keyword.get(deletable, :event_types, [])
 
       %Decree.Store.Query{
         probe_items: probe_items,
@@ -206,7 +229,10 @@ defmodule Decree.Store.Storage.Reader do
         rest_tags,
         bound,
         count,
-        command_tag
+        command_tag,
+        tag_items,
+        tag_kinds,
+        event_types
       ]
 
       do_query(conn, read_query_statement(schema, direction), params, opts)

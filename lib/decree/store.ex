@@ -247,21 +247,30 @@ defmodule Decree.Store do
 
   ## Reading the tags of events
 
-  A `Decree.Store.ReadResult` carries no tags: `matched_items` says which items matched an
-  event, and an item cannot name a value it does not know. `c:read_tags/2` answers what tags
-  the events at some positions carry, in one statement:
+  `matched_items` says which items matched an event, and an item cannot name a value it does
+  not know. A `c:read_query/2` with `tag_items:` answers, in its result's `tags`, the tags of
+  each match one of those items matched, in the same statement and snapshot as its events:
+
+      {:ok, %Decree.Store.ReadResult{tags: %{12 => ["command:1", "user:7"]}}} =
+        MyApp.EventStore.read_query([[tags: ["user:7"]], [tags: ["command:1"]]],
+          tag_items: [1]
+        )
+
+  `c:read_tags/2` answers what tags the events at some positions carry, in a statement of its
+  own:
 
       {:ok, %{12 => ["command:1", "user:7"]}} = MyApp.EventStore.read_tags([12, 40])
 
-  A position with no row is absent, as position 40 is here, and a caller reads that as an
-  event that does not carry the tag. Tags of a kind the store declares deletable are left out
-  in the statement, and so is every tag of an event of a type it declares, the `command:` tag
-  included, so this is no way round `{:error, :query_names_deletable}` (see "Deletable
-  streams"), even at a position a `command:` item reached. A position whose every tag is left
-  out is absent too and reads the same way, which fails closed: no tag of it reaches a caller,
-  and a decision still refuses that command match, by the item that matched and not by the
-  tag. It is a read of its own, in its own snapshot. That is sound for what a tag row can do:
-  a row takes no update, so a read after another read can see one go and never see one change.
+  Both answer alike. A position with no row is absent, as position 40 is here, and a caller
+  reads that as an event that does not carry the tag. Tags of a kind the store declares
+  deletable are left out in the statement, and so is every tag of an event of a type it
+  declares, the `command:` tag included, so neither is a way round
+  `{:error, :query_names_deletable}` (see "Deletable streams"), even at a position a
+  `command:` item reached. A position whose every tag is left out is absent too and reads the
+  same way, which fails closed: no tag of it reaches a caller, and a decision still refuses
+  that command match, by the item that matched and not by the tag. `c:read_tags/2` is a read
+  of its own, in its own snapshot. That is sound for what a tag row can do: a row takes no
+  update, so a read after another read can see one go and never see one change.
 
   ## Conditional appends
 
@@ -437,7 +446,7 @@ defmodule Decree.Store do
   is refused. What this costs: a deleted stream's command tags vanish with it, which ends
   their deduplication early. A condition on such a tag fails before the delete and passes
   after it, and a read agrees with it both times. The item finds an event and not its tags:
-  `c:read_tags/2` answers none of the tags of an event of a declared type.
+  neither a read's `tags` nor `c:read_tags/2` answers any tag of an event of a declared type.
 
   **Completeness.** An append to a stream starting with a declared prefix, of an event whose
   type is not in `event_types`, answers `{:error, :undeclared_deletable_event_type}` before
@@ -499,6 +508,7 @@ defmodule Decree.Store do
           | {:direction, :forward | :backward}
           | {:count, non_neg_integer()}
           | {:command_tag, String.t()}
+          | {:tag_items, [non_neg_integer()]}
   @type stream_query_option ::
           option
           | {:from, integer()}
@@ -700,7 +710,7 @@ defmodule Decree.Store do
       def stream_all_backward(start_version, opts),
         do: stream_backward(@all_stream, start_version, opts)
 
-      @accepted_overrides_read_query [:command_tag, :count, :direction, :from]
+      @accepted_overrides_read_query [:command_tag, :count, :direction, :from, :tag_items]
       @accepted_overrides_stream_query [:direction, :from]
 
       def read_query(items, opts \\ []) do
@@ -1523,6 +1533,10 @@ defmodule Decree.Store do
         two items has become one. Defaults to returning 1,000 events.
       - `command_tag` a tag named by one of the query's items. The result's
         `command_stamps` then has an entry for each match carrying it.
+      - `tag_items` a list of 0-based indexes of the query's items. The result's `tags`
+        then has the tags of each match one of them matched, read in the same statement
+        (see "Reading the tags of events" in `Decree.Store`). Defaults to `[]`, which reads
+        no tag.
       - `name` the name of the event store if provided to `start_link/1`.
       - `conn` an existing Postgrex connection or transaction to read through.
       - `timeout` an optional timeout for the database query, in milliseconds.
@@ -1531,8 +1545,9 @@ defmodule Decree.Store do
   Returns `{:ok, %Decree.Store.ReadResult{}}`. A query `Decree.Store.Query.compile/1`
   refuses answers its error, a query naming something deletable answers
   `{:error, :query_names_deletable}` (see "Deletable streams" in `Decree.Store`), and a
-  `command_tag` no item names answers `{:error, :invalid_query}`: none of these sends
-  anything to the database. An invalid
+  `command_tag` no item names, or `tag_items` that is anything but a list of indexes of the
+  query's items, answers `{:error, :invalid_query}`: none of these sends anything to the
+  database. An invalid
   `direction`, `from` or `count` raises an `ArgumentError`.
   """
   @callback read_query(items :: [Decree.Store.Query.item()], opts :: [read_query_option]) ::

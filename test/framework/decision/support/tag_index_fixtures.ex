@@ -260,9 +260,10 @@ defmodule Decree.TagIndexFixtures do
 
   @doc """
   What a mocked store's `read_query/3` answers: every family enabled, each fact matching the
-  index item, wherever `items` holds it.
+  index item, wherever `items` holds it, and the facts' tags when `opts`' `tag_items` names
+  that item, as a store answers them.
   """
-  def mocked_read(items) do
+  def mocked_read(items, opts) do
     index = Enum.find_index(items, &(&1 == [tags: [TagIndex.fact_tag()]]))
     facts = Enum.with_index(families(), 1)
 
@@ -278,20 +279,15 @@ defmodule Decree.TagIndexFixtures do
       after: length(facts),
       read_at: DateTime.utc_now(),
       command_stamps: %{},
-      matched_items: Map.new(facts, fn {_family_key, position} -> {position, [index]} end)
+      matched_items: Map.new(facts, fn {_family_key, position} -> {position, [index]} end),
+      tags:
+        if index in Keyword.get(opts, :tag_items, []) do
+          Map.new(facts, fn {{family, key}, position} ->
+            {position, [TagIndex.fact_tag(), TagIndex.state_tag(family, key, :enabled)]}
+          end)
+        else
+          %{}
+        end
     }
-  end
-
-  @doc """
-  What a mocked store's `read_tags/3` answers for the positions of `mocked_read/1`.
-  """
-  def mocked_tags(positions) do
-    states = Map.new(Enum.with_index(families(), 1), fn {fact, position} -> {position, fact} end)
-
-    Map.new(positions, fn position ->
-      {family, key} = Map.fetch!(states, position)
-
-      {position, [TagIndex.fact_tag(), TagIndex.state_tag(family, key, :enabled)]}
-    end)
   end
 end

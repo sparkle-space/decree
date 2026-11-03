@@ -13,7 +13,7 @@ defmodule Decree.Decision.Index do
   @doc """
   Whether every family and key the reads require is enabled by the facts at or below the
   first read's `after`. `command?` is whether the dispatch has a command item, and `tags` the
-  one fetch.
+  reads' tags of the framework items' matches.
   """
   @spec check(boolean(), [%Read{}], %Merged{}, map(), map()) ::
           :ok | {:error, :tag_index_not_enabled}
@@ -102,7 +102,7 @@ defmodule Decree.Decision.Index do
   end
 
   # One fact's states. A fact naming one family and key both ways reads as disabled, since the
-  # fetch keeps no order within an event.
+  # read keeps no order within an event.
   defp fact_states(tags) do
     parsed =
       for tag <- tags, Query.tag_kind(tag) == "tag_index_state", do: TagIndex.parse_state(tag)

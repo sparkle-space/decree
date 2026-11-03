@@ -19,6 +19,8 @@ defmodule Decree.Decision.TagIndexTest do
 
   @retry [:decree, :decision, :retry]
   @read [:decree, :decision, :read]
+  @read_query [:decree, :event_store, :read_query, :start]
+  @read_tags [:decree, :event_store, :read_tags]
 
   setup do
     attach_telemetry([@retry, @read])
@@ -204,6 +206,114 @@ defmodule Decree.Decision.TagIndexTest do
     end
   end
 
+  # The tags of the facts and command matches come with the read that found them, so no
+  # dispatch sends `read_tags`.
+  describe "the framework matches' tags" do
+    setup do
+      attach_telemetry([@read_query | for(stage <- [:start, :stop], do: @read_tags ++ [stage])])
+      :ok
+    end
+
+    test "come with the read, and an enabled index decides with no `read_tags`" do
+      command = reporting(self())
+
+      assert :ok = App.dispatch(command)
+
+      assert_received :decided
+      assert [_one] = stored(stream(command))
+      assert_received {:telemetry, @read_query, _, %{items: items, opts: opts}}
+      assert Keyword.fetch!(opts, :tag_items) == framework_indexes(items)
+      refute_read_tags()
+    end
+
+    test "a disabled index refuses with no `read_tags`" do
+      disable_index!("entity")
+
+      command = reporting(self())
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+
+      refute_called()
+      assert stored(stream(command)) == []
+      refute_read_tags()
+    end
+
+    @tag :no_index_facts
+    test "a missing index refuses with no `read_tags`" do
+      command = reporting(self())
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+
+      refute_called()
+      assert stored(stream(command)) == []
+      refute_read_tags()
+    end
+
+    test "a resend is a duplicate with no `read_tags`" do
+      command = reporting(self())
+
+      assert :ok = App.dispatch(command)
+      assert_received :decided
+
+      assert {:error, :duplicate_command} = App.dispatch(command)
+
+      # Step 7 comes after `admit/2` and before `decide/2`.
+      refute_received :decided
+      assert [_only_the_first] = stored(stream(command))
+      refute_read_tags()
+    end
+
+    test "a `command_id` on an event of another kind is reused, with no `read_tags`" do
+      command = reporting(self())
+
+      seed(%Released{scope: command.scope}, ["command:" <> command.command_id])
+
+      assert {:error, :reused_command_id} = App.dispatch(command)
+
+      refute_received :decided
+      assert stored(stream(command)) == []
+      refute_read_tags()
+    end
+
+    test "a replay resend reaches `decide/2` with no `read_tags`" do
+      gate = fn command, _context ->
+        [
+          [
+            types: [Atom.to_string(Claimed)],
+            tags: ["scope:" <> command.scope, Append.kind_tag(command)],
+            replay: true
+          ]
+        ]
+      end
+
+      command =
+        reporting(self(),
+          query: gate,
+          scope_tags: fn command -> ["scope:" <> command.scope] end
+        )
+
+      assert :ok = App.dispatch(command)
+      assert_received :decided
+
+      # A replay whose `decide/2` answers events is reused, after `decide/2` ran.
+      assert {:error, :reused_command_id} = App.dispatch(command)
+
+      assert_received :decided
+      assert [_only_the_first] = stored(stream(command))
+      refute_read_tags()
+    end
+  end
+
+  defp framework_indexes(items) do
+    for {item, index} <- Enum.with_index(items),
+        match?([tags: ["command:" <> _]], item) or item == Decree.Decision.Read.index_item(),
+        do: index
+  end
+
+  defp refute_read_tags do
+    refute_received {:telemetry, [:decree, :event_store, :read_tags | _stage], _, _}
+  end
+
   describe "a family" do
     test "named in DOC-1's list resolves to itself, never to `entity`" do
       item = [types: [Atom.to_string(Released)], tags: ["tenant_slug:acme"]]
@@ -231,7 +341,7 @@ defmodule Decree.Decision.TagIndexTest do
   end
 
   describe "a fact the fold cannot attribute" do
-    test "one whose state tags the fetch leaves out refuses, as a disable would" do
+    test "one whose state tags the read leaves out refuses, as a disable would" do
       start_supervised!({IndexDeletableApp, []})
 
       command = scripted()
@@ -243,7 +353,7 @@ defmodule Decree.Decision.TagIndexTest do
       assert :ok = App.dispatch(scripted())
     end
 
-    test "a later disable whose state tags the fetch leaves out refuses, though an enable shows" do
+    test "a later disable whose state tags the read leaves out refuses, though an enable shows" do
       start_supervised!({DisableDeletableApp, []})
 
       disable_index!("entity")

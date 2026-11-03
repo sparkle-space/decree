@@ -127,7 +127,10 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
       query.rest_tags,
       0,
       10,
-      nil
+      nil,
+      [],
+      [],
+      []
     ]
 
     Postgrex.query!(session, Reader.Query.read_query_statement(schema, :forward), params)

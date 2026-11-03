@@ -4,20 +4,29 @@ defmodule Decree.Decision.RuleTagIndexTest do
   # Step 3 on a rule route: the index check, with no `command` requirement.
 
   @read [:decree, :decision, :read]
+  @read_tags [:decree, :event_store, :read_tags]
 
   setup do
-    attach_telemetry([@read])
+    attach_telemetry([@read | for(stage <- [:start, :stop], do: @read_tags ++ [stage])])
     :ok
+  end
+
+  defp refute_read_tags do
+    refute_received {:read_tags, _positions}
+    refute_received {:telemetry, [:decree, :event_store, :read_tags | _stage], _, _}
   end
 
   describe "a fresh store and a store with history" do
     @describetag :no_index_facts
 
-    test "with no facts, the first dispatch refuses" do
+    test "with no facts, the first dispatch refuses, with no `read_tags`" do
+      Process.register(self(), :rule_recorder)
+
       command = ruled()
 
       assert {:error, :tag_index_not_enabled} = App.dispatch(command)
       assert stored(ruled_stream(command), App) == []
+      refute_read_tags()
     end
 
     test "the enabling step enables a fresh store" do
@@ -88,18 +97,32 @@ defmodule Decree.Decision.RuleTagIndexTest do
   end
 
   describe "the index item" do
-    test "is read after the rule's own items, and its facts' tags in the one fetch" do
+    test "is read after the rule's own items, and its facts' tags with it, with no `read_tags`" do
       Process.register(self(), :rule_recorder)
 
       command = ruled()
 
       assert :ok = App.dispatch(command)
 
-      assert_received {:read_query, items, _opts}
+      assert_received {:read_query, items, opts}
       assert List.last(items) == [tags: ["tag_index:fact"]]
+      assert Keyword.fetch!(opts, :tag_items) == [length(items) - 1]
 
-      positions = Enum.to_list(1..fact_count())
-      assert_received {:read_tags, ^positions}
+      assert [_one] = stored(ruled_stream(command), App)
+      refute_read_tags()
+    end
+
+    test "disabled refuses, with no `read_tags`" do
+      disable_index!("entity")
+
+      Process.register(self(), :rule_recorder)
+
+      command = ruled()
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert_received {:read_query, _items, _opts}
+      assert stored(ruled_stream(command), App) == []
+      refute_read_tags()
     end
 
     test "a refusal at step 3 calls no `execute/2` and emits no read event" do

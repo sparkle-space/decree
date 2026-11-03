@@ -91,15 +91,15 @@ defmodule Decree.Decision do
     1. Call `c:query/2`. Its error is the answer. On a create, put the fact item first.
        Refuse an item naming no types or a malformed `replay: true` item. Refuse more
        condition items than `max_items` and more probes than `max_probes`. Read the items
-       with the command item, the index item and any activation item.
+       with the command item, the index item and any activation item, and in the same
+       statement the tags of the events a framework item matched.
     2. Call `c:followup_query/3` if it is defined, with the events the first read's own
        items matched, those the decision lists decrypted. Check both bounds again across both
        reads, and read the items with the framework's. A command match the first read did
        not have starts over from step 1, using a retry. Merge by position. The first read's
        `after` stands for both. More matched events than `max_events`, both reads together,
        refuses.
-    3. Fetch the tags of the events matching a framework item, in one read by position.
-       Check the index: unless the facts at or below `after` enable every family the reads'
+    3. Check the index: unless the facts at or below `after` enable every family the reads'
        own items require, `{:error, :tag_index_not_enabled}` (see "Index facts"). Then, on a
        decision with `activation:`, unless an event the activation item matched is at or
        below `after`, `{:error, :decision_not_activated}` (see "Activation").
@@ -132,8 +132,9 @@ defmodule Decree.Decision do
   the framework's: the command item, the index item and any activation item, in that order.
   Then any read-only item, which is read and never in the condition. A second read's indexes
   are offset by the first read's item count, so which items matched an event is one merged
-  answer. A read returns no tags, so what an event carries comes from the one fetch in step
-  3, and a position with no row left is one that does not carry the tag.
+  answer. Each read returns the tags of the events its framework items matched, and nothing
+  else's, so what such an event carries comes from the reads, and a position with no row left
+  is one that does not carry the tag. No other statement reads a tag.
 
   The condition's items are the decision's own, from both reads, and the framework's once.
   Its `after` is the first read's. So an event committed after the first read, the gap
@@ -226,7 +227,7 @@ defmodule Decree.Decision do
     - A condition failure crossing the edge decides from the new read, whose window is the
       only one that counts.
     - An event of a deletable type, or a scope tag of a deletable kind, reads as reused and
-      fails closed, because the one tag fetch leaves them out.
+      fails closed, because the read's tags leave them out.
     - A hard delete takes a stream's `command:` rows, so a resend after it is a new command.
       A hard delete of a stream linking a decision's events takes those events too, with their
       `command:` rows, wherever they were appended, so a resend after that is a new command
@@ -284,8 +285,8 @@ defmodule Decree.Decision do
       the family with no key.
 
   The fold takes the facts the index item matched at or below the first read's `after`, in
-  position order, with their tags from the one fetch, and the last state per family and key
-  wins. A family and key with no fact is disabled. A fact with no state tag in the fetch, its
+  position order, with their tags from the reads, and the last state per family and key
+  wins. A family and key with no fact is disabled. A fact with no state tag in the read, its
   rows gone or its type deletable, could have been a disable, so it refuses, and so does a
   fact naming one family and key both ways. A fact above `after`, which a second read can
   find, is not folded: the condition fails on it, and the retry reads it again. Any fact

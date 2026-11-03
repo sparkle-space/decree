@@ -43,6 +43,13 @@ defmodule Decree.Decision.DispatchTest do
 
   defp data(recorded), do: Enum.map(recorded, & &1.data)
 
+  # The command item and the index item, by their indexes in a read's items.
+  defp framework_indexes(items) do
+    for {item, index} <- Enum.with_index(items),
+        match?([tags: ["command:" <> _]], item) or item == Decree.Decision.Read.index_item(),
+        do: index
+  end
+
   describe "a dispatch" do
     test "appends what `decide` answers on the route's stream" do
       command = claim()
@@ -599,7 +606,7 @@ defmodule Decree.Decision.DispatchTest do
 
   describe "step 7, a command match" do
     test "that is not this command's refuses, whatever `decide` would say" do
-      attach_telemetry([@append, @read_tags])
+      attach_telemetry([@append, @read_query, @read_tags])
 
       test = self()
 
@@ -612,15 +619,16 @@ defmodule Decree.Decision.DispatchTest do
           end
         )
 
-      position = seed(%Released{scope: "x"}, ["command:" <> command.command_id])
+      seed(%Released{scope: "x"}, ["command:" <> command.command_id])
 
       assert {:error, :reused_command_id} = App.dispatch(command)
 
       refute_received :decided
       refute_received {:telemetry, @append, _, _}
-      # The one fetch reads the facts with it.
-      positions = fact_positions() ++ [position]
-      assert_received {:telemetry, @read_tags, _, %{positions: ^positions}}
+      # The read answers its tags with the facts', and nothing reads them again.
+      assert_received {:telemetry, @read_query, _, %{items: items, opts: opts}}
+      assert Keyword.fetch!(opts, :tag_items) == framework_indexes(items)
+      refute_received {:telemetry, @read_tags, _, _}
     end
 
     test "a resend of a command that landed is a duplicate" do
@@ -631,13 +639,14 @@ defmodule Decree.Decision.DispatchTest do
       assert [_one] = stored("claim-" <> command.claim_id)
     end
 
-    test "no match reads no tags but the facts'" do
-      attach_telemetry([@read_tags])
+    test "the read asks for the framework items' tags, and no other statement reads a tag" do
+      attach_telemetry([@read_query, @read_tags])
 
       assert :ok = App.dispatch(scripted())
 
-      positions = fact_positions()
-      assert_received {:telemetry, @read_tags, _, %{positions: ^positions}}
+      assert_received {:telemetry, @read_query, _, %{items: items, opts: opts}}
+      assert Keyword.fetch!(opts, :tag_items) == framework_indexes(items)
+      refute_received {:telemetry, @read_tags, _, _}
     end
   end
 
