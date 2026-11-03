@@ -21,6 +21,15 @@ loads() { /usr/bin/env python3 -c 'import os; print(" ".join("%.2f" % l for l in
 quiet() { /usr/bin/env python3 -c 'import os,sys; sys.exit(0 if all(l < 4 for l in os.getloadavg()) else 1)'; }
 
 if [ "${SMOKE:-0}" = 1 ]; then echo "=== SMOKE RUN: checks the scripts only; its numbers mean nothing and are never reported"; fi
+# The start rule's first check: no BEAM or `mix` may be running. drive.py checks again just
+# before it starts the arms.
+foreign=$(pgrep -f 'beam\.smp|(^|/)mix( |$)' || true)
+if [ -n "$foreign" ]; then
+  echo "START RULE NOT MET: foreign BEAM"
+  for pid in $foreign; do echo "  pid $pid: $(ps -o command= -p "$pid")"; done
+  echo "Stop each one that is yours, or report them and stop."
+  exit 2
+fi
 echo "=== FW-6 gate run"
 echo "main $MAIN_SHA"
 echo "branch $BRANCH_SHA"

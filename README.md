@@ -53,9 +53,12 @@ SMOKE=1 ./run.sh   # optional: checks the run path in about a minute; its number
 
 ## Start and void rules (coordinator rulings on #7627)
 
-- **Start:** `run.sh` starts only when the 1-, 5- and 15-minute load averages are all under 4. It waits up to 60 minutes and otherwise exits without running.
-- **Void:** the run is void if **any process outside the rig is above 10% CPU** in any trace sample, if **any 1-minute load reading is above 15**, or if another BEAM was running when the arms started.
-  - The rig is its four BEAMs, the driver, Postgres (native, or the container and Docker's VM) and the sampling tools.
+- **Start:**
+  - **No BEAM or `mix` may be running anywhere on the machine.** `run.sh` checks this first, and the driver checks it again just before it starts the arms. Either check prints `START RULE NOT MET: foreign BEAM`, with each PID's full command line, and exits without running. Check yourself beforehand with `pgrep -fl 'beam\.smp|(^|/)mix( |$)'`.
+  - Then `run.sh` waits until the 1-, 5- and 15-minute load averages are all under 4. It waits up to 60 minutes and otherwise exits without running.
+- **Void:** the run is void if, in any trace sample, **any BEAM or `mix` outside the rig is running**, **any other process outside the rig is above 10% CPU**, or **the 1-minute load is above 15**.
+  - The rig is the driver and its descendants, which are the four arms; Postgres (native, or the container and Docker's VM); and the sampling tools.
+  - The run **stops at the first void sample**, because measuring on would report nothing.
   - The trace samples at the start, every 50 counted rounds and at the end. Each sample records the 1-minute load, the five busiest processes, every container's CPU, and anything foreign.
   - **A void run reports no numbers.** The results block says `VOID`.
 - Keep the machine otherwise idle for the run: no builds, tests, browsers or video.

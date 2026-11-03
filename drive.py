@@ -4,9 +4,10 @@
 # what to subtract, each within its round: b's block minus a's.
 #
 # The trace samples the 1-minute load and the busiest processes at the start, every 50 counted
-# rounds and at the end. Void (sparklespace#7627, coordinator rule): any process outside the rig
-# above 10% CPU, or a 1-minute load above 15. The rig is its own BEAMs, this driver, Postgres
-# (native or in Docker) and the sampling tools.
+# rounds and at the end. Void (sparklespace#7627, coordinator rule): any BEAM or `mix` outside the
+# rig, any other process above 10% CPU, or a 1-minute load above 15; the run stops at the first.
+# A foreign BEAM or `mix` before the arms start refuses the run. The rig is this driver and its
+# descendants (the arms), Postgres (native or in Docker) and the sampling tools.
 import os
 import platform
 import re
@@ -111,23 +112,58 @@ def containers():
     return rows
 
 
+def descendants(roots):
+    """The roots and every process below them, from one `ps` listing."""
+    out = subprocess.run(['ps', '-A', '-o', 'pid=,ppid='], capture_output=True, text=True).stdout
+    children = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            children.setdefault(parts[1], []).append(parts[0])
+    found, todo = set(), [str(r) for r in roots]
+    while todo:
+        pid = todo.pop()
+        if pid not in found:
+            found.add(pid)
+            todo.extend(children.get(pid, []))
+    return found
+
+
+def own():
+    # The rig is this driver and everything it started: the arms are its children, and theirs.
+    return descendants([os.getpid()])
+
+
+def foreign_beams():
+    return sorted((pids(r'beam\.smp') | pids(r'(^|/)mix( |$)')) - own(), key=int)
+
+
+def command_of(pid):
+    return subprocess.run(['ps', '-o', 'command=', '-p', pid], capture_output=True, text=True).stdout.strip()
+
+
+# The start rule's last check, before any arm exists: a BEAM or `mix` here is someone else's.
+early = foreign_beams()
+if early:
+    print('START RULE NOT MET: foreign BEAM', flush=True)
+    for pid in early:
+        print('  pid %s: %s' % (pid, command_of(pid)), flush=True)
+    sys.exit(2)
+
 names = [a[0] for a in arms]
 procs = {a[0]: start(*a) for a in arms}
-own = pids('beam.smp') | {str(os.getpid())} | {str(p.pid) for p in procs.values()}
 print('beam.smp at start', len(pids('beam.smp')), 'for', len(procs), 'arms', flush=True)
-extra_at_start = ['another BEAM running when the arms started'] if len(pids('beam.smp')) != len(procs) else []
 
 
 def sample(label):
     load = os.getloadavg()[0]
+    mine = own()
     foreign = []
-    for pattern in ['beam.smp', 'mix ']:
-        extra = pids(pattern) - own
-        if extra:
-            foreign.append(pattern.strip() + ' pids ' + ','.join(sorted(extra)))
+    for pid in foreign_beams():
+        foreign.append('BEAM or mix pid %s: %s' % (pid, command_of(pid)[:100]))
     busy = top_processes()
     for pid, cpu, command in busy:
-        if cpu > CPU_LIMIT and pid not in own and not RIG_NAMES.search(os.path.basename(command.split()[0])):
+        if cpu > CPU_LIMIT and pid not in mine and not RIG_NAMES.search(os.path.basename(command.split()[0])):
             foreign.append('process %s %.1f%% %s' % (pid, cpu, command[:60]))
     boxes = containers()
     for name, cpu in boxes:
@@ -140,20 +176,33 @@ def sample(label):
     return load, foreign
 
 
+def void_now(trace):
+    load, foreign = trace[-1]
+    return load > LOAD_LIMIT or bool(foreign)
+
+
 for _ in range(3):
     for name in names:
         block(name, procs[name])
 
 rows = []
 trace = [sample('start')]
-trace[0] = (trace[0][0], trace[0][1] + extra_at_start)
+# A void condition voids the whole run, so the run stops at the first one: measuring on would
+# report nothing.
+stopped_early = void_now(trace)
 for i in range(rounds):
+    if stopped_early:
+        break
     k = i % len(names)
     order = names[k:] + names[:k]
     rows.append({name: block(name, procs[name]) for name in order})
     if (i + 1) % 50 == 0:
         trace.append(sample('round %d' % (i + 1)))
-trace.append(sample('end'))
+        stopped_early = void_now(trace)
+if not stopped_early:
+    trace.append(sample('end'))
+for p in procs.values():
+    p.terminate()
 
 peak = max(load for load, _ in trace)
 interfered = [f for _, fs in trace for f in fs]
@@ -167,7 +216,7 @@ def stat(values):
 
 
 print('=== RESULTS (paste everything from here to END RESULTS)')
-print('verdict', 'VOID' if void else 'VALID', '| load1 max %.2f (limit %.0f)' % (peak, LOAD_LIMIT),
+print('verdict', 'VOID' if void else 'VALID', '(stopped at the first void sample)' if stopped_early else '', '| load1 max %.2f (limit %.0f)' % (peak, LOAD_LIMIT),
       '| foreign', interfered if interfered else 'none')
 if void:
     print('VOID: per the rule, no numbers are reported from this run.')

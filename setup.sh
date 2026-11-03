@@ -9,8 +9,11 @@ git cat-file -e "$MAIN_SHA^{commit}" && git cat-file -e "$BRANCH_SHA^{commit}" |
 
 rm -rf "${WORK:?}"
 mkdir -p "$WORK/main" "$WORK/branch"
-git archive "$MAIN_SHA" | tar -x -C "$WORK/main"
-git archive "$BRANCH_SHA" | tar -x -C "$WORK/branch"
+# To a file first: stock macOS bsdtar can end a `git archive | tar -x` pipe early (SIGPIPE, 141).
+git archive -o "$WORK/main.tar" "$MAIN_SHA"
+git archive -o "$WORK/branch.tar" "$BRANCH_SHA"
+tar -xf "$WORK/main.tar" -C "$WORK/main"
+tar -xf "$WORK/branch.tar" -C "$WORK/branch"
 cmp "$WORK/main/mix.lock" "$WORK/branch/mix.lock" && echo "mix.lock identical on both sides"
 
 (cd "$WORK/branch" && mise trust --yes . >/dev/null 2>&1 || true; mise install)
