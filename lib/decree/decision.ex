@@ -302,6 +302,13 @@ defmodule Decree.Decision do
   A `Decree.Decision.Rule` requires what its items do, with no `command`, and a rule whose
   `query/2` answers `[]` reads nothing and requires nothing.
 
+  The fold sees a fact only through its `tag_index:fact` row, so the store keeps a fact whole:
+  an append refuses a state tag without that row or the reverse, `delete_stream_tags` refuses
+  both kinds, and a hard delete refuses a stream holding or linking a fact. A decree before
+  this one does none of that. A node still running one can delete a fact's `tag_index:fact`
+  row alone, or the whole fact, and an earlier enable then stands. Append the first fact only
+  once no node runs an older decree.
+
   ## Activation
 
       use Decree.Decision,

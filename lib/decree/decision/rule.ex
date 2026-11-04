@@ -71,18 +71,18 @@ defmodule Decree.Decision.Rule do
        the rule lists decrypted. Check both bounds again across both reads, read the items
        with the index item, and merge by position. The first read's `after` stands for both.
        More matched events than `max_events`, both reads together, refuses.
-    3. Fetch the facts' tags, in one read by position, and check the index as "Index facts" in
-       `Decree.Decision` says, with no `command` requirement: a family the rule's items require
-       with no enabled index answers `{:error, :tag_index_not_enabled}`, before `execute/2`.
-       Keep the events the rule's own items matched, and decrypt the ones it lists.
+    3. Check the index as "Index facts" in `Decree.Decision` says, on the facts' tags the reads
+       returned, with no `command` requirement: a family the rule's items require with no
+       enabled index answers `{:error, :tag_index_not_enabled}`, before `execute/2`. Keep the
+       events the rule's own items matched, and decrypt the ones it lists.
     4. Call `execute/2` with those events on a local copy of the command. Everything
        after that is the aggregate's as on any other route: `apply/2`, preparing, tags.
     5. Refuse more new events than `max_batch_events`, compare the digests and require the
        tags, as "Required tags" says, and append at the expected version under the condition.
        Its items are the rule's own from both reads and the index item, and its `after` is the
-       first read's: the store's head at that read, and never 0 on an empty store. After `[]` there is no
-       condition: past the bound, the append is the one a route with no rule makes, with no
-       digest comparison and no required tags but the event's own.
+       first read's: the store's head at that read, and never 0 on an empty store. After `[]`
+       there is no condition: past the bound, the append is the one a route with no rule makes,
+       with no digest comparison and no required tags but the event's own.
 
   So an event committed after the first read, the gap between the two reads included, fails
   the append if it matches. An `after` taken from the second read would miss what landed in
@@ -154,10 +154,9 @@ defmodule Decree.Decision.Rule do
   "Bounds" in `Decree.Decision`, with the same defaults, the same rule for raising one, and the
   same answers: `:decision_query_too_large` and `:decision_batch_too_large`. `max_items` counts
   the index item, so 15 of a rule's own make 16, and `max_events` counts the facts it matches.
-  `max_batch_events`
-  holds on every append a rule route makes, a plain one after `[]` included. A condition's items
-  run under the `$all` lock on an aggregate route as on a decision's, so lead each item with
-  its narrowest tag.
+  `max_batch_events` holds on every append a rule route makes, a plain one after `[]` included.
+  A condition's items run under the `$all` lock on an aggregate route as on a decision's, so
+  lead each item with its narrowest tag.
 
   ## Leaks
 
