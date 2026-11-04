@@ -56,3 +56,59 @@ if System.get_env("GATE_FACTS") == "1" do
   :ok = Gate.Store.append_to_stream("gate-index-facts", :no_stream, facts, name: Gate.Store)
   IO.puts("facts appended: #{length(facts)}")
 end
+
+# A small store: gate-shaped filler up to GATE_FILLER events in `$all`, then ANALYZE, so the planner
+# has statistics as a production store's autovacuum would give it. Each pair is a Registered and a
+# Released on a fresh holder stream, the same shape as the arms' own seed.
+filler = String.to_integer(System.get_env("GATE_FILLER", "0"))
+
+if filler > 0 do
+  head = fn ->
+    %{rows: [[v]]} = Postgrex.query!(c, "select stream_version from streams where stream_id = 0", [])
+    v
+  end
+
+  uuid = &Decree.UUID.uuid4/0
+
+  ev = fn type, data, tags ->
+    %Decree.Store.EventData{event_type: type, data: data, metadata: %{}, tags: tags}
+  end
+
+  pair = fn ->
+    digest = uuid.()
+    holder = uuid.()
+
+    :ok =
+      Gate.Store.append_to_stream(
+        holder,
+        :any_version,
+        [
+          ev.("Elixir.Gate.Registered", %Gate.Registered{user_id: holder, digest: digest, note: "n"}, [Gate.Shape.email_tag(digest)]),
+          ev.("Elixir.Gate.Released", %Gate.Released{user_id: holder}, ["user:" <> holder])
+        ],
+        name: Gate.Store
+      )
+  end
+
+  need = filler - head.()
+  if need < 0, do: raise("store already holds #{head.()} events, above GATE_FILLER #{filler}")
+  for _ <- 1..div(need, 2)//1, do: pair.()
+
+  if rem(need, 2) == 1 do
+    digest = uuid.()
+    holder = uuid.()
+
+    :ok =
+      Gate.Store.append_to_stream(
+        holder,
+        :any_version,
+        [ev.("Elixir.Gate.Registered", %Gate.Registered{user_id: holder, digest: digest, note: "n"}, [Gate.Shape.email_tag(digest)])],
+        name: Gate.Store
+      )
+  end
+
+  %{rows: tables} = Postgrex.query!(c, "select tablename from pg_tables where schemaname = 'public'", [])
+  for [t] <- tables, do: Postgrex.query!(c, ~s[ANALYZE "public"."#{t}"], [])
+  IO.puts("analyzed #{length(tables)} store tables")
+  IO.puts("store events after setup: #{head.()}")
+end

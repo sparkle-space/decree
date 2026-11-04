@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The FW-6 four-arm gate (sparkle-space/sparklespace#7627): waits for the start rule, then runs.
+# The #7752 read-index gate (sparkle-space/sparklespace#7752; rig lineage #7627): waits for the start rule, then runs.
 set -uo pipefail
 source "$(dirname "$0")/env.sh"
 cd "$GATE_HOME"
@@ -11,17 +11,31 @@ export PATH
 GATE_MIX="$(command -v mix)" GATE_PATH="$PATH"
 export GATE_MIX GATE_PATH
 echo "toolchain: $GATE_MIX; $(elixir --version | tail -1)"
-# The four gated arms, then the span arms: each dispatch's own read_query time, on each side.
-export ARMS="dec_main:$WORK/main:decision:main,dec_fw6:$WORK/branch:decision:branch,rcold_main:$WORK/main:rule_cold:main,rcold_fw6:$WORK/branch:rule_cold:branch,\
-tel_dec_main:$WORK/main:decision_span:main,tel_dec_fw6:$WORK/branch:decision_span:branch,\
-tel_rcold_main:$WORK/main:rule_cold_span:main,tel_rcold_fw6:$WORK/branch:rule_cold_span:branch"
-export PAIRS="dec_main-dec_fw6,rcold_main-rcold_fw6,tel_dec_main-tel_dec_fw6,tel_rcold_main-tel_rcold_fw6"
-# DECOMPOSE=1 is not the gate: nothing voids or stops the run, and every number prints. It adds
-# the index facts' read_tags call alone, the round trip FW-6's dispatch no longer sends.
-if [ "${DECOMPOSE:-0}" = 1 ]; then
-  ARMS="$ARMS,rt_fw6:$WORK/branch:read_tags:branch"
-fi
-export BLOCKS=${BLOCKS:-401} BENCH_N=${BENCH_N:-51} BENCH_WARM=${BENCH_WARM:-300}
+# The four gated arms; in the large store also the span arms (each dispatch's own read_query
+# time, on each side). SMALL_BEFORE=1 adds the FW-6 before-arms (not gated).
+case "$STORE" in
+  large)
+    export ARMS="dec_main:$WORK/main:decision:main,dec_fix:$WORK/fix:decision:fix,rcold_main:$WORK/main:rule_cold:main,rcold_fix:$WORK/fix:rule_cold:fix,\
+tel_dec_main:$WORK/main:decision_span:main,tel_dec_fix:$WORK/fix:decision_span:fix,\
+tel_rcold_main:$WORK/main:rule_cold_span:main,tel_rcold_fix:$WORK/fix:rule_cold_span:fix"
+    export PAIRS="dec_main-dec_fix,rcold_main-rcold_fix,tel_dec_main-tel_dec_fix,tel_rcold_main-tel_rcold_fix"
+    # DECOMPOSE=1 is not the gate: nothing voids or stops the run, and every number prints. It adds
+    # the index facts' read_tags call alone, the round trip FW-6's dispatch no longer sends.
+    if [ "${DECOMPOSE:-0}" = 1 ]; then
+      ARMS="$ARMS,rt_fix:$WORK/fix:read_tags:fix"
+    fi
+    export BLOCKS=${BLOCKS:-401} BENCH_N=${BENCH_N:-51} BENCH_WARM=${BENCH_WARM:-300}
+    ;;
+  *)
+    if [ "${DECOMPOSE:-0}" = 1 ]; then echo "DECOMPOSE=1 is only for STORE=large"; exit 2; fi
+    export ARMS="dec_main:$WORK/main:decision:main,dec_fix:$WORK/fix:decision:fix,rcold_main:$WORK/main:rule_cold:main,rcold_fix:$WORK/fix:rule_cold:fix"
+    export PAIRS="dec_main-dec_fix,rcold_main-rcold_fix"
+    if [ "${SMALL_BEFORE:-0}" = 1 ]; then
+      ARMS="$ARMS,dec_fw6:$WORK/fw6:decision:fw6,rcold_fw6:$WORK/fw6:rule_cold:fw6"
+      PAIRS="$PAIRS,dec_main-dec_fw6,rcold_main-rcold_fw6"
+    fi
+    ;;
+esac
 # SMOKE=1 checks the run path only: two tiny rounds, no start rule, numbers meaningless.
 if [ "${SMOKE:-0}" = 1 ]; then export BLOCKS=2 BENCH_N=3 BENCH_WARM=5; fi
 
@@ -42,9 +56,11 @@ elif [ -n "$foreign" ]; then
   echo "Stop each one that is yours, or report them and stop."
   exit 2
 fi
-echo "=== FW-6 gate run"
-echo "main $MAIN_SHA"
-echo "branch $BRANCH_SHA"
+echo "=== 7752 gate run"
+echo "store $STORE${SMALL_BEFORE:+ (SMALL_BEFORE=$SMALL_BEFORE)}"
+echo "main (pre-FW-6) $MAIN_SHA"
+echo "fix $BRANCH_SHA"
+[ "${SMALL_BEFORE:-0}" = 1 ] && echo "fw6 $FW6_SHA"
 echo "host $(uname -srm); cpus $(getconf _NPROCESSORS_ONLN)"
 date
 waited=0
