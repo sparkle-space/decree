@@ -306,8 +306,10 @@ defmodule Decree.Decision do
   an append refuses a state tag without that row or the reverse, `delete_stream_tags` refuses
   both kinds, and a hard delete refuses a stream holding or linking a fact. A decree before
   this one does none of that. A node still running one can delete a fact's `tag_index:fact`
-  row alone, or the whole fact, and an earlier enable then stands. Append the first fact only
-  once no node runs an older decree.
+  row alone, or the whole fact, and an earlier enable then stands. So the first fact is a
+  one-way cutover: append it only once no node runs an older decree and no delete started on
+  one is still running, and while any fact exists never start a node on an older decree, by
+  rollback, scaling or a stale image.
 
   ## Activation
 
