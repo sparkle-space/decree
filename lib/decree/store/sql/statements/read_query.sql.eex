@@ -9,6 +9,12 @@
   them, its filter and aggregate the same word for word: a deletable kind's tags and every tag
   of an event of a deletable type are left out, and a position with no row left is absent. An
   empty `$9` overlaps nothing, so it reads no tag.
+
+  The fetch is one lateral per hit, fenced by `OFFSET 0`, as `query_positions.sql.eex` fences
+  its checks. The planner cannot see how few positions `hits` returns. Without the fence, on a
+  small store it would hash the whole of `stream_events`, and on the smallest `events` and
+  `streams` too, which a read on every decision and rule dispatch must never do. With it, each
+  hit probes `stream_events` by its own position.
 --%>
 WITH head AS MATERIALIZED (
   SELECT stream_version AS position, clock_timestamp() AS read_at
@@ -39,21 +45,31 @@ matches AS (
     c.position IS NOT NULL AS command_row_found,
     c.stamped_at,
     hit_tags.tags,
-    e.event_id,
-    s.stream_uuid,
-    se.original_stream_version,
-    e.event_type,
-    e.correlation_id,
-    e.causation_id,
-    e.data,
-    e.metadata,
-    e.created_at
+    f.event_id,
+    f.stream_uuid,
+    f.original_stream_version,
+    f.event_type,
+    f.correlation_id,
+    f.causation_id,
+    f.data,
+    f.metadata,
+    f.created_at
   FROM hits
-  INNER JOIN "<%= schema %>".stream_events se ON se.stream_id = 0 AND se.stream_version = hits.position
-  INNER JOIN "<%= schema %>".streams s ON s.stream_id = se.original_stream_id
-  INNER JOIN "<%= schema %>".events e ON e.event_id = se.event_id
-  LEFT JOIN "<%= schema %>".event_tags c
-    ON c.tag = $8::text COLLATE "C" AND c.position = hits.position
+  CROSS JOIN LATERAL (
+    SELECT e.event_id, s.stream_uuid, se.original_stream_version, e.event_type,
+      e.correlation_id, e.causation_id, e.data, e.metadata, e.created_at
+    FROM "<%= schema %>".stream_events se
+    INNER JOIN "<%= schema %>".streams s ON s.stream_id = se.original_stream_id
+    INNER JOIN "<%= schema %>".events e ON e.event_id = se.event_id
+    WHERE se.stream_id = 0 AND se.stream_version = hits.position
+    OFFSET 0
+  ) AS f
+  LEFT JOIN LATERAL (
+    SELECT c.position, c.stamped_at
+    FROM "<%= schema %>".event_tags c
+    WHERE c.tag = $8::text COLLATE "C" AND c.position = hits.position
+    OFFSET 0
+  ) AS c ON true
   LEFT JOIN hit_tags ON hit_tags.position = hits.position
 )
 SELECT

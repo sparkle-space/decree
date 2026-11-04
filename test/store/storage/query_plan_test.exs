@@ -21,8 +21,8 @@ defmodule Decree.Store.Storage.QueryPlanTest do
   #
   # `@count` is the size of a real decision read, and large against this seed, so this
   # proves the fragment stays index-bound where the planner would most like to join whole
-  # tables. `streams` may still be scanned: it is joined in the fetch stage, after the
-  # match is decided, so it is no probe, and the planner picks that on cost.
+  # tables. The fetch is a per-hit probe of `stream_events`, `streams` and `events`, after the
+  # match is decided. On a tiny store `streams` may still be scanned inside it, on cost.
   describe "the read" do
     setup :seed
 
@@ -67,6 +67,54 @@ defmodule Decree.Store.Storage.QueryPlanTest do
                Storage.read_query(conn, query, :forward, 0, 5, nil, [], schema: schema)
 
       assert length(events) == 5
+    end
+  end
+
+  # A gate's store before it grows: a few index facts and a few events per stream, each with
+  # its own tags. The planner cannot see how few positions a read hits, so on a store this
+  # small it would rather join whole tables than probe per hit. Each read must still probe.
+  describe "the read on a small store" do
+    setup :seed_small
+
+    for positions <- [400, 2_000, 13_700], read <- [:decision, :rule] do
+      @tag positions: positions, read: read
+      test "probes per hit for a #{read} at #{positions} events", context do
+        {items, command_tag, tag_items} = small_store_read(context.read)
+
+        plan = explain(context, items, :forward, command_tag, tag_items)
+
+        # `streams` is left out: at 400 events it has 200 rows, and a scan is cheaper.
+        assert_no_seq_scan(plan, ["stream_events", "events", "event_tags", "event_types"])
+        assert_fetch_probe(plan)
+      end
+    end
+
+    @tag positions: 400
+    test "reads the index facts with their tags", %{plan_conn: conn, schema: schema} do
+      {items, command_tag, tag_items} = small_store_read(:decision)
+
+      assert {:ok, %ReadResult{} = result} =
+               Storage.read_query(
+                 conn,
+                 compile(items),
+                 :forward,
+                 0,
+                 @count,
+                 command_tag,
+                 tag_items,
+                 schema: schema
+               )
+
+      facts = Enum.to_list(1..8)
+
+      assert result.after == 400
+      assert Enum.map(result.events, & &1.event_number) == facts
+      assert Enum.all?(result.events, &(&1.event_type == "IndexFact"))
+      assert result.command_stamps == %{}
+      assert result.matched_items == Map.new(facts, &{&1, [2]})
+
+      assert result.tags ==
+               Map.new(facts, &{&1, ["tag_index:fact", "tag_index_state:f#{&1}:-:enabled"]})
     end
   end
 
@@ -262,7 +310,107 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     [plan_conn: conn]
   end
 
-  defp explain(context, items, direction) do
+  # `n` positions on `n / 2` streams of two events each. The first 8 are index facts; every
+  # other event has one of three types and three tags almost no other event shares.
+  defp seed_small(%{positions: positions, postgrex_config: postgrex_config, schema: schema}) do
+    stop_supervised!(TestEventStore)
+
+    conn = LockSession.connect(postgrex_config)
+
+    run = &Postgrex.query!(conn, &1, [], timeout: 60_000)
+
+    run.(~s(SET search_path = "#{schema}", pg_temp))
+
+    run.("""
+    INSERT INTO streams (stream_uuid, stream_version)
+    SELECT 'stream-' || n, 2
+    FROM generate_series(1, #{div(positions, 2)}) AS n
+    """)
+
+    run.("""
+    CREATE TEMPORARY TABLE seeded_types AS
+    SELECT
+      n AS position,
+      CASE
+        WHEN n <= 8 THEN 'IndexFact'
+        ELSE (ARRAY['Registered', 'Released', 'Thing'])[n % 3 + 1]
+      END AS event_type
+    FROM generate_series(1, #{positions}) AS n
+    """)
+
+    run.("""
+    INSERT INTO events (event_id, event_type, data, metadata)
+    SELECT md5('event-' || position)::uuid, event_type, '{}'::text::bytea, '{}'::text::bytea
+    FROM seeded_types
+    """)
+
+    run.("""
+    INSERT INTO stream_events
+      (event_id, stream_id, stream_version, original_stream_id, original_stream_version)
+    SELECT
+      md5('event-' || n)::uuid,
+      target.stream_id,
+      target.stream_version,
+      s.stream_id,
+      (n - 1) % 2 + 1
+    FROM generate_series(1, #{positions}) AS n
+    JOIN streams s ON s.stream_uuid = 'stream-' || ((n - 1) / 2 + 1)
+    CROSS JOIN LATERAL (
+      VALUES (s.stream_id, ((n - 1) % 2 + 1)::bigint), (0::bigint, n::bigint)
+    ) AS target (stream_id, stream_version)
+    """)
+
+    run.("UPDATE streams SET stream_version = #{positions} WHERE stream_id = 0")
+
+    run.(
+      "INSERT INTO event_types (event_type, position) SELECT event_type, position FROM seeded_types"
+    )
+
+    run.("""
+    INSERT INTO event_tags (position, tag, event_type)
+    SELECT t.position, tag.tag, t.event_type
+    FROM seeded_types t
+    CROSS JOIN LATERAL (
+      SELECT unnest(
+        CASE
+          WHEN t.position <= 8 THEN
+            ARRAY['tag_index:fact', 'tag_index_state:f' || t.position || ':-:enabled']
+          ELSE
+            ARRAY[
+              'command:c' || t.position / 3,
+              'email:fp:d' || t.position,
+              'user:u' || t.position / 2
+            ]
+        END
+      ) AS tag
+    ) AS tag
+    """)
+
+    run.("DROP TABLE seeded_types")
+
+    for table <- ["streams", "events", "stream_events", "event_tags", "event_types"] do
+      run.("ANALYZE #{table}")
+    end
+
+    start_supervised!(TestEventStore)
+
+    [plan_conn: conn]
+  end
+
+  # A decision reads its rule, its own command and the index facts; a rule, without a command.
+  defp small_store_read(:decision) do
+    {[
+       [types: ["Registered"], tags: ["email:fp:dnew"]],
+       [tags: ["command:cnew"]],
+       [tags: ["tag_index:fact"]]
+     ], "command:cnew", [1, 2]}
+  end
+
+  defp small_store_read(:rule) do
+    {[[types: ["Registered"], tags: ["email:fp:dnew"]], [tags: ["tag_index:fact"]]], nil, [1]}
+  end
+
+  defp explain(context, items, direction, command_tag \\ "tag-1", tag_items \\ [0]) do
     %{plan_conn: conn, schema: schema} = context
 
     %Query{} = query = compile(items)
@@ -282,8 +430,8 @@ defmodule Decree.Store.Storage.QueryPlanTest do
       query.rest_tags,
       bound,
       @count,
-      "tag-1",
-      [0],
+      command_tag,
+      tag_items,
       [],
       []
     ]
@@ -319,6 +467,16 @@ defmodule Decree.Store.Storage.QueryPlanTest do
 
     assert Enum.any?(conditions, &(&1 =~ "#{column} =")),
            "no condition on #{column} in #{index}: #{inspect(conditions)}\n#{summary(plan)}"
+  end
+
+  # The fetch: one probe of `ix_stream_events` per hit, by the hit's position.
+  defp assert_fetch_probe(plan) do
+    conditions =
+      for %{"Index Name" => "ix_stream_events"} = node <- nodes(plan),
+          do: node["Index Cond"] || ""
+
+    assert Enum.any?(conditions, &(&1 =~ ~r/stream_version = hits(_\d+)?\."position"/)),
+           "no per-hit fetch: #{inspect(conditions)}\n#{summary(plan)}"
   end
 
   # The fetch stage probes `ix_stream_events` too, by `hits.position`. This is the fragment's
