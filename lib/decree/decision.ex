@@ -90,16 +90,20 @@ defmodule Decree.Decision do
        list of non-empty strings, `{:error, :invalid_scope_tags}`. None sends a statement.
     1. Call `c:query/2`. Its error is the answer. On a create, put the fact item first.
        Refuse an item naming no types or a malformed `replay: true` item. Refuse more
-       condition items than `max_items` and more probes than `max_probes`. Read the items and
-       the command item.
+       condition items than `max_items` and more probes than `max_probes`. Read the items
+       with the command item, the index item and any activation item, and in the same
+       statement the tags of the events a framework item matched.
     2. Call `c:followup_query/3` if it is defined, with the events the first read's own
        items matched, those the decision lists decrypted. Check both bounds again across both
-       reads, and read the items and the command item. A command match the first read did
+       reads, and read the items with the framework's. A command match the first read did
        not have starts over from step 1, using a retry. Merge by position. The first read's
        `after` stands for both. More matched events than `max_events`, both reads together,
        refuses.
-    3. Fetch the tags of the events matching the command item, in one read by position.
-    4. Keep the events the decision's own items matched. An event only the command item
+    3. Check the index: unless the facts at or below `after` enable every family the reads'
+       own items require, `{:error, :tag_index_not_enabled}` (see "Index facts"). Then, on a
+       decision with `activation:`, unless an event the activation item matched is at or
+       below `after`, `{:error, :decision_not_activated}` (see "Activation").
+    4. Keep the events the decision's own items matched. An event only a framework item
        matched is not shown to `c:evolve/2`.
     5. Decrypt the ones the decision lists, and fold them all with `c:evolve/2`.
     6. Call `c:admit/2`. Its error is the answer.
@@ -119,20 +123,23 @@ defmodule Decree.Decision do
        items naming its type, a create's fact item left out, less those its module lists in
        `__conditional_tag_kinds__/0`, and of an event that opted in its own answer as well.
        Append them at `:any_version` under the condition, and the store refuses an event
-       lacking a kind on its list.
+       lacking a kind on its list. The condition holds the index item, so a fact committed
+       since the first read fails it, and the retry checks the index again.
 
   Then `after_dispatch` or `after_failure` middleware runs as on an aggregate route.
 
   An item-index layout ties the reads together. A read's items are the decision's own, then
-  the command item, then any read-only item, which is read and never in the condition. A
-  second read's indexes are offset by the first read's item count, so which items matched
-  an event is one merged answer. A read returns no tags, so what an event carries comes
-  from the one fetch in step 3, and a position with no row left is one that does not carry
-  the tag.
+  the framework's: the command item, the index item and any activation item, in that order.
+  Then any read-only item, which is read and never in the condition. A second read's indexes
+  are offset by the first read's item count, so which items matched an event is one merged
+  answer. Each read returns the tags of the events its framework items matched, and nothing
+  else's, so what such an event carries comes from the reads, and a position with no row left
+  is one that does not carry the tag. No other statement reads a tag.
 
-  The condition's items are the decision's own, from both reads, and the command item
-  once. Its `after` is the first read's. So an event committed after the first read, the
-  gap between the two reads included, fails the append if it matches.
+  The condition's items are the decision's own, from both reads, and the framework's once.
+  Its `after` is the first read's. So an event committed after the first read, the gap
+  between the two reads included, fails the append if it matches, and any index fact does,
+  whatever family it names.
 
   ## What decide answers
 
@@ -220,7 +227,7 @@ defmodule Decree.Decision do
     - A condition failure crossing the edge decides from the new read, whose window is the
       only one that counts.
     - An event of a deletable type, or a scope tag of a deletable kind, reads as reused and
-      fails closed, because the one tag fetch leaves them out.
+      fails closed, because the read's tags leave them out.
     - A hard delete takes a stream's `command:` rows, so a resend after it is a new command.
       A hard delete of a stream linking a decision's events takes those events too, with their
       `command:` rows, wherever they were appended, so a resend after that is a new command
@@ -249,7 +256,78 @@ defmodule Decree.Decision do
   the answer is `{:error, :digest_tag_mismatch}`, an atom and never the digest, with nothing
   appended and no retry. A kind marked `:plain` is not compared, and a decision with no
   `c:index_families/0` compares nothing. An answer that is not a map of tag kinds to `:digest`
-  or `:plain` fails the build, because it would compare nothing and say nothing.
+  or `:plain` fails the build, because it would compare nothing and say nothing. So does one
+  listing `command`, `command_kind`, `correlation`, `tag_index` or `tag_index_state`: a
+  framework kind is never a digest, and the tag index's own kinds are in no family.
+
+  A kind listed here, either way, is its own family to the tag index, and a `:digest` kind's
+  family is keyed by the fingerprint its tags carry: see "Index facts".
+
+  ## Index facts
+
+  A condition finds an event by its tags, so it holds only while the tag rows are complete.
+  Whether they are is a fact on the ledger, in events the application appends in the grammar
+  of `Decree.Store.TagIndex`. Decree ships no such event. The dispatch reads the facts with its
+  own items: the index item, `[tags: ["tag_index:fact"]]`, is a framework item of every read,
+  in the condition, and never folded.
+
+  What the reads require comes from their own items, both reads', a create's fact item and
+  replay items included:
+
+    - `command`, because a decision has a command item, though its query names no `command:`
+      tag.
+    - For each tag on an item, its kind's family: the kind itself when it is one of
+      `Decree.Store.TagIndex.named_families/0` or a key of `c:index_families/0`, and `entity`
+      otherwise. A `tag_index` or `tag_index_state` tag requires nothing, and nor do an item's
+      types: the types index is not a tag family.
+    - A kind listed `:digest` holds `<fingerprint>:<digest>`, and requires its family under
+      that fingerprint. A value whose fingerprint does not read refuses: it never stands for
+      the family with no key.
+
+  The fold takes the facts the index item matched at or below the first read's `after`, in
+  position order, with their tags from the reads, and the last state per family and key
+  wins. A family and key with no fact is disabled. A fact with no state tag in the read, its
+  rows gone or its type deletable, could have been a disable, so it refuses, and so does a
+  fact naming one family and key both ways. A fact above `after`, which a second read can
+  find, is not folded: the condition fails on it, and the retry reads it again. Any fact
+  committed after `after` fails the condition, so a dispatch never appends past a disable it
+  did not read, at the cost of a retry for a fact about another family.
+
+  With every requirement enabled the dispatch goes on, and otherwise it answers
+  `{:error, :tag_index_not_enabled}`, an atom naming no family and no digest. That is before
+  the fold, `c:admit/2`, classification and `c:decide/2`, so a resend inside the window and a
+  replay refuse as a new command does. Nothing is kept between dispatches: the facts are the
+  dispatch's own read, never a cache or a read model.
+
+  A `Decree.Decision.Rule` requires what its items do, with no `command`, and a rule whose
+  `query/2` answers `[]` reads nothing and requires nothing.
+
+  The fold sees a fact only through its `tag_index:fact` row, so the store keeps a fact whole:
+  an append refuses a state tag without that row or the reverse, `delete_stream_tags` refuses
+  both kinds, and a hard delete refuses a stream holding or linking a fact. A decree before
+  this one does none of that. A node still running one can delete a fact's `tag_index:fact`
+  row alone, or the whole fact, and an earlier enable then stands. So the first fact is a
+  one-way cutover: append it only once no node runs an older decree and no delete started on
+  one is still running, and while any fact exists never start a node on an older decree, by
+  rollback, scaling or a stale image.
+
+  ## Activation
+
+      use Decree.Decision,
+        create: false,
+        activation: [types: ["Elixir.ClaimsSwitchedOn"], tags: ["feature:claims"]]
+
+  `activation:` names the event that switches a decision on, and is optional. It is a
+  framework item after the index item: read, in the condition, never folded and requiring
+  nothing of the index. At step 3, after the index check, a dispatch with no event it matched
+  at or below `after` answers `{:error, :decision_not_activated}`. One event is enough, and
+  decree models no deactivation. One committed between the read and the append fails the
+  condition, and the retry finds it. As any condition item does, it asks its tags' kinds of
+  an event of a type it names, and the digest comparison reads its tags.
+
+  It is `[types: types, tags: tags]`, in that order, each a non-empty list of non-empty
+  strings and each tag one the store can hold, or the build fails. So does `replay:` in it,
+  and so does `activation:` on a `Decree.Decision.Rule`.
 
   ## Personal fields
 
@@ -316,7 +394,7 @@ defmodule Decree.Decision do
   answers `{:error, :decision_execution_timeout}`, whether or not its append landed, and
   one whose task died answers `{:error, :decision_execution_failed}`.
 
-  Five refusals are named arms for an event handler, because a handler that dispatches a
+  Seven refusals are named arms for an event handler, because a handler that dispatches a
   decision must stop or park on them rather than retry:
 
     - `:decision_query_too_large` - more condition items than `max_items`, more probes than
@@ -329,9 +407,10 @@ defmodule Decree.Decision do
       same id, so it stops or parks here instead of spinning.
     - `:key_unknown` - a personal value it reads or writes has no key to hand. Only the key
       coming back changes that.
-
-  `:tag_index_not_enabled` is reserved. Nothing answers it yet, and a handler that names it
-  now has an arm that never runs.
+    - `:tag_index_not_enabled` - a family its items require has no enabled index, or a fact
+      cannot be read. Only a fact changes that.
+    - `:decision_not_activated` - its activation event is not there. Only that event changes
+      that.
 
   The other refusals are a bug in a command or a decision: `:missing_command_id`,
   `:invalid_decision_identity`, `:invalid_query`, `:decision_returned_no_events` for `[]`,
@@ -357,8 +436,9 @@ defmodule Decree.Decision do
   non-empty `bound_reason:`, and the build fails without it, because the default is what
   was measured.
 
-    - `max_items` counts condition items, the framework's included: 15 of a decision's own
-      plus the command item is 16. A condition's items run under the `$all` lock.
+    - `max_items` counts condition items, the framework's included: 14 of a decision's own
+      plus the command item and the index item is 16, and 13 with an activation item. A
+      condition's items run under the `$all` lock.
     - `max_probes` counts the probes `Decree.Store.Query` compiles the condition's items to,
       the framework's included, across both reads. An item is one probe per type, so one
       item of 30 types is one condition item and 30 probes. 48 is the size measured: about
@@ -366,8 +446,8 @@ defmodule Decree.Decision do
       item's further tags are checked per first-tag hit after `after`, so they are not
       counted.
     - `max_events` counts matched rows, both reads together, an event in both counted
-      once, command matches included, because a read returning `count` rows cannot be told
-      from one that was cut.
+      once, command matches and the facts the index item matches included, because a read
+      returning `count` rows cannot be told from one that was cut.
     - `max_batch_events` counts new events, across every member. `$all` is held for each
       one, about 0.1 ms.
 
@@ -397,7 +477,7 @@ defmodule Decree.Decision do
       read that answered stops with no `error`. Either failure reaches the span above as
       "Answers" says.
     - `[:decree, :decision, :read]`, once per completed read cycle, one refused on
-      `max_events` included. Measurements `items`, `probes`, `matched_events`, `read_time`
+      `max_events` included, and none for one refused at step 3. Measurements `items`, `probes`, `matched_events`, `read_time`
       and `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata
       `application`, `decision` and `attempt`.
     - `[:decree, :decision, :retry]`, measurement `attempt`, the one that failed. Metadata
@@ -413,7 +493,7 @@ defmodule Decree.Decision do
   """
 
   alias Decree.Event.TagContext
-  alias Decree.Store.Query
+  alias Decree.Store.{EventData, Query, TagIndex}
 
   @type state :: term()
   @type command :: struct()
@@ -482,7 +562,11 @@ defmodule Decree.Decision do
   @optional_callbacks followup_query: 3, admit: 2, scope_tags: 1, index_families: 0
 
   @bounds [max_items: 16, max_probes: 48, max_events: 1_000, max_batch_events: 100]
-  @options [:bound_reason, :create | Keyword.keys(@bounds)]
+  @options [:bound_reason, :create, :activation | Keyword.keys(@bounds)]
+
+  # The kinds a step of its own reads, whatever a decision lists: a framework kind is never a
+  # digest, and the tag index's own kinds are in no family.
+  @unlisted_kinds ["command", "command_kind", "correlation" | TagIndex.reserved_kinds()]
 
   @doc false
   defmacro __using__(opts) do
@@ -493,6 +577,7 @@ defmodule Decree.Decision do
 
       @decree_decision_bounds Decree.Decision.__bounds__!(__MODULE__, opts)
       @decree_decision_create Decree.Decision.__create__!(__MODULE__, opts)
+      @decree_decision_activation Decree.Decision.__activation__!(__MODULE__, opts)
 
       @doc false
       def admit(_state, _command), do: :ok
@@ -529,6 +614,7 @@ defmodule Decree.Decision do
       def __decision__ do
         Map.merge(@decree_decision_bounds, %{
           create: @decree_decision_create,
+          activation: @decree_decision_activation,
           followup_query?: unquote(followup_query?),
           index_families: index_families()
         })
@@ -566,6 +652,12 @@ defmodule Decree.Decision do
       raise ArgumentError,
             "#{inspect(module)} has an invalid `index_families/0`: #{inspect(families)}, " <>
               "expected a map of tag kinds to `:digest` or `:plain`"
+    end
+
+    with [kind | _] <- Enum.filter(Map.keys(families), &(&1 in @unlisted_kinds)) do
+      raise ArgumentError,
+            "#{inspect(module)} lists `#{kind}` in `index_families/0`: a framework kind is " <>
+              "never a digest, and a tag index kind is in no family"
     end
   end
 
@@ -627,6 +719,45 @@ defmodule Decree.Decision do
                 "`false` or `[types: types]`, a non-empty list of non-empty strings"
     end
   end
+
+  @doc false
+  def __activation__!(module, opts) do
+    case Keyword.fetch(opts, :activation) do
+      :error ->
+        nil
+
+      {:ok, activation} ->
+        activation_item!(module, activation)
+    end
+  end
+
+  defp activation_item!(module, activation) do
+    cond do
+      Keyword.keyword?(activation) and Keyword.has_key?(activation, :replay) ->
+        raise ArgumentError,
+              "#{inspect(module)} has `replay:` in `activation:`: an activation is found, " <>
+                "never replayed"
+
+      match?([types: _types, tags: _tags], activation) and types?(activation[:types]) and
+          tags?(activation[:tags]) ->
+        activation
+
+      true ->
+        raise ArgumentError,
+              "#{inspect(module)} has an invalid `activation`: #{inspect(activation)}, " <>
+                "expected `[types: types, tags: tags]`, each a non-empty list of non-empty " <>
+                "strings, the tags no longer than a tag may be"
+    end
+  end
+
+  defp tags?([_tag | _tags] = tags) do
+    not List.improper?(tags) and
+      Enum.all?(tags, fn tag ->
+        EventData.valid_tag?(tag) and tag != "" and byte_size(tag) <= EventData.max_tag_bytes()
+      end)
+  end
+
+  defp tags?(_tags), do: false
 
   defp types?([_type | _types] = types) do
     not List.improper?(types) and Enum.all?(types, &(is_binary(&1) and &1 != ""))

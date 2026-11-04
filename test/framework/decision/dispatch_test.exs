@@ -43,6 +43,13 @@ defmodule Decree.Decision.DispatchTest do
 
   defp data(recorded), do: Enum.map(recorded, & &1.data)
 
+  # The command item and the index item, by their indexes in a read's items.
+  defp framework_indexes(items) do
+    for {item, index} <- Enum.with_index(items),
+        match?([tags: ["command:" <> _]], item) or item == Decree.Decision.Read.index_item(),
+        do: index
+  end
+
   describe "a dispatch" do
     test "appends what `decide` answers on the route's stream" do
       command = claim()
@@ -599,7 +606,7 @@ defmodule Decree.Decision.DispatchTest do
 
   describe "step 7, a command match" do
     test "that is not this command's refuses, whatever `decide` would say" do
-      attach_telemetry([@append, @read_tags])
+      attach_telemetry([@append, @read_query, @read_tags])
 
       test = self()
 
@@ -612,13 +619,16 @@ defmodule Decree.Decision.DispatchTest do
           end
         )
 
-      position = seed(%Released{scope: "x"}, ["command:" <> command.command_id])
+      seed(%Released{scope: "x"}, ["command:" <> command.command_id])
 
       assert {:error, :reused_command_id} = App.dispatch(command)
 
       refute_received :decided
       refute_received {:telemetry, @append, _, _}
-      assert_received {:telemetry, @read_tags, _, %{positions: [^position]}}
+      # The read answers its tags with the facts', and nothing reads them again.
+      assert_received {:telemetry, @read_query, _, %{items: items, opts: opts}}
+      assert Keyword.fetch!(opts, :tag_items) == framework_indexes(items)
+      refute_received {:telemetry, @read_tags, _, _}
     end
 
     test "a resend of a command that landed is a duplicate" do
@@ -629,12 +639,14 @@ defmodule Decree.Decision.DispatchTest do
       assert [_one] = stored("claim-" <> command.claim_id)
     end
 
-    test "no match reads no tags" do
-      attach_telemetry([@read_tags])
+    test "the read asks for the framework items' tags, and no other statement reads a tag" do
+      attach_telemetry([@read_query, @read_tags])
 
       assert :ok = App.dispatch(scripted())
 
-      assert_received {:telemetry, @read_tags, _, %{positions: []}}
+      assert_received {:telemetry, @read_query, _, %{items: items, opts: opts}}
+      assert Keyword.fetch!(opts, :tag_items) == framework_indexes(items)
+      refute_received {:telemetry, @read_tags, _, _}
     end
   end
 
@@ -831,14 +843,14 @@ defmodule Decree.Decision.DispatchTest do
 
     defp items(count), do: Enum.map(1..count, &claimed_item("item-#{&1}"))
 
-    test "15 own items and the command item pass" do
-      command = scripted(query: fn _c, _t -> items(15) end)
+    test "14 own items, the command item and the index item pass" do
+      command = scripted(query: fn _c, _t -> items(14) end)
 
       assert :ok = App.dispatch(command)
     end
 
-    test "16 own items and the command item refuse with no statement" do
-      command = scripted(query: fn _c, _t -> items(16) end)
+    test "15 own items, the command item and the index item refuse with no statement" do
+      command = scripted(query: fn _c, _t -> items(15) end)
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
@@ -848,16 +860,16 @@ defmodule Decree.Decision.DispatchTest do
                        %{bound: :items}}
     end
 
-    test "counts across both reads, the command item once" do
+    test "counts across both reads, the framework's items once" do
       command =
-        scripted(query: fn _c, _t -> items(8) end, followup: fn _c, _t, _e -> items(7) end)
+        scripted(query: fn _c, _t -> items(8) end, followup: fn _c, _t, _e -> items(6) end)
 
       assert :ok = App.dispatch(command)
     end
 
     test "over it across both reads, sends no second read" do
       command =
-        scripted(query: fn _c, _t -> items(8) end, followup: fn _c, _t, _e -> items(8) end)
+        scripted(query: fn _c, _t -> items(8) end, followup: fn _c, _t, _e -> items(7) end)
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
@@ -883,14 +895,14 @@ defmodule Decree.Decision.DispatchTest do
       Enum.map(from..(from + count - 1), &"Elixir.Type#{&1}")
     end
 
-    test "one item of 47 types and the command item pass" do
-      command = scripted(query: fn _c, _t -> [[types: types(47)]] end)
+    test "one item of 46 types, the command item and the index item pass" do
+      command = scripted(query: fn _c, _t -> [[types: types(46)]] end)
 
       assert :ok = App.dispatch(command)
     end
 
-    test "one item of 48 types and the command item refuse with no statement" do
-      command = scripted(query: fn _c, _t -> [[types: types(48)]] end)
+    test "one item of 47 types, the command item and the index item refuse with no statement" do
+      command = scripted(query: fn _c, _t -> [[types: types(47)]] end)
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
@@ -907,15 +919,15 @@ defmodule Decree.Decision.DispatchTest do
 
       refute_received {:telemetry, @read_query, _, _}
 
-      assert_received {:telemetry, [:decree, :decision, :refused], %{value: 100_001, limit: 48},
+      assert_received {:telemetry, [:decree, :decision, :refused], %{value: 100_002, limit: 48},
                        %{bound: :probes}}
     end
 
-    test "counts across both reads, the command item once" do
+    test "counts across both reads, the framework's items once" do
       command =
         scripted(
           query: fn _c, _t -> [[types: types(24)]] end,
-          followup: fn _c, _t, _e -> [[types: types(23, 25)]] end
+          followup: fn _c, _t, _e -> [[types: types(22, 25)]] end
         )
 
       assert :ok = App.dispatch(command)
@@ -925,7 +937,7 @@ defmodule Decree.Decision.DispatchTest do
       command =
         scripted(
           query: fn _c, _t -> [[types: types(24)]] end,
-          followup: fn _c, _t, _e -> [[types: types(24, 25)]] end
+          followup: fn _c, _t, _e -> [[types: types(23, 25)]] end
         )
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
@@ -1010,7 +1022,9 @@ defmodule Decree.Decision.DispatchTest do
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
-      assert_received {:telemetry, [:decree, :decision, :refused], %{value: 4, limit: 3},
+      value = 4 + fact_count()
+
+      assert_received {:telemetry, [:decree, :decision, :refused], %{value: ^value, limit: 12},
                        %{bound: :events}}
     end
 
@@ -1069,8 +1083,10 @@ defmodule Decree.Decision.DispatchTest do
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
+      matched = 4 + fact_count()
+
       assert_received {:telemetry, [:decree, :decision, :read],
-                       %{matched_events: 4, fold_time: 0}, %{attempt: 1}}
+                       %{matched_events: ^matched, fold_time: 0}, %{attempt: 1}}
     end
   end
 
@@ -1138,7 +1154,7 @@ defmodule Decree.Decision.DispatchTest do
       assert [event] = positioned(stream_uuid)
 
       assert result.aggregate_uuid == stream_uuid
-      assert result.position == 2
+      assert result.position == 2 + fact_count()
       assert result.position == event.event_number
       assert result.stream_versions == %{stream_uuid => event.stream_version}
       assert result.aggregate_version == event.stream_version

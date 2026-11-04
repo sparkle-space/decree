@@ -51,6 +51,8 @@ defmodule Decree.Store.Storage.QueryPlanTest do
 
         assert_no_seq_scan(plan, ["event_tags", "event_types", "stream_events"])
         assert_live_event_check(plan)
+        # The tags of the hits the tag items matched, reached by position.
+        assert_index_on(plan, "ix_event_tags_position", ~s("position"))
 
         for {index, column} <- indexes do
           assert_index_on(plan, index, column)
@@ -62,7 +64,7 @@ defmodule Decree.Store.Storage.QueryPlanTest do
       query = compile([[tags: ["tag-1"]]])
 
       assert {:ok, %ReadResult{events: events, after: @positions}} =
-               Storage.read_query(conn, query, :forward, 0, 5, nil, schema: schema)
+               Storage.read_query(conn, query, :forward, 0, 5, nil, [], schema: schema)
 
       assert length(events) == 5
     end
@@ -280,7 +282,10 @@ defmodule Decree.Store.Storage.QueryPlanTest do
       query.rest_tags,
       bound,
       @count,
-      "tag-1"
+      "tag-1",
+      [0],
+      [],
+      []
     ]
 
     %Postgrex.Result{rows: [[[%{"Plan" => plan}]]]} =

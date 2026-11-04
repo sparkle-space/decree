@@ -16,6 +16,10 @@ defmodule Decree.Store.ReadResult do
       tag's row carries no stamp, which is not the same as having no row.
     - `matched_items` - `%{position => indexes}`, the sorted 0-based indexes of the
       items that matched each event.
+    - `tags` - `%{position => tags}` for each match one of the read's `tag_items` matched,
+      its tags sorted bytewise, from the same snapshot as the rest. It leaves out what
+      `c:Decree.Store.read_tags/2` leaves out, so a position with no tag left, or one no
+      `tag_items` item matched, has no entry. `%{}` when the read names no `tag_items`.
 
   """
 
@@ -28,8 +32,9 @@ defmodule Decree.Store.ReadResult do
           after: non_neg_integer(),
           read_at: DateTime.t(),
           command_stamps: %{position() => DateTime.t() | nil},
-          matched_items: %{position() => [non_neg_integer()]}
+          matched_items: %{position() => [non_neg_integer()]},
+          tags: %{position() => [String.t()]}
         }
 
-  defstruct [:events, :after, :read_at, :command_stamps, :matched_items]
+  defstruct [:events, :after, :read_at, :command_stamps, :matched_items, tags: %{}]
 end

@@ -2,6 +2,7 @@ defmodule Decree.Decision.RuleConformanceTest do
   use Decree.RuleCase
 
   alias Decree.FrameworkStorage
+  alias Decree.RuleFixtures.DigestChecked
   alias Decree.Store.{Config, EventData, LockSession}
 
   @read [:decree, :decision, :read]
@@ -106,13 +107,13 @@ defmodule Decree.Decision.RuleConformanceTest do
       assert [%{data: %Registered{}}] = stored(user_stream(command), App)
     end
 
-    test "CC-3: on an empty store `after` is what the read said" do
+    test "CC-3: on a store holding nothing but the facts `after` is what the read said" do
       Process.register(self(), :rule_recorder)
 
       assert :ok = App.dispatch(register(digest()))
 
       assert_received {:append_to_stream, _stream, 0, 1, _opts} = append
-      assert after_of(append) == 0
+      assert after_of(append) == fact_count()
     end
 
     test "CC-3: a released address registers again, which `after: 0` would fail for ever" do
@@ -252,6 +253,145 @@ defmodule Decree.Decision.RuleConformanceTest do
       assert [{%{attempt: 1}, %{reason: :append_condition_failed}}] = received(@retry)
 
       assert [_one] = stored(user_stream(first), App) ++ stored(user_stream(second), App)
+    end
+  end
+
+  describe "the tag index" do
+    defp noting(test, label) do
+      fn %RuledAggregate{}, %{id: id} ->
+        hold(test, label)
+        %Noted{id: id, note: "held"}
+      end
+    end
+
+    defp digest_checked(tag) do
+      item = [types: [Atom.to_string(Read)], tags: [tag]]
+
+      ruled([query: fn _command, _context -> [item] end], DigestChecked)
+    end
+
+    test "CC-5: an unavailable digest key: `query/2` answers an error, nothing stored" do
+      Process.register(self(), :rule_recorder)
+
+      command = ruled(query: fn _command, _context -> {:error, :digest_key_unavailable} end)
+
+      assert {:error, :digest_key_unavailable} = App.dispatch(command)
+
+      refute_received {:read_query, _items, _opts}
+      assert stored(ruled_stream(command), App) == []
+    end
+
+    test "CC-6: a disable between the read and the append fails the condition, the retry refuses" do
+      test = self()
+      command = ruled(execute: noting(test, :executing))
+
+      task = dispatch_async(command)
+
+      assert_receive {:executing, pid}
+      disable_index!("entity")
+      send(pid, :go)
+
+      assert {:error, :tag_index_not_enabled} = Task.await(task, :infinity)
+
+      assert [{%{attempt: 1}, %{reason: :append_condition_failed}}] = received(@retry)
+      assert stored(ruled_stream(command), App) == []
+    end
+
+    test "CC-6: a disable between the two reads fails the same way" do
+      test = self()
+      held = make_ref()
+
+      # Held on the first attempt only: the retry reads the disable and refuses at step 3.
+      followup = fn command, _context, _events ->
+        if not Process.get(held, false) do
+          Process.put(held, true)
+          hold(test, :between_reads)
+        end
+
+        [[types: [Atom.to_string(Read)], tags: ["scope:" <> command.scope]]]
+      end
+
+      command = ruled(followup: followup)
+      task = dispatch_async(command)
+
+      assert_receive {:between_reads, pid}
+      disable_index!("entity")
+      send(pid, :go)
+
+      assert {:error, :tag_index_not_enabled} = Task.await(task, :infinity)
+
+      assert [{%{attempt: 1}, %{reason: :append_condition_failed}}] = received(@retry)
+      assert stored(ruled_stream(command), App) == []
+    end
+
+    test "CC-9: a repair of a family with no key refuses between, and appends after" do
+      disable_index!("entity")
+
+      between = ruled()
+      assert {:error, :tag_index_not_enabled} = App.dispatch(between)
+      assert stored(ruled_stream(between), App) == []
+
+      enable_index!("entity")
+
+      after_repair = ruled()
+      assert :ok = App.dispatch(after_repair)
+      assert [_one] = stored(ruled_stream(after_repair), App)
+    end
+
+    test "CC-12: enable, retire, enable again refuses, and its dispatches refuse throughout" do
+      fingerprint = TagIndexFixtures.fingerprint()
+      tag = TagIndexFixtures.digest_tag("email", "d")
+
+      assert :ok = App.dispatch(digest_checked(tag))
+
+      disable_index!("email", fingerprint, "key_retired")
+      assert {:error, :tag_index_not_enabled} = App.dispatch(digest_checked(tag))
+
+      assert {:error, :tag_index_key_retired} =
+               App.dispatch(TagIndexFixtures.enable_command([{"email", fingerprint}]))
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(digest_checked(tag))
+    end
+
+    test "CC-12: retired while a repair holds it disabled, it is never enabled again" do
+      fingerprint = TagIndexFixtures.fingerprint()
+      tag = TagIndexFixtures.digest_tag("email", "d")
+
+      assert :ok = App.dispatch(digest_checked(tag))
+
+      index_id = disable_index!("email", fingerprint, "repair")
+      assert {:error, :tag_index_not_enabled} = App.dispatch(digest_checked(tag))
+
+      assert :ok = App.dispatch(TagIndexFixtures.disable_command(index_id, "key_retired"))
+      assert {:error, :tag_index_not_enabled} = App.dispatch(digest_checked(tag))
+
+      assert {:error, :tag_index_key_retired} =
+               App.dispatch(TagIndexFixtures.enable_command([{"email", fingerprint}]))
+
+      # A restored key: the same material, so the same fingerprint, meets the retirement.
+      restored = Decree.Store.TagIndex.fingerprint(TagIndexFixtures.key())
+
+      assert {:error, :tag_index_not_enabled} =
+               App.dispatch(digest_checked("email:" <> restored <> ":d"))
+    end
+
+    test "CC-14: a disabled `command` family leaves a rule route appending, having no command item" do
+      disable_index!("command")
+
+      command = ruled()
+
+      assert :ok = App.dispatch(command)
+      assert [_one] = stored(ruled_stream(command), App)
+      assert :ok = App.dispatch(register(digest()))
+    end
+
+    test "CC-14: a disabled `entity` family refuses a rule whose items carry an entity tag" do
+      disable_index!("entity")
+
+      command = ruled()
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored(ruled_stream(command), App) == []
     end
   end
 

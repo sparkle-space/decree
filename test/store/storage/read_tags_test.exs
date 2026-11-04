@@ -190,6 +190,73 @@ defmodule Decree.Store.Storage.ReadTagsTest do
     end
   end
 
+  # A read's `tags` leave out what this read leaves out, in the read's own statement.
+  describe "a read's `tags`" do
+    test "leave out a deletable kind, as `read_tags` does" do
+      :ok =
+        EventStore.append_to_stream("stream", 0, [
+          event(["content_ref:abc", "command:c1", "user:7"]),
+          event(["content_ref:def"]),
+          event(["user:7"])
+        ])
+
+      assert {:ok, %ReadResult{events: [_, _], tags: tags}} =
+               EventStore.read_query([[tags: ["user:7"]]], tag_items: [0])
+
+      assert tags == %{1 => ["command:c1", "user:7"], 3 => ["user:7"]}
+      assert EventStore.read_tags([1, 3]) == {:ok, tags}
+    end
+
+    test "leave out a position whose every tag is of a deletable kind" do
+      :ok =
+        EventStore.append_to_stream("stream", 0, [
+          event("typed", ["content_ref:abc"]),
+          event("typed", ["user:7"])
+        ])
+
+      assert {:ok, %ReadResult{events: [_, _], tags: tags}} =
+               EventStore.read_query([[types: ["typed"]]], tag_items: [0])
+
+      assert tags == %{2 => ["user:7"]}
+      assert EventStore.read_tags([1, 2]) == {:ok, tags}
+    end
+
+    test "leave out every tag of an event of a deletable type, at a `command:` match" do
+      :ok =
+        EventStore.append_to_stream("XPost-1", 0, [event("captured", @tags)])
+
+      :ok = EventStore.append_to_stream("stream", 0, [event("typed", @tags)])
+
+      assert {:ok, %ReadResult{events: [%{event_number: 1}, %{event_number: 2}], tags: tags}} =
+               EventStore.read_query([[tags: ["command:c1"]]],
+                 command_tag: "command:c1",
+                 tag_items: [0]
+               )
+
+      assert tags == %{2 => @tags}
+      assert EventStore.read_tags([1, 2]) == {:ok, tags}
+    end
+
+    test "are answered on a store that declares no type and no kind" do
+      :ok =
+        EventStore.append_to_stream("stream", 0, [
+          event("captured", ["content_ref:abc" | @tags])
+        ])
+
+      start_supervised!(
+        {TestEventStore, name: :undeclared_store, serializer: PassThroughSerializer}
+      )
+
+      assert {:ok, %ReadResult{tags: tags}} =
+               EventStore.read_query([[tags: ["command:c1"]]],
+                 tag_items: [0],
+                 name: :undeclared_store
+               )
+
+      assert tags == %{1 => ["command:c1", "content_ref:abc", "tenant:t1"]}
+    end
+  end
+
   describe "what a read sends" do
     test "`[]` sends no statement" do
       assert EventStore.read_tags([], conn: @no_conn) == {:ok, %{}}

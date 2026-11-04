@@ -145,11 +145,14 @@ defmodule Decree.Decision.TelemetryTest do
 
       assert :ok = App.dispatch(scripted(scope: scope))
 
+      # The index item is one item and one probe, and its facts are matched events.
+      matched = 2 + fact_count()
+
       assert_received {:telemetry, @read,
                        %{
-                         items: 2,
-                         probes: 2,
-                         matched_events: 2,
+                         items: 3,
+                         probes: 3,
+                         matched_events: ^matched,
                          read_time: read_time,
                          fold_time: fold_time
                        }, %{application: App, decision: ScriptedDecision, attempt: 1}}
@@ -168,10 +171,13 @@ defmodule Decree.Decision.TelemetryTest do
 
       assert :ok = App.dispatch(scripted(scope: scope, followup: fn _c, _t, _e -> [released] end))
 
-      assert_received {:telemetry, @read, %{items: 3, probes: 3, matched_events: 1}, _metadata}
+      matched = 1 + fact_count()
+
+      assert_received {:telemetry, @read, %{items: 4, probes: 4, matched_events: ^matched},
+                       _metadata}
     end
 
-    test "counts an item's types as probes, the command item's included" do
+    test "counts an item's types as probes, the framework's included" do
       scope = scope()
       types = [Atom.to_string(Claimed), Atom.to_string(Released), "Elixir.Other"]
 
@@ -183,7 +189,7 @@ defmodule Decree.Decision.TelemetryTest do
                  scripted(scope: scope, query: first, followup: fn _, _, _ -> [released] end)
                )
 
-      assert_received {:telemetry, @read, %{items: 3, probes: 6}, _metadata}
+      assert_received {:telemetry, @read, %{items: 4, probes: 7}, _metadata}
     end
 
     test "numbers the attempt" do
@@ -198,7 +204,9 @@ defmodule Decree.Decision.TelemetryTest do
       assert :ok = App.dispatch(scripted(decide: decide))
 
       assert_received {:telemetry, @read, _, %{attempt: 1}}
-      assert_received {:telemetry, @read, %{matched_events: 1}, %{attempt: 2}}
+      matched = 1 + fact_count()
+
+      assert_received {:telemetry, @read, %{matched_events: ^matched}, %{attempt: 2}}
     end
   end
 
@@ -212,14 +220,14 @@ defmodule Decree.Decision.TelemetryTest do
         end)
 
       assert log =~ "refused on the items bound"
-      assert log =~ "4 over 3"
+      assert log =~ "5 over 4"
 
-      assert_received {:telemetry, @refused, %{value: 4, limit: 3},
+      assert_received {:telemetry, @refused, %{value: 5, limit: 4},
                        %{application: App, decision: TightDecision, bound: :items}}
     end
 
     test "names the probes bound, as an alarm" do
-      types = Enum.map(1..48, &"Elixir.Type#{&1}")
+      types = Enum.map(1..47, &"Elixir.Type#{&1}")
       command = scripted(query: fn _c, _t -> [[types: types]] end)
 
       log =

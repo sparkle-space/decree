@@ -47,6 +47,9 @@ defmodule Decree.Decision.RequiredTagsTest do
 
   @not_lists [nil, :address, %{}]
 
+  # The fixture key's fingerprint, which a digest tag carries ahead of its digest.
+  @fp Decree.TagIndexFixtures.fingerprint()
+
   setup do
     start_supervised!(Keys)
     Keys.sink()
@@ -269,18 +272,11 @@ defmodule Decree.Decision.RequiredTagsTest do
 
       test = self()
 
-      stub(MockEventStore, :read_query, fn _meta, _items, _opts ->
-        {:ok,
-         %ReadResult{
-           events: [],
-           after: 0,
-           read_at: DateTime.utc_now(),
-           command_stamps: %{},
-           matched_items: %{}
-         }}
+      # Nothing but the facts that enable every family, their tags in the read. No `read_tags`
+      # is stubbed, so a dispatch sending one fails.
+      stub(MockEventStore, :read_query, fn _meta, items, opts ->
+        {:ok, Decree.TagIndexFixtures.mocked_read(items, opts)}
       end)
-
-      stub(MockEventStore, :read_tags, fn _meta, _positions, _opts -> {:ok, %{}} end)
 
       stub(MockEventStore, :append_to_streams, fn _meta, appends, _opts ->
         send(test, {:appended, appends})
@@ -415,10 +411,17 @@ defmodule Decree.Decision.RequiredTagsTest do
   end
 
   describe "F7" do
+    # `label` is `Indexed`'s own family.
+    setup do
+      enable_index!("label")
+      :ok
+    end
+
     defp digested(tags), do: %Digested{tags: tags}
 
     test "an equal digest passes" do
-      command = deciding(Indexed, [item(@digested, ["email:a"])], digested(["email:a"]))
+      command =
+        deciding(Indexed, [item(@digested, ["email:#{@fp}:a"])], digested(["email:#{@fp}:a"]))
 
       assert :ok = DecisionApp.dispatch(command)
       assert [%RecordedEvent{}] = stored_decided(command)
@@ -427,7 +430,8 @@ defmodule Decree.Decision.RequiredTagsTest do
     test "an unequal digest refuses with no retry, and stores nothing" do
       attach_telemetry([[:decree, :decision, :retry]])
 
-      command = deciding(Indexed, [item(@digested, ["email:a"])], digested(["email:b"]))
+      command =
+        deciding(Indexed, [item(@digested, ["email:#{@fp}:a"])], digested(["email:#{@fp}:b"]))
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
       assert stored_decided(command) == []
@@ -435,49 +439,49 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
 
     test "a digest on the batch side alone refuses" do
-      command = deciding(Indexed, read_nothing(), digested(["email:a"]))
+      command = deciding(Indexed, read_nothing(), digested(["email:#{@fp}:a"]))
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
     end
 
     test "a digest on the batch side passes only for all of the batch" do
-      decided = [digested(["email:a"]), digested(["email:b"])]
-      command = deciding(Indexed, [item(@digested, ["email:a"])], decided)
+      decided = [digested(["email:#{@fp}:a"]), digested(["email:#{@fp}:b"])]
+      command = deciding(Indexed, [item(@digested, ["email:#{@fp}:a"])], decided)
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
     end
 
     test "an empty batch side passes" do
-      command = deciding(Indexed, [item(@digested, ["email:a"])], digested([]))
+      command = deciding(Indexed, [item(@digested, ["email:#{@fp}:a"])], digested([]))
 
       assert :ok = DecisionApp.dispatch(command)
     end
 
     test "two digests of a kind, on both sides, pass" do
-      items = [item(@digested, ["email:old"]), item(@digested, ["email:new"])]
-      command = deciding(Indexed, items, digested(["email:new", "email:old"]))
+      items = [item(@digested, ["email:#{@fp}:old"]), item(@digested, ["email:#{@fp}:new"])]
+      command = deciding(Indexed, items, digested(["email:#{@fp}:new", "email:#{@fp}:old"]))
 
       assert :ok = DecisionApp.dispatch(command)
     end
 
     test "two digests on the items and one on the batch refuse" do
-      items = [item(@digested, ["email:old"]), item(@digested, ["email:new"])]
-      command = deciding(Indexed, items, digested(["email:new"]))
+      items = [item(@digested, ["email:#{@fp}:old"]), item(@digested, ["email:#{@fp}:new"])]
+      command = deciding(Indexed, items, digested(["email:#{@fp}:new"]))
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
     end
 
     test "a second read's digest item counts" do
-      followup = fn _command, _context, _events -> [item(@digested, ["email:b"])] end
+      followup = fn _command, _context, _events -> [item(@digested, ["email:#{@fp}:b"])] end
 
       for {batch, answer} <- [
-            {["email:a", "email:b"], :ok},
-            {["email:a"], {:error, :digest_tag_mismatch}}
+            {["email:#{@fp}:a", "email:#{@fp}:b"], :ok},
+            {["email:#{@fp}:a"], {:error, :digest_tag_mismatch}}
           ] do
         command =
           scripted(
             [
-              query: fn _command, _context -> [item(@digested, ["email:a"])] end,
+              query: fn _command, _context -> [item(@digested, ["email:#{@fp}:a"])] end,
               followup: followup,
               decide: fn _state, _command -> digested(batch) end
             ],
@@ -489,21 +493,21 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
 
     test "the items count whatever type they name" do
-      items = [item(@addressed, ["address:never"]), item(@unopted, ["email:a"])]
-      command = deciding(Indexed, items, digested(["email:a"]))
+      items = [item(@addressed, ["address:never"]), item(@unopted, ["email:#{@fp}:a"])]
+      command = deciding(Indexed, items, digested(["email:#{@fp}:a"]))
 
       assert :ok = DecisionApp.dispatch(command)
     end
 
     test "a batch digest across two members is one set" do
       second = UUID.uuid4()
-      items = [item(@digested, ["email:a"]), item(@digested, ["email:b"])]
+      items = [item(@digested, ["email:#{@fp}:a"]), item(@digested, ["email:#{@fp}:b"])]
 
       decide = fn _state, %{claim_id: route} ->
         {:streams,
          [
-           {:claim, route, digested(["email:a"])},
-           {:claim, second, digested(["email:b"])}
+           {:claim, route, digested(["email:#{@fp}:a"])},
+           {:claim, second, digested(["email:#{@fp}:b"])}
          ]}
       end
 
@@ -517,34 +521,35 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
 
     test "a decision with no `index_families/0` compares nothing" do
-      command = deciding(Unindexed, [item(@digested, ["email:a"])], digested(["email:b"]))
+      command =
+        deciding(Unindexed, [item(@digested, ["email:#{@fp}:a"])], digested(["email:#{@fp}:b"]))
 
       assert :ok = DecisionApp.dispatch(command)
     end
 
     test "a decision whose `index_families/0` a later `use` injects compares it" do
-      items = [item(@digested, ["email:a"])]
+      items = [item(@digested, ["email:#{@fp}:a"])]
 
-      command = deciding(Injected, items, digested(["email:b"]))
+      command = deciding(Injected, items, digested(["email:#{@fp}:b"]))
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
       assert stored("injected-" <> command.claim_id, DecisionApp) == []
 
-      command = deciding(Injected, items, digested(["email:a"]))
+      command = deciding(Injected, items, digested(["email:#{@fp}:a"]))
 
       assert :ok = DecisionApp.dispatch(command)
       assert [%RecordedEvent{}] = stored("injected-" <> command.claim_id, DecisionApp)
     end
 
     test "a tag that is no string is the store's to refuse" do
-      command = deciding(Indexed, [item(@digested, ["email:a"])], digested([1]))
+      command = deciding(Indexed, [item(@digested, ["email:#{@fp}:a"])], digested([1]))
 
       assert {:error, :invalid_tag} = DecisionApp.dispatch(command)
     end
 
     test "comes before the required kinds" do
-      items = [item(@unopted, ["scope:s", "email:a"])]
-      command = deciding(Indexed, items, %Unopted{tags: ["email:b"]})
+      items = [item(@unopted, ["scope:s", "email:#{@fp}:a"])]
+      command = deciding(Indexed, items, %Unopted{tags: ["email:#{@fp}:b"]})
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
     end
@@ -553,8 +558,8 @@ defmodule Decree.Decision.RequiredTagsTest do
       command =
         scripted(
           [
-            query: fn _command, _context -> [item(@digested, ["email:a"])] end,
-            scope_tags: fn _command -> ["email:a"] end,
+            query: fn _command, _context -> [item(@digested, ["email:#{@fp}:a"])] end,
+            scope_tags: fn _command -> ["email:#{@fp}:a"] end,
             decide: fn _state, _command -> digested([]) end
           ],
           Indexed
@@ -569,28 +574,35 @@ defmodule Decree.Decision.RequiredTagsTest do
     defp items_of(type, tags), do: Enum.map(tags, &item(type, [&1]))
 
     test "two families, each matching its items, pass" do
-      items = items_of(@two_digested, ["email:a", "oauth_uid:u"])
-      command = deciding(TwoFamilies, items, two_digested(["email:a", "oauth_uid:u"]))
+      items = items_of(@two_digested, ["email:#{@fp}:a", "oauth_uid:#{@fp}:u"])
+
+      command =
+        deciding(TwoFamilies, items, two_digested(["email:#{@fp}:a", "oauth_uid:#{@fp}:u"]))
 
       assert :ok = DecisionApp.dispatch(command)
       assert [%RecordedEvent{}] = stored_decided(command)
     end
 
     test "two families on the one item are each compared" do
-      items = [item(@two_digested, ["email:a", "oauth_uid:u"])]
-      command = deciding(TwoFamilies, items, two_digested(["email:a", "oauth_uid:u"]))
+      items = [item(@two_digested, ["email:#{@fp}:a", "oauth_uid:#{@fp}:u"])]
+
+      command =
+        deciding(TwoFamilies, items, two_digested(["email:#{@fp}:a", "oauth_uid:#{@fp}:u"]))
 
       assert :ok = DecisionApp.dispatch(command)
 
-      command = deciding(TwoFamilies, items, two_digested(["email:a", "oauth_uid:v"]))
+      command =
+        deciding(TwoFamilies, items, two_digested(["email:#{@fp}:a", "oauth_uid:#{@fp}:v"]))
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
       assert stored_decided(command) == []
     end
 
     test "a digest answering for the other family's refuses" do
-      items = items_of(@two_digested, ["email:a", "oauth_uid:b"])
-      command = deciding(TwoFamilies, items, two_digested(["email:b", "oauth_uid:a"]))
+      items = items_of(@two_digested, ["email:#{@fp}:a", "oauth_uid:#{@fp}:b"])
+
+      command =
+        deciding(TwoFamilies, items, two_digested(["email:#{@fp}:b", "oauth_uid:#{@fp}:a"]))
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
       assert stored_decided(command) == []
@@ -598,8 +610,8 @@ defmodule Decree.Decision.RequiredTagsTest do
 
     for {kind, other} <- [{"email", "oauth_uid"}, {"oauth_uid", "email"}] do
       test "#{kind} differing with #{other} matching refuses, and stores nothing" do
-        kind = unquote(kind) <> ":"
-        other = unquote(other) <> ":"
+        kind = unquote(kind) <> ":" <> @fp <> ":"
+        other = unquote(other) <> ":" <> @fp <> ":"
         items = items_of(@two_digested, [kind <> "a", other <> "o"])
         command = deciding(TwoFamilies, items, two_digested([kind <> "b", other <> "o"]))
 
@@ -608,8 +620,8 @@ defmodule Decree.Decision.RequiredTagsTest do
       end
 
       test "#{kind} off the batch with #{other} matching is F7's empty side, and passes" do
-        kind = unquote(kind) <> ":"
-        other = unquote(other) <> ":"
+        kind = unquote(kind) <> ":" <> @fp <> ":"
+        other = unquote(other) <> ":" <> @fp <> ":"
         items = items_of(@two_digested, [kind <> "a", other <> "o"])
         command = deciding(TwoFamilies, items, two_digested([other <> "o"]))
 
@@ -629,8 +641,8 @@ defmodule Decree.Decision.RequiredTagsTest do
       end
 
       test "#{kind} on the batch with no item, #{other} matching, refuses" do
-        kind = unquote(kind) <> ":"
-        other = unquote(other) <> ":"
+        kind = unquote(kind) <> ":" <> @fp <> ":"
+        other = unquote(other) <> ":" <> @fp <> ":"
         items = items_of(@two_digested, [other <> "o"])
         command = deciding(TwoFamilies, items, two_digested([kind <> "a", other <> "o"]))
 
@@ -689,24 +701,20 @@ defmodule Decree.Decision.RequiredTagsTest do
       assert [%RecordedEvent{data: %Digested{}}] = stored("creating-" <> other, DecisionApp)
     end
 
-    test "F7 still reads it" do
-      # With the item gone from F7's side, the batch's tag has nothing to equal.
-      command = deciding(KeyedCreate, [], %Unopted{})
+    test "of a route kind listed `:digest` refuses at step 3, before `decide/2`" do
+      # F7's fact-item read is unreachable on a store dispatch here: step 3 refuses it first.
+      test = self()
 
-      assert :ok = DecisionApp.dispatch(command)
-      assert [%RecordedEvent{}] = stored_decided(command)
+      command =
+        deciding(KeyedCreate, [], fn _state, _command ->
+          send(test, :decided)
+          %Unopted{}
+        end)
 
-      other = UUID.uuid4()
+      assert {:error, :tag_index_not_enabled} = DecisionApp.dispatch(command)
 
-      decide = fn _state, %{claim_id: route} ->
-        {:streams, [{:claim, route, %Unopted{}}, {:claim, other, %Unopted{}}]}
-      end
-
-      command = deciding(KeyedCreate, [], decide)
-
-      assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
+      refute_received :decided
       assert stored_decided(command) == []
-      assert stored("keyed-" <> other, DecisionApp) == []
     end
   end
 
@@ -739,14 +747,16 @@ defmodule Decree.Decision.RequiredTagsTest do
     end
 
     test "has its digest kind compared by F7" do
-      query = replay_query(@digested, ["email:a"])
+      query = replay_query(@digested, ["email:#{@fp}:a"])
 
-      command = scripted([query: query, decide: fn _s, _c -> digested(["email:a"]) end], Indexed)
+      command =
+        scripted([query: query, decide: fn _s, _c -> digested(["email:#{@fp}:a"]) end], Indexed)
 
       assert :ok = DecisionApp.dispatch(command)
       assert [%RecordedEvent{}] = stored_decided(command)
 
-      command = scripted([query: query, decide: fn _s, _c -> digested(["email:b"]) end], Indexed)
+      command =
+        scripted([query: query, decide: fn _s, _c -> digested(["email:#{@fp}:b"]) end], Indexed)
 
       assert {:error, :digest_tag_mismatch} = DecisionApp.dispatch(command)
       assert stored_decided(command) == []

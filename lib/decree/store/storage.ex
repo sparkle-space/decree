@@ -48,9 +48,10 @@ defmodule Decree.Store.Storage do
     as: :read_backward
 
   @doc """
-  Read the events matching a compiled query, in one statement.
+  Read the events matching a compiled query, and the tags of the matches any of `tag_items`
+  matched, in one statement.
   """
-  defdelegate read_query(conn, query, direction, bound, count, command_tag, opts),
+  defdelegate read_query(conn, query, direction, bound, count, command_tag, tag_items, opts),
     to: Reader
 
   @doc """

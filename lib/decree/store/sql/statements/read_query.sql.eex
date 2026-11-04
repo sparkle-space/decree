@@ -1,8 +1,14 @@
 <%!--
   One statement, so one snapshot under READ COMMITTED: the rows, `head` and `read_at` agree.
   It takes no lock and blocks no writer. It must stay one plain statement, never a function
-  or two calls. `$1` to `$5` are the query's arrays, `$6` the bound, `$7` the count and `$8`
-  the command tag.
+  or two calls. `$1` to `$5` are the query's arrays, `$6` the bound, `$7` the count, `$8`
+  the command tag and `$9` the tag items. `$10` and `$11` are the store's deletable tag kinds
+  and event types.
+
+  `hit_tags` answers the tags of each hit a tag item matched, as `read_tags.sql.eex` answers
+  them, its filter and aggregate the same word for word: a deletable kind's tags and every tag
+  of an event of a deletable type are left out, and a position with no row left is absent. An
+  empty `$9` overlaps nothing, so it reads no tag.
 --%>
 WITH head AS MATERIALIZED (
   SELECT stream_version AS position, clock_timestamp() AS read_at
@@ -18,12 +24,21 @@ hits AS (
   ORDER BY hit_rows.position <%= order %>
   LIMIT $7::bigint
 ),
+hit_tags AS (
+  SELECT position, array_agg(tag ORDER BY tag) AS tags
+  FROM "<%= schema %>".event_tags
+  WHERE position IN (SELECT hits.position FROM hits WHERE hits.items && $9::bigint[])
+    AND NOT (split_part(tag, ':', 1) = ANY($10::text[]))
+    AND NOT (event_type = ANY($11::text[]))
+  GROUP BY position
+),
 matches AS (
   SELECT
     hits.position,
     hits.items,
     c.position IS NOT NULL AS command_row_found,
     c.stamped_at,
+    hit_tags.tags,
     e.event_id,
     s.stream_uuid,
     se.original_stream_version,
@@ -39,6 +54,7 @@ matches AS (
   INNER JOIN "<%= schema %>".events e ON e.event_id = se.event_id
   LEFT JOIN "<%= schema %>".event_tags c
     ON c.tag = $8::text COLLATE "C" AND c.position = hits.position
+  LEFT JOIN hit_tags ON hit_tags.position = hits.position
 )
 SELECT
   head.position,
@@ -46,6 +62,7 @@ SELECT
   matches.items,
   matches.command_row_found,
   matches.stamped_at,
+  matches.tags,
   matches.position,
   matches.event_id,
   matches.stream_uuid,

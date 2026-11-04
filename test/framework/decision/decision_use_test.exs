@@ -83,7 +83,7 @@ defmodule Decree.Decision.UseTest do
     end
 
     test "may be lowered with no reason" do
-      assert %{max_items: 3, max_probes: 4, max_events: 3, max_batch_events: 2} =
+      assert %{max_items: 4, max_probes: 5, max_events: 12, max_batch_events: 2} =
                TightDecision.__decision__()
     end
 
@@ -172,6 +172,46 @@ defmodule Decree.Decision.UseTest do
     end
   end
 
+  describe "`activation:`" do
+    test "is optional, and `__decision__/0` holds it or nil" do
+      assert %{activation: nil} = compile("").__decision__()
+
+      assert %{activation: [types: ["Elixir.On"], tags: ["feature:x"]]} =
+               compile(~S|, activation: [types: ["Elixir.On"], tags: ["feature:x"]]|).__decision__()
+    end
+
+    test "refuses anything else" do
+      long = String.duplicate("a", 513)
+
+      for activation <- [
+            "true",
+            "nil",
+            "[]",
+            ~s([types: ["Elixir.On"]]),
+            ~s([tags: ["feature:x"]]),
+            ~s([tags: ["feature:x"], types: ["Elixir.On"]]),
+            ~s([types: [], tags: ["feature:x"]]),
+            ~s([types: [""], tags: ["feature:x"]]),
+            ~s([types: "Elixir.On", tags: ["feature:x"]]),
+            ~s([types: ["Elixir.On"], tags: []]),
+            ~s([types: ["Elixir.On"], tags: [""]]),
+            ~s([types: ["Elixir.On"], tags: [:feature]]),
+            ~s([types: ["Elixir.On"], tags: ["#{long}"]]),
+            ~s([types: ["Elixir.On"], tags: ["feature:x"], scope: ["s"]])
+          ] do
+        assert_raise ArgumentError, ~r/invalid `activation`/, fn ->
+          compile(", activation: #{activation}")
+        end
+      end
+    end
+
+    test "cannot be a replay item" do
+      assert_raise ArgumentError, ~r/`replay:` in `activation:`/, fn ->
+        compile(~S|, activation: [types: ["Elixir.On"], tags: ["feature:x"], replay: true]|)
+      end
+    end
+  end
+
   describe "`command_window_ms/0`" do
     test "is required" do
       assert_raise ArgumentError, ~r/does not define `command_window_ms\/0`/, fn ->
@@ -243,6 +283,17 @@ defmodule Decree.Decision.UseTest do
         body = "def index_families, do: #{unquote(answer)}"
 
         assert_raise ArgumentError, ~r/UseTest\.Fixture\d+ has an invalid `index_families/, fn ->
+          compile("", body)
+        end
+      end
+    end
+
+    for kind <- ~w(command command_kind correlation tag_index tag_index_state),
+        family <- [":digest", ":plain"] do
+      test "fails the build listing `#{kind}` as #{family}" do
+        body = ~s(def index_families, do: %{"#{unquote(kind)}" => #{unquote(family)}})
+
+        assert_raise ArgumentError, ~r/lists `#{unquote(kind)}` in `index_families\/0`/, fn ->
           compile("", body)
         end
       end

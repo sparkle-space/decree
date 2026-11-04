@@ -1,0 +1,21 @@
+<%!--
+  The third of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Whether the
+  stream holds or links an event tagged `tag_index:fact` ($2). Its snapshot starts after the
+  stream's row and the event rows are locked, so it sees every append and link that committed
+  into the stream, and none can land after it. An event's `$all` position is its `$all`
+  `stream_events` row's version, so the tag is found by `(tag, position)`, the primary key.
+--%>
+SELECT 1
+FROM "<%= schema %>".event_tags t
+WHERE t.tag = $2
+  AND t.position IN (
+    SELECT all_link.stream_version
+    FROM "<%= schema %>".stream_events all_link
+    WHERE all_link.stream_id = 0
+      AND all_link.event_id IN (
+        SELECT event_id
+        FROM "<%= schema %>".stream_events
+        WHERE stream_id = $1
+      )
+  )
+LIMIT 1;

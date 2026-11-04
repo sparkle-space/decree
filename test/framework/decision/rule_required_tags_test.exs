@@ -211,7 +211,13 @@ defmodule Decree.Decision.RuleRequiredTagsTest do
   end
 
   describe "a digest" do
-    @digest "digest-that-may-not-be-logged"
+    @digest Decree.TagIndexFixtures.fingerprint() <> ":digest-that-may-not-be-logged"
+
+    # `label` is `DigestRule`'s own family.
+    setup do
+      enable_index!("label")
+      :ok
+    end
 
     defp digested(item_tag, event_tags) do
       item = [types: [Atom.to_string(Digested)], tags: [item_tag]]

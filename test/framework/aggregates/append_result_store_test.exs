@@ -70,6 +70,7 @@ defmodule Decree.Aggregates.AppendResultStoreTest do
       registry: :local
 
     router Router
+    router Decree.TagIndexFixtures.Router
 
     def init(config), do: {:ok, FrameworkStorage.name_event_store(config)}
   end
@@ -78,6 +79,8 @@ defmodule Decree.Aggregates.AppendResultStoreTest do
     FrameworkStorage.reset!()
 
     start_supervised!(App)
+
+    Decree.TagIndexFixtures.enable!(App)
 
     :ok
   end

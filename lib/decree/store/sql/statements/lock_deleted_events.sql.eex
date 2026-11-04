@@ -1,5 +1,5 @@
 <%!--
-  The second of a hard delete's four statements: see `DeleteStream.hard_delete/3`. Takes the
+  The second of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Takes the
   stream's events in the `event_id` order `lock_link_events` takes them in, FOR UPDATE because
   that is what conflicts with a link's KEY SHARE. It is a statement of its own and not a CTE of
   the delete, so the delete's snapshot starts after any wait here. A row a concurrent delete

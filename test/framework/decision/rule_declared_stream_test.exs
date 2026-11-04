@@ -137,7 +137,7 @@ defmodule Decree.Decision.RuleDeclaredStreamTest do
     assert_received {:append_to_stream, "user-" <> _id, 0, 1, opts}
     assert [condition: condition] = opts
     assert condition[:target] == User
-    assert [_part_one] = condition[:items]
+    assert [_part_one, [tags: ["tag_index:fact"]]] = condition[:items]
     assert is_integer(condition[:after])
   end
 end

@@ -106,6 +106,18 @@ defmodule Decree.DecisionFixtures.TagsRaising do
   end
 end
 
+defmodule Decree.DecisionFixtures.Activated do
+  @moduledoc false
+
+  # What switches `ActivatedDecision` on.
+  @derive Jason.Encoder
+  defstruct [:feature]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{feature: feature}, _context), do: {:ok, ["feature:" <> feature]}
+  end
+end
+
 defmodule Decree.DecisionFixtures.Claim do
   @moduledoc false
   defstruct [:command_id, :claim_id, :scope]
@@ -122,6 +134,16 @@ defmodule Decree.DecisionFixtures.Tight do
 end
 
 defmodule Decree.DecisionFixtures.Create do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
+defmodule Decree.DecisionFixtures.Activating do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
+defmodule Decree.DecisionFixtures.Digesting do
   @moduledoc false
   defstruct [:command_id, :claim_id, :scope, script: %{}]
 end
@@ -236,11 +258,31 @@ end
 
 defmodule Decree.DecisionFixtures.TightDecision do
   @moduledoc false
+
+  # Three of its own past the framework's: the index item is one item and one probe, and the
+  # store-backed cases' nine facts are nine matched events.
   use Decree.DecisionFixtures.Scripting,
-    max_items: 3,
-    max_probes: 4,
-    max_events: 3,
+    max_items: 4,
+    max_probes: 5,
+    max_events: 12,
     max_batch_events: 2
+end
+
+defmodule Decree.DecisionFixtures.ActivatedDecision do
+  @moduledoc false
+
+  # Off until an `Activated` event for "claims" is there.
+  use Decree.DecisionFixtures.Scripting,
+    activation: [types: ["Elixir.Decree.DecisionFixtures.Activated"], tags: ["feature:claims"]]
+end
+
+defmodule Decree.DecisionFixtures.DigestDecision do
+  @moduledoc false
+
+  # Reads `email` as a digest, so its family is keyed by a fingerprint.
+  use Decree.DecisionFixtures.Scripting
+
+  def index_families, do: %{"email" => :digest}
 end
 
 defmodule Decree.DecisionFixtures.CreateDecision do
@@ -308,11 +350,15 @@ defmodule Decree.DecisionFixtures.Router do
   use Decree.Commands.Router
 
   alias Decree.DecisionFixtures.{
+    ActivatedDecision,
+    Activating,
     ByFunction,
     Claim,
     ClaimDecision,
     Create,
     CreateDecision,
+    DigestDecision,
+    Digesting,
     Scripted,
     ScriptedDecision,
     Tight,
@@ -320,6 +366,14 @@ defmodule Decree.DecisionFixtures.Router do
   }
 
   decide(Claim, to: ClaimDecision, identity: :claim_id, identity_prefix: "claim-")
+
+  decide(Activating,
+    to: ActivatedDecision,
+    identity: :claim_id,
+    identity_prefix: "activating-"
+  )
+
+  decide(Digesting, to: DigestDecision, identity: :claim_id, identity_prefix: "digesting-")
 
   decide(Scripted,
     to: ScriptedDecision,
@@ -511,7 +565,9 @@ defmodule Decree.DecisionFixtures.App do
           "tight-",
           "create-",
           "function-",
-          "parity-decision-"
+          "parity-decision-",
+          "activating-",
+          "digesting-"
         ]
       ]
     ],
@@ -521,6 +577,7 @@ defmodule Decree.DecisionFixtures.App do
   router Decree.DecisionFixtures.Router
   router Decree.DecisionFixtures.ParityRouter
   router Decree.DecisionFixtures.StrayRouter
+  router Decree.TagIndexFixtures.Router
 
   def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
 end
@@ -535,6 +592,47 @@ defmodule Decree.DecisionFixtures.DeletableApp do
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [tag_kinds: ["secret"]]
+    ],
+    pubsub: :local,
+    registry: :local
+
+  router Decree.DecisionFixtures.Router
+
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
+defmodule Decree.DecisionFixtures.IndexDeletableApp do
+  @moduledoc false
+
+  # The fixture enable declared deletable, so the one tag fetch leaves its tags out.
+  use Decree.Application,
+    otp_app: :decree,
+    event_store: [
+      adapter: Decree.EventStore.Adapters.EventStore,
+      event_store: Decree.FrameworkEventStore,
+      conditional_appends: [stream_prefixes: ["scripted-"]],
+      deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexEnabled"]]
+    ],
+    pubsub: :local,
+    registry: :local
+
+  router Decree.DecisionFixtures.Router
+
+  def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
+end
+
+defmodule Decree.DecisionFixtures.DisableDeletableApp do
+  @moduledoc false
+
+  # The fixture disable declared deletable, so the fetch leaves out a disable's tags and keeps
+  # the enable before it.
+  use Decree.Application,
+    otp_app: :decree,
+    event_store: [
+      adapter: Decree.EventStore.Adapters.EventStore,
+      event_store: Decree.FrameworkEventStore,
+      conditional_appends: [stream_prefixes: ["scripted-"]],
+      deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexDisabled"]]
     ],
     pubsub: :local,
     registry: :local

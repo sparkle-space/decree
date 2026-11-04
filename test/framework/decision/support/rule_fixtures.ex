@@ -340,7 +340,8 @@ end
 
 defmodule Decree.RuleFixtures.TightRule do
   @moduledoc false
-  use Decree.RuleFixtures.Scripting, max_events: 3, max_batch_events: 2
+  # Three events of its own past the store-backed cases' nine facts.
+  use Decree.RuleFixtures.Scripting, max_events: 12, max_batch_events: 2
 end
 
 defmodule Decree.RuleFixtures.DigestRule do
@@ -644,6 +645,7 @@ defmodule Decree.RuleFixtures.App do
     registry: :local
 
   router Decree.RuleFixtures.Router
+  router Decree.TagIndexFixtures.Router
 
   def init(config), do: {:ok, Decree.RuleFixtures.Stores.named_store(config)}
 end
@@ -762,6 +764,7 @@ defmodule Decree.RuleCase do
   use ExUnit.CaseTemplate
 
   alias Decree.RuleFixtures.{App, EraseUser, RegisterUser, Ruled}
+  alias Decree.TagIndexFixtures
   alias Decree.UUID
 
   using do
@@ -783,17 +786,39 @@ defmodule Decree.RuleCase do
       alias Decree.EventStore
       alias Decree.RuleFixtures.{App, EraseUser, Erased, Noted, Read, Registered, RegisterUser}
       alias Decree.RuleFixtures.{RemoveUser, Removed, Ruled, RuledAggregate, Stores, User}
+      alias Decree.TagIndexFixtures
       alias Decree.UUID
     end
   end
 
-  setup do
+  # Every family is enabled unless a test is tagged `:no_index_facts`, as a fresh store's
+  # release step would leave it.
+  setup context do
     Decree.FrameworkStorage.reset!()
 
     start_supervised!(App)
 
+    if not Map.get(context, :no_index_facts, false), do: TagIndexFixtures.enable!(App)
+
     :ok
   end
+
+  @doc """
+  Disables the index of a family and key on the fixture ledger, and answers its id.
+  """
+  def disable_index!(family, key \\ nil, reason \\ "repair") do
+    TagIndexFixtures.disable!(App, family, key, reason)
+  end
+
+  @doc """
+  Enables a family and key again, under a new index id.
+  """
+  def enable_index!(family, key \\ nil), do: TagIndexFixtures.reenable!(App, family, key)
+
+  @doc """
+  How many facts the case's setup appends, at positions 1 and up.
+  """
+  def fact_count, do: length(TagIndexFixtures.families())
 
   def digest, do: "digest-#{System.unique_integer([:positive])}"
 

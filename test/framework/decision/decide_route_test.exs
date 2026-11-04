@@ -253,7 +253,9 @@ defmodule Decree.Decision.DecideRouteTest do
                  "scripted-",
                  "tight-",
                  "create-",
-                 "function-"
+                 "function-",
+                 "activating-",
+                 "digesting-"
                ])
     end
 
@@ -290,7 +292,9 @@ defmodule Decree.Decision.DecideRouteTest do
     end
 
     test "an application is a composite" do
-      assert Decree.DecisionFixtures.App.__stream_prefixes__().other == ["parity-aggregate-"]
+      # The fixture ledger's prefix is the tag index facts'.
+      assert Decree.DecisionFixtures.App.__stream_prefixes__().other ==
+               ["parity-aggregate-", "tag-index-"]
     end
   end
 end

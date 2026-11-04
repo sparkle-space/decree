@@ -11,17 +11,32 @@ defmodule Decree.Decision.AppenderMap do
   from a build check of its own, with its rules and one map of who appends what:
 
       Decree.Decision.AppenderMap.verify!(
-        [{ClaimEmail, ClaimEmail.query(fixture_command, fixture_context)}],
+        [{{:decision, ClaimEmail}, ClaimEmail.query(fixture_command, fixture_context)}],
         %{EmailClaimed => [{ClaimEmailCommand, ClaimEmail}, {ImportUser, User}]},
         conditional: [ImportUser]
       )
 
-  `rules` is a list of `{decision, items}`, `items` being every condition item of a fixture
+  `rules` is a list of `{key, items}`, `items` being every condition item of a fixture
   dispatch: what `c:Decree.Decision.query/2` and any `c:Decree.Decision.followup_query/3`
   answered, and on a create the fact item `[types: types, tags: [stream_tag]]` first. The
   stream tag is the route's, and this reads no router, so the application passes that item:
 
-      {CreateClaim, [[types: types, tags: ["claim:" <> fixture_id]] | query_items]}
+      {{:decision, CreateClaim}, [[types: types, tags: ["claim:" <> fixture_id]] | query_items]}
+
+  **Keys.** A key says what its module is, and nothing finds that out another way: not loading
+  the module, its exports, its name or the order things compile in.
+
+    - `{:decision, module}`: a `Decree.Decision`. Its `__decision__/0` is called for its
+      `create:` types, so a module that is no decision raises. It covers every row whose
+      target is the module, and another rule's rows as below.
+    - `{:rule, module}`: a `Decree.Decision.Rule`. Its `__rule__/0` is called, so a module that
+      is no rule raises. It is no create and covers no row: the commands its route decides go
+      in `conditional:`.
+    - `{:aggregate, module}`: nothing is called. Its items are checked as any rule's are, and it
+      covers no row, its own commands' included.
+
+  Any other key, a bare module included, raises `ArgumentError` naming it, before any problem
+  is computed. Problems name the module, not the key.
 
   `appenders` maps each event module to its `{command_module, target_module}` rows. The
   options:
@@ -33,8 +48,8 @@ defmodule Decree.Decision.AppenderMap do
   the fact item names none of what the create reads. For a decision declaring `create:`, the
   rule's first item must name exactly the declared types, in any order, and exactly one tag,
   as it is first at a dispatch. An item further down does not count. Otherwise the problem is
-  `{:no_fact_item, decision}`, ahead of the rule's other problems. A module with no
-  `__decision__/0` is no create.
+  `{:no_fact_item, decision}`, ahead of the rule's other problems. Only a `:decision` key is
+  ever a create.
 
   Then, for each rule, for each type its items name, it checks two things.
 
@@ -44,28 +59,27 @@ defmodule Decree.Decision.AppenderMap do
   event that may lack a kind must still be able to carry it.
 
   **Condition coverage.** A type with no row is `{:no_appender_row, type, decision}`. Every
-  row must be the rule's own decision, or another rule's decision whose items name that type
-  with at least these kinds, or a command in `conditional:`, or a pair in `dominant:`. Every
-  rule of that other decision naming the type must, because each stands for a dispatch
-  appending it, and a rule not naming it says nothing. Otherwise the problem is
-  `{:unchecked_appender, type, command, target, decision}`. A rule's fact item covers nothing
-  for another rule, because a dispatch asks no event for its kinds.
+  row's target must be the rule's own `:decision` key, or another `:decision` key whose items
+  name that type with at least these kinds, or its command must be in `conditional:`, or the
+  pair in `dominant:`. Every rule of that other decision naming the type must, because each
+  stands for a dispatch appending it, and a rule not naming it says nothing. Otherwise the
+  problem is `{:unchecked_appender, type, command, target, decision}`. A rule's fact item
+  covers nothing for another rule, because a dispatch asks no event for its kinds.
 
   A type that names no event module is `{:unknown_type, type, decision}`.
 
-  **A declared aggregate's rule.** A `Decree.Decision.Rule` goes in `rules` as a decision does,
-  and it is no create, having no `__decision__/0`. List it by its own module, `{EmailRule, items}`,
-  with the row `{command, aggregate}` and each command the rule's route decides in
-  `conditional:`. That is the one supported form. A key covers every row whose target is that
-  key, so an aggregate listed as a key would certify all of its own commands, a plain one
-  included: don't list one.
+  **A declared aggregate's rule.** A `Decree.Decision.Rule` goes in `rules` under a `:rule`
+  key, `{{:rule, EmailRule}, items}`, with the row `{command, aggregate}` and each command the
+  rule's route decides in `conditional:`. An aggregate key, `{{:aggregate, User}, items}`,
+  certifies none of its own commands: each still needs `conditional:` or `dominant:`.
   """
 
   alias Decree.Decision.Read
   alias Decree.Event.RequiredTags
   alias Decree.EventStore.TypeProvider
 
-  @type rule :: {decision :: module(), items :: [keyword() | map()]}
+  @type role :: :decision | :rule | :aggregate
+  @type rule :: {{role(), module()}, items :: [keyword() | map()]}
   @type appenders :: %{module() => [{command :: module(), target :: module()}]}
   @type option :: {:conditional, [module()]} | {:dominant, [{module(), module()}]}
 
@@ -79,14 +93,19 @@ defmodule Decree.Decision.AppenderMap do
 
   @doc """
   Answers the problems, by rule and by type, in the order given.
+
+  Raises `ArgumentError` naming the first key that is not `{:decision, module}`,
+  `{:rule, module}` or `{:aggregate, module}`, before any problem is computed.
   """
   @spec check([rule()], appenders(), [option()]) :: [problem()]
   def check(rules, appenders, opts \\ []) when is_list(rules) and is_map(appenders) do
-    Enum.flat_map(rules, fn {decision, items} ->
-      world = {rules, appenders, opts}
+    Enum.each(rules, &check_key!/1)
 
-      fact_problems(decision, items) ++
-        Enum.flat_map(Read.named_types(items), &type_problems(&1, decision, items, world))
+    world = {rules, appenders, opts}
+
+    Enum.flat_map(rules, fn {{role, module}, items} ->
+      fact_problems(role, module, items) ++
+        Enum.flat_map(Read.named_types(items), &type_problems(&1, {role, module}, items, world))
     end)
   end
 
@@ -106,13 +125,29 @@ defmodule Decree.Decision.AppenderMap do
     end
   end
 
-  defp fact_problems(decision, items) do
-    case create_types(decision) do
+  @roles [:decision, :rule, :aggregate]
+
+  # The key says what its module is: nothing here finds that out another way.
+  defp check_key!({{role, module}, _items}) when role in @roles and is_atom(module), do: :ok
+
+  defp check_key!({key, _items}) do
+    raise ArgumentError,
+          "an appender map key is {:decision, module}, {:rule, module} or " <>
+            "{:aggregate, module}, got: " <> inspect(key)
+  end
+
+  defp check_key!(rule) do
+    raise ArgumentError,
+          "an appender map rule is {key, items}, got: " <> inspect(rule)
+  end
+
+  defp fact_problems(role, module, items) do
+    case create_types(role, module) do
       false ->
         []
 
       types ->
-        if fact_head?(items, types), do: [], else: [{:no_fact_item, decision}]
+        if fact_head?(items, types), do: [], else: [{:no_fact_item, module}]
     end
   end
 
@@ -125,56 +160,69 @@ defmodule Decree.Decision.AppenderMap do
       match?([_stream_tag], Read.item_tags(item))
   end
 
-  defp create_types(decision) do
-    if Code.ensure_loaded?(decision) and function_exported?(decision, :__decision__, 0) do
-      decision.__decision__().create
-    else
-      false
-    end
+  # A module of another role than its key's raises here, which is the loud answer to a
+  # mislabelled key. An aggregate is asked nothing.
+  defp create_types(:decision, module), do: module.__decision__().create
+
+  defp create_types(:rule, module) do
+    module.__rule__()
+    false
   end
 
-  defp type_problems(type, decision, items, world) do
+  defp create_types(:aggregate, _module), do: false
+
+  defp type_problems(type, {_role, module} = key, items, world) do
     case event_module(type) do
-      {:ok, module} ->
+      {:ok, event} ->
         kinds = Read.kinds_naming(items, type)
 
-        tag_problems(type, decision, module, kinds) ++
-          appender_problems(type, decision, module, kinds, world)
+        tag_problems(type, module, event, kinds) ++
+          appender_problems(type, key, event, kinds, world)
 
       :error ->
-        [{:unknown_type, type, decision}]
+        [{:unknown_type, type, module}]
     end
   end
 
-  defp tag_problems(type, decision, module, kinds) do
-    for kind <- kinds -- RequiredTags.producible_kinds(module) do
-      {:missing_tag_kind, type, kind, decision}
+  defp tag_problems(type, module, event, kinds) do
+    for kind <- kinds -- RequiredTags.producible_kinds(event) do
+      {:missing_tag_kind, type, kind, module}
     end
   end
 
-  defp appender_problems(type, decision, module, kinds, {_rules, appenders, _opts} = world) do
-    case Map.get(appenders, module, []) do
+  defp appender_problems(
+         type,
+         {_role, module} = key,
+         event,
+         kinds,
+         {_rules, appenders, _} = world
+       ) do
+    case Map.get(appenders, event, []) do
       [] ->
-        [{:no_appender_row, type, decision}]
+        [{:no_appender_row, type, module}]
 
       rows ->
         for {command, target} <- rows,
-            not covered?({command, target}, {type, decision, module, kinds}, world) do
-          {:unchecked_appender, type, command, target, decision}
+            not covered?({command, target}, {type, key, event, kinds}, world) do
+          {:unchecked_appender, type, command, target, module}
         end
     end
   end
 
-  defp covered?({command, target}, {type, decision, module, kinds}, {rules, _appenders, opts}) do
-    target == decision or
+  # Only a decision key covers a row by its target: a rule's and an aggregate's commands are
+  # covered through `conditional:` or `dominant:`.
+  defp covered?({command, target}, {type, {role, module}, event, kinds}, {rules, _, opts}) do
+    (role == :decision and target == module) or
       command in Keyword.get(opts, :conditional, []) or
-      {module, command} in Keyword.get(opts, :dominant, []) or
+      {event, command} in Keyword.get(opts, :dominant, []) or
       covers?(rules, target, type, kinds)
   end
 
-  # Each rule naming the type is a dispatch appending it, so one short of `kinds` is a miss.
+  # Each rule naming the type is a dispatch appending it, so one short of `kinds` is a miss. Only
+  # a decision key is consulted, never a rule's or an aggregate's.
   defp covers?(rules, target, type, kinds) do
-    naming = for {^target, items} <- rules, type in Read.named_types(items), do: items
+    naming =
+      for {{:decision, ^target}, items} <- rules, type in Read.named_types(items), do: items
 
     naming != [] and
       Enum.all?(naming, &(kinds -- Read.kinds_naming(asked_items(target, &1), type) == []))
@@ -182,7 +230,7 @@ defmodule Decree.Decision.AppenderMap do
 
   # As a dispatch asks: the target's condition reads the fact item, and no event is asked for it.
   defp asked_items(decision, items) do
-    types = create_types(decision)
+    types = create_types(:decision, decision)
 
     if types != false and fact_head?(items, types), do: tl(items), else: items
   end

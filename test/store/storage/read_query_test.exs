@@ -460,6 +460,77 @@ defmodule Decree.Store.Storage.ReadQueryTest do
     end
   end
 
+  describe "`tag_items`" do
+    setup do
+      append("stream", [
+        event("typed", ["tenant:a", "command:a", "Zed:1"]),
+        event("typed", ["tenant:a", "user:7"]),
+        event("typed", ["command:b", "tenant:a", "a:B", "a:b"]),
+        event("other", ["tenant:b"])
+      ])
+
+      :ok
+    end
+
+    test "answers the tags of exactly the matches those items matched, sorted bytewise" do
+      items = [[tags: ["tenant:a"]], [tags: ["command:a"]], [tags: ["command:b"]]]
+
+      assert {:ok, %ReadResult{events: events, tags: tags}} =
+               EventStore.read_query(items, tag_items: [1, 2])
+
+      assert length(events) == 3
+
+      assert tags == %{
+               1 => ["Zed:1", "command:a", "tenant:a"],
+               3 => ["a:B", "a:b", "command:b", "tenant:a"]
+             }
+    end
+
+    test "answers the tags of a match another item also matched, and of no other" do
+      items = [[types: ["other"]], [tags: ["tenant:a"]]]
+
+      assert {:ok, %ReadResult{events: [_, _, _, _], tags: tags}} =
+               EventStore.read_query(items, tag_items: [0])
+
+      assert tags == %{4 => ["tenant:b"]}
+    end
+
+    test "answers what `read_tags` answers for the same positions" do
+      items = [[tags: ["tenant:a"]], [types: ["other"]]]
+
+      assert {:ok, %ReadResult{tags: tags}} = EventStore.read_query(items, tag_items: [0, 1])
+      assert EventStore.read_tags([1, 2, 3, 4]) == {:ok, tags}
+    end
+
+    test "empty, or absent, answers no tags" do
+      items = [[tags: ["tenant:a"]]]
+
+      # A `%{}` pattern matches any map, so each is compared.
+      assert {:ok, %ReadResult{events: [_, _, _], tags: tags}} =
+               EventStore.read_query(items, tag_items: [])
+
+      assert tags == %{}
+
+      assert {:ok, %ReadResult{events: [_, _, _], tags: tags}} = EventStore.read_query(items)
+      assert tags == %{}
+    end
+
+    test "holds no entry for a match the read did not return" do
+      assert {:ok, %ReadResult{events: [%RecordedEvent{event_number: 1}], tags: tags}} =
+               EventStore.read_query([[tags: ["tenant:a"]]], tag_items: [0], count: 1)
+
+      assert tags == %{1 => ["Zed:1", "command:a", "tenant:a"]}
+    end
+
+    test "that is not a list of the query's item indexes is refused" do
+      for tag_items <- [nil, 0, [-1], [1], [0, 1], [0.0], ["0"], [0 | 1], %{}] do
+        assert {:error, :invalid_query} =
+                 EventStore.read_query([[tags: ["tenant:a"]]], tag_items: tag_items),
+               inspect(tag_items)
+      end
+    end
+  end
+
   describe "a refused query" do
     test "answers its error from `read_query`" do
       assert {:error, :invalid_query} = EventStore.read_query([])
