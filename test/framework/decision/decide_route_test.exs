@@ -255,6 +255,7 @@ defmodule Decree.Decision.DecideRouteTest do
                  "create-",
                  "function-",
                  "activating-",
+                 "activated-create-",
                  "digesting-"
                ])
     end
