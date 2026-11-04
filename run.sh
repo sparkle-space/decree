@@ -47,8 +47,8 @@ if [ "${DECOMPOSE:-0}" = 1 ]; then echo "=== DECOMPOSITION RUN, not the gate: no
 # The start rule's first check: no BEAM or `mix` may be running. drive.py checks again just
 # before it starts the arms. A decomposition run only lists them.
 foreign=$(pgrep -f 'beam\.smp|(^|/)mix( |$)' || true)
-if [ -n "$foreign" ] && [ "${DECOMPOSE:-0}" = 1 ]; then
-  echo "note: BEAM or mix running (not void in a decomposition run)"
+if [ -n "$foreign" ] && { [ "${DECOMPOSE:-0}" = 1 ] || [ "${SMOKE:-0}" = 1 ]; }; then
+  echo "note: BEAM or mix running (not void in a smoke or decomposition run)"
   for pid in $foreign; do echo "  pid $pid: $(ps -o command= -p "$pid" | cut -c1-160)"; done
 elif [ -n "$foreign" ]; then
   echo "START RULE NOT MET: foreign BEAM"

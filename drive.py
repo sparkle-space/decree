@@ -34,6 +34,10 @@ THRESHOLD_US = 500.0
 # Not the gate (run.sh DECOMPOSE=1): void conditions are traced but void nothing, the run never
 # stops early, and every number prints, with no threshold.
 DECOMPOSE = os.environ.get('DECOMPOSE', '0') == '1'
+# SMOKE=1 checks the run path only, so like a decomposition run it lists void conditions and
+# goes on: its numbers are never reported, and another session's BEAM can't make them wrong.
+SMOKE = os.environ.get('SMOKE', '0') == '1'
+TOLERANT = DECOMPOSE or SMOKE
 STORE = os.environ.get('STORE', 'large')
 SMALL = STORE != 'large'
 SMALL_CEILING = int(os.environ.get('SMALL_CEILING', '0'))
@@ -175,8 +179,8 @@ def command_of(pid):
 
 # The start rule's last check, before any arm exists: a BEAM or `mix` here is someone else's.
 early = foreign_beams()
-if early and DECOMPOSE:
-    print('note: BEAM or mix outside the rig (not void in a decomposition run):', ', '.join(early), flush=True)
+if early and TOLERANT:
+    print('note: BEAM or mix outside the rig (not void in a smoke or decomposition run):', ', '.join(early), flush=True)
 elif early:
     print('START RULE NOT MET: foreign BEAM', flush=True)
     for pid in early:
@@ -226,7 +230,7 @@ def sample(label):
     top5 = ', '.join('%s %.0f%% %s' % (pid, cpu, os.path.basename(c.split()[0])[:24]) for pid, cpu, c in busy[:5])
     box = ', '.join('%s %.1f%%' % b for b in boxes) or 'no docker'
     print('TRACE %-10s store %s load1 %5.2f | %s: %s | others >10%% (not void): %s | top: %s | containers: %s' %
-          (label, head, load, 'would void the gate' if DECOMPOSE else 'void', '; '.join(void) or 'none', others, top5, box),
+          (label, head, load, 'would void the gate' if TOLERANT else 'void', '; '.join(void) or 'none', others, top5, box),
           flush=True)
     trace_log.append({'label': label, 'store': head, 'load1': load, 'void': void, 'others': others, 'top': top5,
                       'containers': box})
@@ -263,7 +267,7 @@ try:
     interfered = sample('start')
     # A void condition voids the whole run, so the run stops at the first one: measuring on would
     # report nothing.
-    stopped_early = (bool(interfered) and not DECOMPOSE) or bool(left_small)
+    stopped_early = (bool(interfered) and not TOLERANT) or bool(left_small)
     for i in range(rounds):
         if stopped_early:
             break
@@ -272,11 +276,11 @@ try:
         rows.append({'round': i + 1, 'order': order, 'us': {name: block(name, procs[name]) for name in order}})
         if (i + 1) % TRACE_EVERY == 0:
             interfered = sample('round %d' % (i + 1))
-            stopped_early = (bool(interfered) and not DECOMPOSE) or bool(left_small)
+            stopped_early = (bool(interfered) and not TOLERANT) or bool(left_small)
     if not stopped_early:
         interfered = sample('end')
-    void = bool(interfered) and not DECOMPOSE
-    verdict = ('DECOMPOSITION' if DECOMPOSE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
+    void = bool(interfered) and not TOLERANT
+    verdict = ('DECOMPOSITION' if DECOMPOSE else 'SMOKE' if SMOKE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
 finally:
     for p in procs.values():
         p.terminate()

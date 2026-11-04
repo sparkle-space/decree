@@ -4,7 +4,7 @@ export GATE_HOME
 # pre-FW-6 decree main (FW-5's merge): the baseline.
 export MAIN_SHA=${MAIN_SHA:-0b41deec8a06882343db7cea97e004061bfd39ad}
 # The fix for sparklespace#7752 (decree branch fix/7752-read-index-lookups).
-export BRANCH_SHA=${BRANCH_SHA:?set BRANCH_SHA to the fix commit}
+export BRANCH_SHA=${BRANCH_SHA:-7a1ef3208b93d2341c735cc4b8afff46282bd392}
 # FW-6 without the fix (decree main's merge of FW-6); built only with SMALL_BEFORE=1.
 export FW6_SHA=${FW6_SHA:-747fcea72039bb36ed467cfe0a83bfd30296be61}
 export GATE_PG_HOST=${GATE_PG_HOST:-127.0.0.1}

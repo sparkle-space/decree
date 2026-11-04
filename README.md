@@ -5,7 +5,7 @@
 | Side | Commit | Built |
 |---|---|---|
 | main (pre-FW-6) | `0b41deec8a06882343db7cea97e004061bfd39ad` (FW-5's merge): the baseline, as in FW-6's gate | always |
-| fix | `BRANCH_SHA`: the #7752 fix commit (set in `env.sh`, or `BRANCH_SHA=<sha>` in the environment) | always |
+| fix | `BRANCH_SHA`: the #7752 fix, decree#22 head `7a1ef3208b93d2341c735cc4b8afff46282bd392` (set in `env.sh`; override with `BRANCH_SHA=<sha>`) | always |
 | fw6 (optional) | `747fcea72039bb36ed467cfe0a83bfd30296be61`: decree main's merge of FW-6, without the fix | only with `SMALL_BEFORE=1` |
 
 ## What it measures
@@ -71,7 +71,6 @@ Run order: **`small2k`, then `small20k`, then `large`**, each after a fresh `./s
 
 ```bash
 git fetch origin main fix/7752-read-index-lookups   # the commits must be present
-export BRANCH_SHA=<the fix commit>                  # unless env.sh names it
 STORE=small2k ./setup.sh    # exports and builds the sides, makes a fresh small store
 SMOKE=1 STORE=small2k ./run.sh   # optional: checks the run path in a minute or so; its numbers mean nothing
 STORE=small2k ./setup.sh         # again: a fresh store for the real run
@@ -91,6 +90,7 @@ STORE=large ./setup.sh && STORE=large ./run.sh    # about 25 to 45 minutes
   - **a BEAM or `mix` outside the rig is running** (the rig's own are the driver and its descendants, which are the four arms);
   - **a container other than the rig's own Postgres container (`GATE_PG_CONTAINER`) is above 10% CPU**;
   - **the 1-minute load is above 15**.
+- **A smoke run (`SMOKE=1`)** skips the load wait, and lists a foreign BEAM or `mix` (at the start check and in each sample) instead of refusing or voiding: it checks the scripts only, and its numbers are never reported. Its verdict reads `SMOKE`. The real run's rules are unchanged.
 - **Not void:** OS and desktop processes (`loginwindow`, `WindowServer`, `kernel_task` and so on), Docker's VM, Postgres and the sampling tools, at any CPU. Each sample lists every process outside the rig above 10% under `others >10% (not void)`.
 - The run **stops at the first void sample**, because measuring on would report nothing.
 - The trace samples at the start, every 50 counted rounds (every 10 in a small store) and at the end. Each sample records the 1-minute load, the store size (the `$all` head), its void reasons (or `none`), the other busy processes, the five busiest processes and every container's CPU.
