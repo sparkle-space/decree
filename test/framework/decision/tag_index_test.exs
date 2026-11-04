@@ -6,6 +6,7 @@ defmodule Decree.Decision.TagIndexTest do
   alias Decree.DecisionFixtures.{
     Activated,
     ActivatedCreate,
+    ActivatedCreateDecision,
     Activating,
     Burning,
     Digesting,
@@ -493,6 +494,11 @@ defmodule Decree.Decision.TagIndexTest do
     end
 
     test "refuses a create before `admit/2` and `decide/2` until its event is there, then creates" do
+      claimed = Atom.to_string(Claimed)
+
+      assert %{create: [^claimed], activation: [types: _, tags: ["feature:claims"]]} =
+               ActivatedCreateDecision.__decision__()
+
       test = self()
 
       command =
@@ -526,7 +532,6 @@ defmodule Decree.Decision.TagIndexTest do
       assert_received :admitted
       assert_received :decided
 
-      claimed = Atom.to_string(Claimed)
       assert [%{event_type: ^claimed}] = stored(stream(command))
     end
 
