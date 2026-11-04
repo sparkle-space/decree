@@ -5,6 +5,7 @@ defmodule Decree.Decision.TagIndexTest do
 
   alias Decree.DecisionFixtures.{
     Activated,
+    ActivatedCreate,
     Activating,
     Burning,
     Digesting,
@@ -28,6 +29,7 @@ defmodule Decree.Decision.TagIndexTest do
   end
 
   defp stream(%Activating{claim_id: claim_id}), do: "activating-" <> claim_id
+  defp stream(%ActivatedCreate{claim_id: claim_id}), do: "activated-create-" <> claim_id
   defp stream(%Digesting{claim_id: claim_id}), do: "digesting-" <> claim_id
   defp stream(%{claim_id: claim_id}), do: "scripted-" <> claim_id
 
@@ -488,6 +490,44 @@ defmodule Decree.Decision.TagIndexTest do
 
       assert :ok = App.dispatch(command)
       assert [_one] = stored(stream(command))
+    end
+
+    test "refuses a create before `admit/2` and `decide/2` until its event is there, then creates" do
+      test = self()
+
+      command =
+        scripted(
+          [
+            admit: fn _state, _command ->
+              send(test, :admitted)
+              :ok
+            end,
+            decide: fn _state, command ->
+              send(test, :decided)
+              %Claimed{claim_id: command.claim_id, scope: command.scope}
+            end
+          ],
+          ActivatedCreate
+        )
+
+      assert {:error, :decision_not_activated} = App.dispatch(command)
+      refute_called()
+      assert stored(stream(command)) == []
+
+      seed(%Activated{feature: "other"}, ["feature:other"])
+
+      assert {:error, :decision_not_activated} = App.dispatch(command)
+      refute_called()
+      assert stored(stream(command)) == []
+
+      activate!()
+
+      assert :ok = App.dispatch(command)
+      assert_received :admitted
+      assert_received :decided
+
+      claimed = Atom.to_string(Claimed)
+      assert [%{event_type: ^claimed}] = stored(stream(command))
     end
 
     test "an activation committed between the two reads is not counted: it refuses" do

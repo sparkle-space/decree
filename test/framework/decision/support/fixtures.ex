@@ -143,6 +143,11 @@ defmodule Decree.DecisionFixtures.Activating do
   defstruct [:command_id, :claim_id, :scope, script: %{}]
 end
 
+defmodule Decree.DecisionFixtures.ActivatedCreate do
+  @moduledoc false
+  defstruct [:command_id, :claim_id, :scope, script: %{}]
+end
+
 defmodule Decree.DecisionFixtures.Digesting do
   @moduledoc false
   defstruct [:command_id, :claim_id, :scope, script: %{}]
@@ -293,6 +298,15 @@ defmodule Decree.DecisionFixtures.CreateDecision do
     create: [types: ["Elixir.Decree.DecisionFixtures.Claimed"]]
 end
 
+defmodule Decree.DecisionFixtures.ActivatedCreateDecision do
+  @moduledoc false
+
+  # A create that is off until an `Activated` event for "claims" is there.
+  use Decree.DecisionFixtures.Scripting,
+    create: [types: ["Elixir.Decree.DecisionFixtures.Claimed"]],
+    activation: [types: ["Elixir.Decree.DecisionFixtures.Activated"], tags: ["feature:claims"]]
+end
+
 defmodule Decree.DecisionFixtures.RecordingDecision do
   @moduledoc false
 
@@ -350,6 +364,8 @@ defmodule Decree.DecisionFixtures.Router do
   use Decree.Commands.Router
 
   alias Decree.DecisionFixtures.{
+    ActivatedCreate,
+    ActivatedCreateDecision,
     ActivatedDecision,
     Activating,
     ByFunction,
@@ -383,6 +399,12 @@ defmodule Decree.DecisionFixtures.Router do
 
   decide(Tight, to: TightDecision, identity: :claim_id, identity_prefix: "tight-")
   decide(Create, to: CreateDecision, identity: :claim_id, identity_prefix: "create-")
+
+  decide(ActivatedCreate,
+    to: ActivatedCreateDecision,
+    identity: :claim_id,
+    identity_prefix: "activated-create-"
+  )
 
   decide(ByFunction,
     to: Decree.DecisionFixtures.FunctionDecision,
@@ -567,6 +589,7 @@ defmodule Decree.DecisionFixtures.App do
           "function-",
           "parity-decision-",
           "activating-",
+          "activated-create-",
           "digesting-"
         ]
       ]
