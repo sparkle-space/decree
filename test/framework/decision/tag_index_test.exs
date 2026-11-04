@@ -495,9 +495,12 @@ defmodule Decree.Decision.TagIndexTest do
 
     test "refuses a create before `admit/2` and `decide/2` until its event is there, then creates" do
       claimed = Atom.to_string(Claimed)
+      activated = Atom.to_string(Activated)
 
-      assert %{create: [^claimed], activation: [types: _, tags: ["feature:claims"]]} =
-               ActivatedCreateDecision.__decision__()
+      assert %{
+               create: [^claimed],
+               activation: [types: [^activated], tags: ["feature:claims"]]
+             } = ActivatedCreateDecision.__decision__()
 
       test = self()
 
