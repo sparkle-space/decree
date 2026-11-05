@@ -50,6 +50,10 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
            def handle(_event, _metadata), do: :ok
            """, [@registered, @plain]},
           {"a catch-all alone", "def handle(_, _), do: :ok", []},
+          {"a catch-all whose body rebinds its event name in an fn",
+           "def handle(_event, _metadata), do: (fn _event -> :ok end).(:inner)", []},
+          {"a catch-all whose body rebinds its metadata name in a case",
+           "def handle(_event, _metadata), do: (case :x do _metadata -> :ok end)", []},
           {"no handle/2", "", []}
         ] do
       test "reads #{name}" do

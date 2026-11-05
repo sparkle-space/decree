@@ -1086,24 +1086,37 @@ defmodule Decree.Event.Handler do
 
   # A bare `_` is always ignored. An `_`-prefixed variable is ignored only while the clause body
   # does not read it: Elixir lets a body read one (with a warning), and that head sees stored
-  # values. The expanded AST carries counters in meta, so a read is matched on name and context.
+  # values. A read is the compiler's own variable identity: the same name, context and
+  # `:version` that the expanded head argument carries in its meta. A nested binding of the same
+  # name (`fn _event -> ... end`, `case x do _event -> ... end`) has its own version and is not
+  # a read. On a compiler whose expanded variables carry no `:version` (Elixir 1.20 does), it
+  # falls back to name and context, which counts such a nested binding as a read: stricter, so
+  # safe.
   defp ignored?({:_, _meta, context}, _body) when is_atom(context), do: true
 
-  defp ignored?({name, _meta, context}, body) when is_atom(name) and is_atom(context) do
-    String.starts_with?(Atom.to_string(name), "_") and not reads_variable?(body, name, context)
+  defp ignored?({name, meta, context}, body) when is_atom(name) and is_atom(context) do
+    String.starts_with?(Atom.to_string(name), "_") and
+      not reads_variable?(body, name, context, Keyword.fetch(meta, :version))
   end
 
   defp ignored?(_pattern, _body), do: false
 
-  defp reads_variable?(body, name, context) do
+  defp reads_variable?(body, name, context, version) do
     {_ast, found} =
       Macro.prewalk(body, false, fn
-        {^name, _meta, ^context} = node, _acc -> {node, true}
-        node, acc -> {node, acc}
+        {^name, meta, ^context} = node, acc ->
+          {node, acc or same_version?(version, Keyword.fetch(meta, :version))}
+
+        node, acc ->
+          {node, acc}
       end)
 
     found
   end
+
+  defp same_version?({:ok, version}, {:ok, version}), do: true
+  defp same_version?({:ok, _version}, _other), do: false
+  defp same_version?(:error, _other), do: true
 
   @doc false
   defstruct [
