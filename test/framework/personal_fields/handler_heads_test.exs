@@ -117,6 +117,10 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
            "def handle(%module{} = event, _m) when module in [#{@registered}], do: {:ok, event}"},
           {"an ignored struct", "def handle(%_{} = event, _m), do: {:ok, event}"},
           {"a map", "def handle(%{note: note}, _m), do: {:ok, note}"},
+          {"a catch-all that reads its event",
+           "def handle(_event, _metadata), do: {:ok, _event}"},
+          {"a catch-all that reads its metadata",
+           "def handle(_event, _metadata), do: {:ok, _metadata}"},
           {"a guarded catch-all", "def handle(_event, _m) when 1 + 1 == 3, do: :ok"},
           {"a catch-all that is not trailing",
            """

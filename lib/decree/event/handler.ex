@@ -473,10 +473,11 @@ defmodule Decree.Event.Handler do
   over an event it ignores.
 
   A head is read when its first argument is a struct, descending through `=`. A trailing
-  clause ignoring both arguments, with `_`-prefixed variables and no guard, is the one
-  catch-all. Any other head can't be read: a bound first argument, `%module{}`, a map, an ignored
-  event beside a bound or matched metadata argument, a guarded or non-trailing catch-all. So
-  can't `handle_batch/1`, which gets no decrypt.
+  clause ignoring both arguments, with `_`-prefixed variables its body does not read and no
+  guard, is the one catch-all: an underscored argument the body reads does not count as
+  ignored. Any other head can't be read: a bound first argument, `%module{}`, a map, an
+  ignored event beside a bound or matched metadata argument, a guarded or non-trailing
+  catch-all. So can't `handle_batch/1`, which gets no decrypt.
 
   A module with such a head names nothing and sees stored values. If it reads no personal
   field it says so, and is then never decrypted for:
@@ -1060,14 +1061,14 @@ defmodule Decree.Event.Handler do
 
     clauses
     |> Enum.with_index()
-    |> Enum.reduce({[], []}, fn {{meta, [event, metadata], guards, _body}, index},
+    |> Enum.reduce({[], []}, fn {{meta, [event, metadata], guards, body}, index},
                                 {modules, unreadable} ->
       case struct_modules(event) do
         [_ | _] = named ->
           {named ++ modules, unreadable}
 
         [] ->
-          if index == last and guards == [] and ignored?(event) and ignored?(metadata) do
+          if index == last and guards == [] and ignored?(event, body) and ignored?(metadata, body) do
             {modules, unreadable}
           else
             {modules, [meta[:line] | unreadable]}
@@ -1083,11 +1084,26 @@ defmodule Decree.Event.Handler do
   defp struct_modules({:%, _meta, [module, _map]}) when is_atom(module), do: [module]
   defp struct_modules(_pattern), do: []
 
-  defp ignored?({name, _meta, context}) when is_atom(name) and is_atom(context) do
-    name |> Atom.to_string() |> String.starts_with?("_")
+  # A bare `_` is always ignored. An `_`-prefixed variable is ignored only while the clause body
+  # does not read it: Elixir lets a body read one (with a warning), and that head sees stored
+  # values. The expanded AST carries counters in meta, so a read is matched on name and context.
+  defp ignored?({:_, _meta, context}, _body) when is_atom(context), do: true
+
+  defp ignored?({name, _meta, context}, body) when is_atom(name) and is_atom(context) do
+    String.starts_with?(Atom.to_string(name), "_") and not reads_variable?(body, name, context)
   end
 
-  defp ignored?(_pattern), do: false
+  defp ignored?(_pattern, _body), do: false
+
+  defp reads_variable?(body, name, context) do
+    {_ast, found} =
+      Macro.prewalk(body, false, fn
+        {^name, _meta, ^context} = node, _acc -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found
+  end
 
   @doc false
   defstruct [
