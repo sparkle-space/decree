@@ -473,10 +473,11 @@ defmodule Decree.Event.Handler do
   over an event it ignores.
 
   A head is read when its first argument is a struct, descending through `=`. A trailing
-  clause ignoring both arguments, with `_`-prefixed variables and no guard, is the one
-  catch-all. Any other head can't be read: a bound first argument, `%module{}`, a map, an ignored
-  event beside a bound or matched metadata argument, a guarded or non-trailing catch-all. So
-  can't `handle_batch/1`, which gets no decrypt.
+  clause ignoring both arguments, with `_`-prefixed variables its body does not read and no
+  guard, is the one catch-all: an underscored argument the body reads does not count as
+  ignored. Any other head can't be read: a bound first argument, `%module{}`, a map, an
+  ignored event beside a bound or matched metadata argument, a guarded or non-trailing
+  catch-all. So can't `handle_batch/1`, which gets no decrypt.
 
   A module with such a head names nothing and sees stored values. If it reads no personal
   field it says so, and is then never decrypted for:
@@ -488,10 +489,8 @@ defmodule Decree.Event.Handler do
 
   `:opaque` is the only value `:personal_fields` takes, and anything else is a `CompileError`.
 
-  With `config :decree, enforce_personal_fields: true` a head that can't be read and isn't
-  `:opaque` is a `CompileError` naming the module and the head's line. This flag is temporary:
-  it lets an application compile at this version before it has adopted, and once sparklespace
-  has, strict becomes the default and the flag is deleted.
+  A head that can't be read and isn't `:opaque` is a `CompileError` naming the module and the
+  head's line.
 
   ### When a key can't be read
 
@@ -1034,7 +1033,7 @@ defmodule Decree.Event.Handler do
         unreadable
       end
 
-    if unreadable != [] and Application.compile_env(env, :decree, :enforce_personal_fields, false) do
+    if unreadable != [] do
       line = Enum.min(unreadable)
 
       raise CompileError,
@@ -1062,14 +1061,14 @@ defmodule Decree.Event.Handler do
 
     clauses
     |> Enum.with_index()
-    |> Enum.reduce({[], []}, fn {{meta, [event, metadata], guards, _body}, index},
+    |> Enum.reduce({[], []}, fn {{meta, [event, metadata], guards, body}, index},
                                 {modules, unreadable} ->
       case struct_modules(event) do
         [_ | _] = named ->
           {named ++ modules, unreadable}
 
         [] ->
-          if index == last and guards == [] and ignored?(event) and ignored?(metadata) do
+          if index == last and guards == [] and ignored?(event, body) and ignored?(metadata, body) do
             {modules, unreadable}
           else
             {modules, [meta[:line] | unreadable]}
@@ -1085,11 +1084,39 @@ defmodule Decree.Event.Handler do
   defp struct_modules({:%, _meta, [module, _map]}) when is_atom(module), do: [module]
   defp struct_modules(_pattern), do: []
 
-  defp ignored?({name, _meta, context}) when is_atom(name) and is_atom(context) do
-    name |> Atom.to_string() |> String.starts_with?("_")
+  # A bare `_` is always ignored. An `_`-prefixed variable is ignored only while the clause body
+  # does not read it: Elixir lets a body read one (with a warning), and that head sees stored
+  # values. A read is the compiler's own variable identity: the same name, context and
+  # `:version` that the expanded head argument carries in its meta. A nested binding of the same
+  # name (`fn _event -> ... end`, `case x do _event -> ... end`) has its own version and is not
+  # a read. On a compiler whose expanded variables carry no `:version` (Elixir 1.20 does), it
+  # falls back to name and context, which counts such a nested binding as a read: stricter, so
+  # safe.
+  defp ignored?({:_, _meta, context}, _body) when is_atom(context), do: true
+
+  defp ignored?({name, meta, context}, body) when is_atom(name) and is_atom(context) do
+    String.starts_with?(Atom.to_string(name), "_") and
+      not reads_variable?(body, name, context, Keyword.fetch(meta, :version))
   end
 
-  defp ignored?(_pattern), do: false
+  defp ignored?(_pattern, _body), do: false
+
+  defp reads_variable?(body, name, context, version) do
+    {_ast, found} =
+      Macro.prewalk(body, false, fn
+        {^name, meta, ^context} = node, acc ->
+          {node, acc or same_version?(version, Keyword.fetch(meta, :version))}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found
+  end
+
+  defp same_version?({:ok, version}, {:ok, version}), do: true
+  defp same_version?({:ok, _version}, _other), do: false
+  defp same_version?(:error, _other), do: true
 
   @doc false
   defstruct [

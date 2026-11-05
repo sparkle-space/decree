@@ -1,5 +1,4 @@
 defmodule Decree.PersonalFields.HandlerHeadsTest do
-  # Not async: these compile with the application environment flipped.
   use ExUnit.Case
 
   import ExUnit.CaptureIO
@@ -28,13 +27,6 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
     Module.concat([name])
   end
 
-  defp strict(flag) do
-    previous = Application.get_env(:decree, :enforce_personal_fields)
-
-    Application.put_env(:decree, :enforce_personal_fields, flag)
-    on_exit(fn -> Application.put_env(:decree, :enforce_personal_fields, previous) end)
-  end
-
   describe "the heads it reads" do
     for {name, body, expected} <- [
           {"a bare struct", "def handle(%#{@registered}{}, _metadata), do: :ok", [@registered]},
@@ -58,6 +50,10 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
            def handle(_event, _metadata), do: :ok
            """, [@registered, @plain]},
           {"a catch-all alone", "def handle(_, _), do: :ok", []},
+          {"a catch-all whose body rebinds its event name in an fn",
+           "def handle(_event, _metadata), do: (fn _event -> :ok end).(:inner)", []},
+          {"a catch-all whose body rebinds its metadata name in a case",
+           "def handle(_event, _metadata), do: (case :x do _metadata -> :ok end)", []},
           {"no handle/2", "", []}
         ] do
       test "reads #{name}" do
@@ -125,6 +121,10 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
            "def handle(%module{} = event, _m) when module in [#{@registered}], do: {:ok, event}"},
           {"an ignored struct", "def handle(%_{} = event, _m), do: {:ok, event}"},
           {"a map", "def handle(%{note: note}, _m), do: {:ok, note}"},
+          {"a catch-all that reads its event",
+           "def handle(_event, _metadata), do: {:ok, _event}"},
+          {"a catch-all that reads its metadata",
+           "def handle(_event, _metadata), do: {:ok, _metadata}"},
           {"a guarded catch-all", "def handle(_event, _m) when 1 + 1 == 3, do: :ok"},
           {"a catch-all that is not trailing",
            """
@@ -138,9 +138,7 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
            """},
           {"a `handle_batch/1`", "def handle_batch(events), do: {:ok, events}"}
         ] do
-      test "#{name} fails to compile with the flag on, naming the module and line" do
-        strict(true)
-
+      test "#{name} fails to compile, naming the module and line" do
         error = assert_raise CompileError, fn -> compile(unquote(body)) end
 
         assert error.description =~ "Decree.PersonalFields.HandlerHeadsTest.H"
@@ -148,17 +146,7 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
         assert error.description =~ "line #{error.line}"
       end
 
-      test "#{name} compiles with the flag off, adding nothing" do
-        strict(false)
-
-        fields = compile(unquote(body)).__personal_fields__()
-
-        assert Map.keys(fields) -- [Module.concat([@registered])] == []
-      end
-
       test "#{name} compiles with `:opaque`" do
-        strict(true)
-
         assert compile(unquote(body), ", personal_fields: :opaque").__personal_fields__() ==
                  :opaque
       end
@@ -166,17 +154,13 @@ defmodule Decree.PersonalFields.HandlerHeadsTest do
   end
 
   describe "the option" do
-    test "an invalid value fails to compile, with the flag on or off" do
-      for flag <- [true, false] do
-        strict(flag)
+    test "an invalid value fails to compile" do
+      assert_raise CompileError, ~r/the only value it takes is `:opaque`/, fn ->
+        compile("def handle(_event, _metadata), do: :ok", ", personal_fields: :nope")
+      end
 
-        assert_raise CompileError, ~r/the only value it takes is `:opaque`/, fn ->
-          compile("def handle(_event, _metadata), do: :ok", ", personal_fields: :nope")
-        end
-
-        assert_raise CompileError, ~r/the only value it takes is `:opaque`/, fn ->
-          compile("def handle(_event, _metadata), do: :ok", ~s(, personal_fields: "opaque"))
-        end
+      assert_raise CompileError, ~r/the only value it takes is `:opaque`/, fn ->
+        compile("def handle(_event, _metadata), do: :ok", ~s(, personal_fields: "opaque"))
       end
     end
 
