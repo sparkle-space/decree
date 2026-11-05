@@ -488,10 +488,8 @@ defmodule Decree.Event.Handler do
 
   `:opaque` is the only value `:personal_fields` takes, and anything else is a `CompileError`.
 
-  With `config :decree, enforce_personal_fields: true` a head that can't be read and isn't
-  `:opaque` is a `CompileError` naming the module and the head's line. This flag is temporary:
-  it lets an application compile at this version before it has adopted, and once sparklespace
-  has, strict becomes the default and the flag is deleted.
+  A head that can't be read and isn't `:opaque` is a `CompileError` naming the module and the
+  head's line.
 
   ### When a key can't be read
 
@@ -1034,7 +1032,7 @@ defmodule Decree.Event.Handler do
         unreadable
       end
 
-    if unreadable != [] and Application.compile_env(env, :decree, :enforce_personal_fields, false) do
+    if unreadable != [] do
       line = Enum.min(unreadable)
 
       raise CompileError,

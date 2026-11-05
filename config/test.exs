@@ -34,9 +34,6 @@ config :decree,
   refute_receive_event_timeout: 100,
   dispatch_consistency_timeout: 1_000
 
-# A handler head that can't be read is a compile error in decree's own tests.
-config :decree, enforce_personal_fields: true
-
 # Neither of these takes effect: the two options are read from the `use` line alone, which is
 # what `Decree.PersonalFields.KeySourceTest` proves with this entry.
 config :decree, Decree.PersonalFields.Fixtures.EnvApp,
