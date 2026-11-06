@@ -16,6 +16,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
     DenyListSerializer,
     EventData,
     EventFactory,
+    FiniteTypeProvider,
     NewReleaseEvent,
     PubSub,
     RecordedEvent,
@@ -29,6 +30,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
   alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
 
   @old :old_store
+  @provider :provider_store
   @held [:decree, :store, :subscription, :held]
   @new_type "Elixir.Decree.Store.NewReleaseEvent"
   @known_type "Elixir.Decree.Store.EventFactory.Event"
@@ -396,6 +398,73 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
     end
   end
 
+  describe "a custom type provider that cannot build a type" do
+    # `:provider_store` runs the framework's `Decree.Serialization.JsonSerializer` over
+    # `FiniteTypeProvider`, which raises `FunctionClauseError` for `NewReleaseEvent`, a
+    # loaded module it has no clause for. The provider is global: this module is not async.
+    setup do
+      FiniteTypeProvider.configure!()
+
+      start_supervised!(
+        {TestEventStore, name: @provider, serializer: Decree.Serialization.JsonSerializer},
+        id: :provider_store
+      )
+
+      wait_for_lock_pool(@provider)
+
+      :ok
+    end
+
+    test "the subscription holds before it and nothing restarts", %{
+      conn: conn,
+      subscription_name: name
+    } do
+      publisher = Process.whereis(Module.concat([@provider, Publisher]))
+      assert is_pid(publisher)
+      publisher_ref = Process.monitor(publisher)
+
+      plain = forwarder(:plain)
+      run_in(plain, fn -> TestEventStore.subscribe("$all", name: @provider) end)
+
+      subscriber = forwarder(:provider)
+      subscription = subscribe(@provider, name, subscriber)
+      subscription_ref = Process.monitor(subscription)
+
+      append_mixed()
+
+      assert_receive {:provider, {:events, [%RecordedEvent{event_number: 1} = e1]}}
+      assert %EventFactory.Event{} = e1.data
+      :ok = Subscription.ack(subscription, 1, subscriber)
+
+      assert_receive {:provider, {:subscription_lock_lost, ^subscription}}
+
+      assert_receive {:held, _measurements,
+                      %{
+                        event_store: @provider,
+                        subscription_name: ^name,
+                        event_type: @new_type,
+                        event_number: 2,
+                        transient: false
+                      }}
+
+      # The publisher broadcast the event before the one it cannot build, and stopped.
+      assert_receive {:plain, {:events, [%RecordedEvent{event_number: 1}]}}
+
+      refute_receive {:provider, {:events, _events}}, 300
+      refute_received {:plain, _message}
+
+      assert fsm(subscription).state == :held
+      assert [%{pid: ^subscription, status: :parked}] = local(@provider, name)
+      assert %Storage.Subscription{last_seen: 1} = row(conn, name)
+
+      assert Process.whereis(Module.concat([@provider, Publisher])) == publisher
+      assert Process.alive?(publisher)
+      assert Process.alive?(subscription)
+      refute_received {:DOWN, ^publisher_ref, :process, _pid, _reason}
+      refute_received {:DOWN, ^subscription_ref, :process, _pid, _reason}
+    end
+  end
+
   describe "an unknown type between separate appends" do
     # E1, E2 of the new type and E3 in three appends, so three notifications: the publisher
     # cuts only E2's, and broadcasts E3 as usual.
@@ -529,7 +598,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
         Keyword.merge([name: event_store, buffer_size: 10], opts)
       )
 
-    tag = if event_store == @old, do: :old, else: :new
+    tag =
+      case event_store do
+        @old -> :old
+        @provider -> :provider
+        _event_store -> :new
+      end
 
     assert_receive {^tag, {:subscribed, ^subscription}}
 

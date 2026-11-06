@@ -41,13 +41,19 @@ if Code.ensure_loaded?(Jason) do
     Whether the configured `Decree.EventStore.TypeProvider` can build the type, as
     `deserialize/2` asks it to. Used by the event store as its serializer's
     `c:Decree.Store.Serializer.known_type?/1`.
+
+    Answers `false`, so the event holds, when the provider cannot map the type name: when it
+    raises `ArgumentError` (the default provider, for a name that is no existing atom),
+    `UndefinedFunctionError` (a name that is no struct module) or `FunctionClauseError` (a
+    custom provider with clauses only for the names it knows, meeting a newer one). Any
+    other exception the provider raises is a crash, not an unknown type, and is raised.
     """
     def known_type?(type) when is_binary(type) do
       _struct = TypeProvider.to_struct(type)
 
       true
     rescue
-      _error in [ArgumentError, UndefinedFunctionError] -> false
+      _error in [ArgumentError, UndefinedFunctionError, FunctionClauseError] -> false
     end
 
     defp to_struct(data, nil), do: data
