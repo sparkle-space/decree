@@ -53,6 +53,22 @@ defmodule Decree.Serialization.JsonSerializerTest do
       def to_struct(_type), do: raise("type provider crashed")
     end
 
+    # Has a `to_struct/1` clause for the known type, whose private finite helper then has no
+    # clause for it: a genuine provider bug, not a missing type.
+    defmodule HelperClauseTypeProvider do
+      @behaviour Decree.EventStore.TypeProvider
+
+      @known_type FiniteTypeProvider.known_type()
+
+      @impl Decree.EventStore.TypeProvider
+      def to_string(struct), do: Decree.Serialization.ModuleNameTypeProvider.to_string(struct)
+
+      @impl Decree.EventStore.TypeProvider
+      def to_struct(@known_type = type), do: build(type)
+
+      defp build("Elixir.Decree.Store.SomeOtherEvent"), do: %{}
+    end
+
     test "answers false for a name that is no module, under the default provider" do
       assert JsonSerializer.known_type?("#{__MODULE__}.NamedEvent")
       refute JsonSerializer.known_type?("Elixir.Decree.X16.NotYetReleasedEvent")
@@ -71,6 +87,14 @@ defmodule Decree.Serialization.JsonSerializerTest do
 
       refute JsonSerializer.known_type?(unknown_type)
       assert JsonSerializer.known_type?(FiniteTypeProvider.known_type())
+    end
+
+    test "raises a FunctionClauseError a known type's clause meets in a helper" do
+      FiniteTypeProvider.configure!(HelperClauseTypeProvider)
+
+      assert_raise FunctionClauseError, fn ->
+        JsonSerializer.known_type?(FiniteTypeProvider.known_type())
+      end
     end
 
     test "lets any other provider crash through" do
