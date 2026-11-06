@@ -118,12 +118,15 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
     %Subscription{subscription: subscription} = state
 
+    # A held subscription's timer probes rather than subscribes (see `SubscriptionFsm`).
     state =
-      subscription
-      |> SubscriptionFsm.subscribe()
+      case subscription do
+        %SubscriptionFsm{state: :held} -> SubscriptionFsm.probe(subscription)
+        %SubscriptionFsm{} -> SubscriptionFsm.subscribe(subscription)
+      end
       |> apply_subscription_to_state(state)
 
-    {:noreply, state}
+    noreply(state)
   end
 
   # A timer that fired before it was cancelled or replaced leaves its message in the
@@ -145,7 +148,20 @@ defmodule Decree.Store.Subscriptions.Subscription do
       |> SubscriptionFsm.notify_events(events)
       |> apply_subscription_to_state(state)
 
-    {:noreply, state}
+    noreply(state)
+  end
+
+  # The publisher stopped a batch before an event of a type this instance does not know.
+  @impl GenServer
+  def handle_info({:events_pending, event_number}, %Subscription{} = state) do
+    %Subscription{subscription: subscription} = state
+
+    state =
+      subscription
+      |> SubscriptionFsm.notify_pending(event_number)
+      |> apply_subscription_to_state(state)
+
+    noreply(state)
   end
 
   @impl GenServer
@@ -157,7 +173,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
       |> SubscriptionFsm.checkpoint()
       |> apply_subscription_to_state(state)
 
-    {:noreply, state}
+    noreply(state)
   end
 
   # The retry timer armed when a catch-up read failed.
@@ -170,7 +186,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
       |> SubscriptionFsm.retry_catch_up(token)
       |> apply_subscription_to_state(state)
 
-    {:noreply, state}
+    noreply(state)
   end
 
   @impl GenServer
@@ -187,7 +203,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
       |> SubscriptionFsm.disconnect(lock_ref)
       |> apply_subscription_to_state(state)
 
-    {:noreply, state}
+    noreply(state)
   end
 
   @impl GenServer
@@ -204,7 +220,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
     if unsubscribed?(state) do
       {:stop, reason, state}
     else
-      {:noreply, state}
+      noreply(state)
     end
   end
 
@@ -222,7 +238,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
       |> SubscriptionFsm.catch_up()
       |> apply_subscription_to_state(state)
 
-    {:noreply, state}
+    noreply(state)
   end
 
   @impl GenServer
@@ -237,7 +253,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
     state = apply_subscription_to_state(subscription, state)
 
-    {:reply, reply, state}
+    reply(reply, state)
   end
 
   @impl GenServer
@@ -257,7 +273,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
         |> SubscriptionFsm.subscribe()
         |> apply_subscription_to_state(state)
 
-      {:reply, {:ok, self()}, state}
+      reply({:ok, self()}, state)
     else
       {:error, _error} = reply ->
         {:reply, reply, state}
@@ -276,7 +292,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
     if unsubscribed?(state) do
       {:stop, :shutdown, :ok, state}
     else
-      {:reply, :ok, state}
+      reply(:ok, state)
     end
   end
 
@@ -313,24 +329,43 @@ defmodule Decree.Store.Subscriptions.Subscription do
     state
   end
 
-  # A subscription no longer parked cancels its pending timer: left to run, it would
-  # shorten the full wait after a lock lost before it fires.
+  # A subscription no longer parked (or held) cancels its pending timer: left to run, it
+  # would shorten the full wait after a lock lost before it fires.
+  #
+  # Every event is followed by the FSM's `hold` check, so a subscription holds before an
+  # event of an unknown type as soon as the events before it are drained, whichever event
+  # drained them (an ack, a read, a filtered batch).
   defp apply_subscription_to_state(%SubscriptionFsm{} = subscription, %Subscription{} = state) do
+    subscription = SubscriptionFsm.hold(subscription)
+
     %SubscriptionFsm{state: fsm} = subscription
 
-    state = if fsm in [:initial, :disconnected], do: state, else: cancel_subscribe_timer(state)
+    state =
+      if fsm in [:initial, :disconnected, :held],
+        do: state,
+        else: cancel_subscribe_timer(state)
 
     handle_subscription_state(%Subscription{state | subscription: subscription})
   end
 
-  # Attempt to subscribe to an initial or disconnected subscription after the wait the
-  # FSM gives. Every pass through a parked state comes here (a subscriber connecting,
-  # an ack, events), so a timer is armed only when none is pending or when it is due
-  # sooner.
+  # A held transient subscription stops (see `noreply/1`); it has nothing to probe.
+  defp handle_subscription_state(
+         %Subscription{
+           subscription: %SubscriptionFsm{state: :held, data: %SubscriptionState{transient: true}}
+         } = state
+       ) do
+    state
+  end
+
+  # Attempt to subscribe to an initial or disconnected subscription, or probe a held one,
+  # after the wait the FSM gives. Every pass through a parked state comes here (a
+  # subscriber connecting, an ack, events), so a timer is armed only when none is pending
+  # or when it is due sooner. A held subscription's wait is drawn once per hold or probe
+  # and kept in its state, so a later pass does not shorten it.
   defp handle_subscription_state(
          %Subscription{subscription: %SubscriptionFsm{state: fsm, data: data}} = state
        )
-       when fsm in [:initial, :disconnected] do
+       when fsm in [:initial, :disconnected, :held] do
     wait = SubscriptionFsm.resubscribe_wait(data)
     due_at = System.monotonic_time(:millisecond) + wait
 
@@ -414,11 +449,39 @@ defmodule Decree.Store.Subscriptions.Subscription do
   # again. Every state past those holds the lock (a persistent subscription) and
   # delivers events.
   defp status(:unsubscribed), do: :unsubscribed
-  defp status(fsm_state) when fsm_state in [:initial, :disconnected], do: :parked
+  # Held before an event of an unknown type: its lock released, it delivers nothing.
+  defp status(fsm_state) when fsm_state in [:initial, :disconnected, :held], do: :parked
   defp status(_fsm_state), do: :subscribed
 
   def unsubscribed?(%Subscription{subscription: %SubscriptionFsm{state: :unsubscribed}}), do: true
   def unsubscribed?(%Subscription{}), do: false
+
+  # A transient subscription held before an event of a type this instance does not know
+  # stops: it has no lock to release for another instance, and its position lives in this
+  # process, so its subscriber resubscribes from its own position.
+  defp noreply(%Subscription{} = state) do
+    case stop_reason(state) do
+      nil -> {:noreply, state}
+      reason -> {:stop, reason, state}
+    end
+  end
+
+  defp reply(reply, %Subscription{} = state) do
+    case stop_reason(state) do
+      nil -> {:reply, reply, state}
+      reason -> {:stop, reason, reply, state}
+    end
+  end
+
+  defp stop_reason(%Subscription{
+         subscription: %SubscriptionFsm{
+           state: :held,
+           data: %SubscriptionState{transient: true, held: %{type: type}}
+         }
+       }),
+       do: {:shutdown, {:unknown_event_type, type}}
+
+  defp stop_reason(%Subscription{}), do: nil
 
   defp describe(%Subscription{stream_uuid: stream_uuid, subscription_name: name}),
     do: "Subscription #{inspect(name)}@#{inspect(stream_uuid)}"

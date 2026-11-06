@@ -23,12 +23,17 @@ defmodule Decree.Store.PubSub do
 
   @doc """
   Subscribes the caller to the given topic.
+
+  `notices: true` also sends the caller `{:events_pending, event_number}` when the publisher
+  stops a batch before an event whose type this instance does not know. A subscription
+  process registers with it; an aggregate or a transient subscriber does not.
   """
   @spec subscribe(
           Decree.Store.t(),
           binary,
           selector: (Decree.Store.RecordedEvent.t() -> any()),
-          mapper: (Decree.Store.RecordedEvent.t() -> any())
+          mapper: (Decree.Store.RecordedEvent.t() -> any()),
+          notices: boolean()
         ) :: :ok | {:error, term}
   def subscribe(event_store, topic, opts \\ [])
 
@@ -63,6 +68,14 @@ defmodule Decree.Store.PubSub do
     events = events |> filter(selector) |> map(mapper)
 
     send(pid, {:events, events})
+  end
+
+  # A position notice from the publisher: the events from `event_number` on were not
+  # broadcast, as the first is of a type this instance does not know. Only a subscription
+  # process registers for it (`notices: true`); every other subscriber sees the events
+  # before it and nothing more.
+  defp notify_subscriber(pid, {:events_pending, _event_number} = message, opts) do
+    if Keyword.get(opts, :notices, false), do: send(pid, message)
   end
 
   defp notify_subscriber(pid, message, _opts) do

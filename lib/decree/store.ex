@@ -785,7 +785,9 @@ defmodule Decree.Store do
       def subscribe(stream_uuid, opts \\ []) do
         name = name(opts)
 
-        PubSub.subscribe(name, stream_uuid, Keyword.delete(opts, :name))
+        # `:notices` registers a subscription process for the publisher's position notices,
+        # which a transient subscriber is never sent.
+        PubSub.subscribe(name, stream_uuid, Keyword.drop(opts, [:name, :notices]))
       end
 
       def subscribe_to_stream(stream_uuid, subscription_name, subscriber, opts \\ []) do
@@ -2093,8 +2095,49 @@ defmodule Decree.Store do
   `[:decree, :store, :subscription, :catch_up, :error]`, with the measurement
   `system_time` and the metadata `event_store`, `subscription_name`, `stream_uuid`,
   `reason`, `retry_interval` (the wait scheduled before the next read) and
-  `attempt` (the number of consecutive failed reads). A read that raises, such as an
-  event that fails to deserialize, still stops the subscription.
+  `attempt` (the number of consecutive failed reads). An event of a type the event
+  store's serializer does not know is not a read error: see "Unknown event types"
+  below. Any other event that fails to deserialize, such as a corrupt payload, raises in
+  the read and still stops the subscription.
+
+  ## Unknown event types
+
+  An event appended by a newer release of the application can have a type this
+  instance's serializer does not know (`c:Decree.Store.Serializer.known_type?/1`). A
+  subscription never skips such an event and never crashes on it: it holds before it.
+
+  The subscription delivers the events before it as usual. Once those are acknowledged
+  (or filtered out by its `selector`), it writes its checkpoint at once, whatever its
+  `checkpoint_threshold` or `checkpoint_after`, sends each subscriber
+  `{:subscription_lock_lost, subscription}`, and releases its advisory lock, so another
+  instance, one that knows the type, can take the lock and deliver the event. The
+  subscription process lives on: `local_subscriptions/1` reports it `:parked`, and it
+  delivers nothing and holds no lock. A subscriber that never acknowledges an event
+  before the unknown one keeps the subscription where it is.
+
+  While held, the subscription probes, without taking the lock, after a wait drawn at
+  random between half of and the whole of the backoff a failed catch-up read takes (one
+  second, doubling per probe, up to `subscription_retry_interval` or the subscription's
+  `retry_interval`). If its row has reached the held event, or is gone, another
+  instance has delivered it: the subscription waits for its lock as after losing it,
+  silently. If the event's type is known now, it takes its lock again and delivers the
+  event. Otherwise it stays held.
+
+  Each hold, and each probe that leaves the subscription held, logs a warning naming the
+  event's type and number (never its data) and emits the telemetry event
+  `[:decree, :store, :subscription, :held]`, with the measurement `system_time` and the
+  metadata `event_store`, `subscription_name`, `stream_uuid`, `event_type`,
+  `event_number`, `retry_interval` (the wait scheduled before the next probe, `nil` for a
+  transient subscription), `attempt` (the number of this alarm in the hold, from one) and
+  `transient`.
+
+  A transient subscription has no lock to release and its position lives in its
+  process: once the events before the unknown one are acknowledged it alarms and stops,
+  with reason `{:shutdown, {:unknown_event_type, event_type}}`.
+
+  A read (`read_*`, `stream_*`, `read_query`) that meets an event of an unknown type
+  raises `Decree.Store.UnknownEventTypeError`, naming its type and number. A transient
+  `subscribe/2` subscriber is sent the events before it, and none at or after it.
 
   """
   @callback subscribe_to_stream(
@@ -2157,7 +2200,8 @@ defmodule Decree.Store do
     - `transient`, whether the subscription is transient;
     - `status`: `:subscribed` while delivering events (for a persistent
       subscription, holding its advisory lock), `:parked` while waiting to
-      subscribe or to take its lock again after losing it, or `:unsubscribed`.
+      subscribe or to take its lock again after losing it, or while held before an
+      event of an unknown type (see `c:subscribe_to_stream/4`), or `:unsubscribed`.
 
   Returns `{infos, omitted}`. Each subscription is read concurrently, waiting at
   most `timeout` milliseconds (default 1,000). A subscription that does not

@@ -379,7 +379,10 @@ defmodule Decree.Decision do
   A raise from any callback, from a `Decree.Event.Tags` implementation, or from reading an
   event the reads matched, in the store's deserializing, the adapter's mapping or an upcaster,
   is rescued, and the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An
-  error from a `Decree.Event.Tags` implementation is the answer as it stands.
+  error from a `Decree.Event.Tags` implementation is the answer as it stands. A matched event
+  of a type this release does not know (one appended by a newer release) answers
+  `{:error, :unknown_event_type}`, with nothing appended and no retry: only an instance that
+  knows the type can decide on it.
 
   An exit or a throw from any of it, on any decision, answers
   `{:error, :decision_execution_failed}`. It logs nothing but what

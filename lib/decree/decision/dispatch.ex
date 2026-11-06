@@ -18,7 +18,7 @@ defmodule Decree.Decision.Dispatch do
   alias Decree.EventStore.EventData
   alias Decree.PersonalFields
   alias Decree.PersonalFields.RedactedError
-  alias Decree.Store.{AppendResult, ReadResult}
+  alias Decree.Store.{AppendResult, ReadResult, UnknownEventTypeError}
   alias Decree.Telemetry
   alias Decree.UUID
 
@@ -440,6 +440,9 @@ defmodule Decree.Decision.Dispatch do
 
   # Each read answers the tags of the positions its own framework items matched, in its own
   # statement, by those items' indexes in that read.
+  #
+  # A matched event of a type this release does not know refuses the dispatch with
+  # `{:error, :unknown_event_type}`: nothing is decided on a read that cannot be folded.
   defp read_query(%__MODULE__{command_tag: nil} = dispatch, %Read{items: items} = read) do
     %__MODULE__{application: application, bounds: bounds} = dispatch
 
@@ -447,6 +450,8 @@ defmodule Decree.Decision.Dispatch do
       count: bounds.max_events + 1,
       tag_items: read.framework_indexes
     )
+  rescue
+    _error in UnknownEventTypeError -> {:error, :unknown_event_type}
   end
 
   defp read_query(%__MODULE__{} = dispatch, %Read{items: items} = read) do
@@ -457,6 +462,8 @@ defmodule Decree.Decision.Dispatch do
       command_tag: command_tag,
       tag_items: read.framework_indexes
     )
+  rescue
+    _error in UnknownEventTypeError -> {:error, :unknown_event_type}
   end
 
   # The tags of every position a framework item matched, as the reads answered them, with no

@@ -37,6 +37,19 @@ if Code.ensure_loaded?(Jason) do
       |> JsonDecoder.decode()
     end
 
+    @doc """
+    Whether the configured `Decree.EventStore.TypeProvider` can build the type, as
+    `deserialize/2` asks it to. Used by the event store as its serializer's
+    `c:Decree.Store.Serializer.known_type?/1`.
+    """
+    def known_type?(type) when is_binary(type) do
+      _struct = TypeProvider.to_struct(type)
+
+      true
+    rescue
+      _error in [ArgumentError, UndefinedFunctionError] -> false
+    end
+
     defp to_struct(data, nil), do: data
     defp to_struct(data, struct), do: struct(struct, data)
   end

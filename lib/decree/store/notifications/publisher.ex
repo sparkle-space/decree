@@ -63,10 +63,18 @@ defmodule Decree.Store.Notifications.Publisher do
     events
     |> Stream.map(&read_events(&1, state))
     |> Stream.reject(&is_nil/1)
-    |> Enum.each(fn {stream_uuid, batch} -> broadcast(event_store, stream_uuid, batch) end)
+    |> Enum.each(fn {stream_uuid, batch, pending} ->
+      broadcast(event_store, stream_uuid, batch, pending)
+    end)
 
     {:noreply, [], state}
   end
+
+  # Each notification's range is read and published on its own. A range that reaches an event
+  # whose type this instance does not know is cut there: the events before it are broadcast,
+  # and the subscription processes are sent a position notice for it (see `PubSub`), so they
+  # read on and hold before it. Nothing at or after it is broadcast, so no subscriber skips it,
+  # and nothing raises, so the notifications tree is not restarted.
 
   defp read_events(%Notification{} = notification, %State{} = state) do
     %Notification{
@@ -95,9 +103,9 @@ defmodule Decree.Store.Notifications.Publisher do
              causation_id_type: causation_id_type
            ) do
         {:ok, events} ->
-          deserialized_events = deserialize_recorded_events(events, serializer)
+          {deserialized_events, pending} = RecordedEvent.deserialize_known(events, serializer)
 
-          {stream_uuid, deserialized_events}
+          {stream_uuid, deserialized_events, pending}
 
         {:error, error} ->
           Logger.error(
@@ -113,11 +121,20 @@ defmodule Decree.Store.Notifications.Publisher do
     end
   end
 
-  defp deserialize_recorded_events(recorded_events, serializer) do
-    Enum.map(recorded_events, &RecordedEvent.deserialize(&1, serializer))
-  end
+  defp broadcast(event_store, stream_uuid, events, pending) do
+    if events != [], do: PubSub.broadcast(event_store, stream_uuid, {:events, events})
 
-  defp broadcast(event_store, stream_uuid, events) do
-    PubSub.broadcast(event_store, stream_uuid, {:events, events})
+    case pending do
+      nil ->
+        :ok
+
+      {event_number, event_type} ->
+        Logger.warning(
+          "Decree.Store notifications stopped a batch of #{inspect(stream_uuid)} at event " <>
+            "#{event_number}: its type #{inspect(event_type)} is not known to this instance"
+        )
+
+        PubSub.broadcast(event_store, stream_uuid, {:events_pending, event_number})
+    end
   end
 end

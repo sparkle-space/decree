@@ -19,6 +19,18 @@ defmodule Decree.Store.Serializer do
   @callback deserialize(binary | map, config) :: any
 
   @doc """
+  Whether `deserialize/2` can build an event of the given type: `false` for a type this
+  release does not define, such as one appended by a newer release.
+
+  Optional. A serializer that does not implement it knows every type. A read that meets an
+  unknown type raises `Decree.Store.UnknownEventTypeError`, and a subscription holds before
+  the event instead of delivering past it.
+  """
+  @callback known_type?(type :: String.t()) :: boolean()
+
+  @optional_callbacks known_type?: 1
+
+  @doc """
   Get the serializer module from the given config for the event store.
   """
   def serializer(event_store, config) do

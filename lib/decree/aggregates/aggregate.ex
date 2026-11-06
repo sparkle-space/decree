@@ -103,6 +103,17 @@ defmodule Decree.Aggregates.Aggregate do
   A plain `{:error, :key_unknown}` from preparing an append does not stop the aggregate: its
   state is still good.
 
+  ## Unknown event types
+
+  An aggregate whose stream holds an event of a type this release does not know (one appended
+  by a newer release, during a rolling deploy) refuses rather than fold past it. It stops under
+  `{:shutdown, :unknown_event_type}` and the caller gets `{:error, :unknown_event_type}`, in
+  the same places as `:key_unknown`: populating on dispatch, the rebuild after a
+  `:wrong_expected_version`, and a cold `aggregate_state/4`. A running aggregate never receives
+  such an event: the event store's publisher stops a batch before it, so the next event it
+  receives leaves a gap and it stops, and a command it runs meanwhile fails to append with
+  `:wrong_expected_version` and refuses on the rebuild.
+
   `format_status/1` keeps the state, and the dispatch metadata a command carries, out of crash
   reports and `:sys.get_status/1`. An aggregate that uses `Decree.PersonalFields.Aggregate` can
   hold decrypted state, so what leaves `apply/2`, `execute/2` or `before_execute` on one is
@@ -266,6 +277,11 @@ defmodule Decree.Aggregates.Aggregate do
        {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
         {:error, :key_unknown}
 
+      :exit,
+      {{:shutdown, :unknown_event_type},
+       {GenServer, :call, [^name, {:execute_command, ^context}, ^timeout]}} ->
+        {:error, :unknown_event_type}
+
       # An exit reason holds the call, and the call holds the context: its command and its
       # metadata. Leaving here as an exit would print them in the task's crash report. These
       # are the two answers the dispatcher gives for such an exit.
@@ -305,6 +321,7 @@ defmodule Decree.Aggregates.Aggregate do
             |> case do
               %Aggregate{aggregate_state: aggregate_state} -> {:ok, aggregate_state}
               {:error, :key_unknown} = error -> error
+              {:error, :unknown_event_type} = error -> error
             end
           end)
 
@@ -315,6 +332,12 @@ defmodule Decree.Aggregates.Aggregate do
           {:ok, {:error, :key_unknown}} ->
             exit(
               {{:shutdown, :key_unknown}, {GenServer, :call, [name, :aggregate_state, timeout]}}
+            )
+
+          {:ok, {:error, :unknown_event_type}} ->
+            exit(
+              {{:shutdown, :unknown_event_type},
+               {GenServer, :call, [name, :aggregate_state, timeout]}}
             )
 
           nil ->
@@ -362,6 +385,11 @@ defmodule Decree.Aggregates.Aggregate do
         Logger.warning(describe(state) <> " stopping: a personal field can't be read")
 
         {:stop, {:shutdown, :key_unknown}, state}
+
+      {:error, :unknown_event_type} ->
+        Logger.warning(describe(state) <> " stopping: its stream holds an unknown event type")
+
+        {:stop, {:shutdown, :unknown_event_type}, state}
     end
   end
 
@@ -743,6 +771,11 @@ defmodule Decree.Aggregates.Aggregate do
             Logger.warning(describe(state) <> " stopping: a personal field can't be read")
 
             {reply, %Aggregate{state | stop_reason: {:shutdown, :key_unknown}}}
+
+          {:error, :unknown_event_type} = reply ->
+            Logger.warning(describe(state) <> " stopping: its stream holds an unknown event type")
+
+            {reply, %Aggregate{state | stop_reason: {:shutdown, :unknown_event_type}}}
         end
 
       {:error, :append_condition_failed} ->

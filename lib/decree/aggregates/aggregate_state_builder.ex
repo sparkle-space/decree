@@ -7,6 +7,7 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   alias Decree.PersonalFields
   alias Decree.PersonalFields.RedactedError
   alias Decree.Snapshotting
+  alias Decree.Store.UnknownEventTypeError
   alias Decree.Telemetry
 
   telemetry_event(%{
@@ -56,7 +57,9 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   the aggregate from the event store to rebuild its state from those events.
 
   Answers the `%Aggregate{}`, or `{:error, :key_unknown}` when a personal value in its
-  snapshot or in an event its fold reads can't be read. It never raises for that.
+  snapshot or in an event its fold reads can't be read, or `{:error, :unknown_event_type}`
+  when its stream holds an event of a type this release does not know (one appended by a
+  newer release): the fold stops there, and never folds past it. It never raises for either.
   """
   def populate(%Aggregate{} = state) do
     %Aggregate{snapshotting: snapshotting} = state
@@ -102,7 +105,8 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
   @doc """
   Load events from the event store, in batches, to rebuild the aggregate state
 
-  Answers the `%Aggregate{}`, or `{:error, :key_unknown}` as `populate/1` does.
+  Answers the `%Aggregate{}`, or `{:error, :key_unknown}` or `{:error, :unknown_event_type}`
+  as `populate/1` does.
   """
   def rebuild_from_events(%Aggregate{} = state), do: rebuild_from_events(state, %{})
 
@@ -179,13 +183,19 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
     start_time = Telemetry.start(telemetry_prefix, telemetry_metadata(state))
     fold = PersonalFields.fold_events(state.aggregate_module)
 
+    # The stream is lazy: an event of a type this release does not know raises as the fold
+    # pulls it, from the store's read, before any `apply/2` sees it.
     result =
-      Enum.reduce_while(event_stream, {state, 0, answers}, fn event, {state, count, answers} ->
-        case apply_event(event, state, fold, answers) do
-          {:ok, state, answers} -> {:cont, {state, count + 1, answers}}
-          {:error, :key_unknown} = error -> {:halt, error}
-        end
-      end)
+      try do
+        Enum.reduce_while(event_stream, {state, 0, answers}, fn event, {state, count, answers} ->
+          case apply_event(event, state, fold, answers) do
+            {:ok, state, answers} -> {:cont, {state, count + 1, answers}}
+            {:error, :key_unknown} = error -> {:halt, error}
+          end
+        end)
+      rescue
+        error in UnknownEventTypeError -> {:error, :unknown_event_type, error}
+      end
 
     case result do
       {:error, :key_unknown} = error ->
@@ -193,6 +203,17 @@ defmodule Decree.Aggregates.AggregateStateBuilder do
         Telemetry.stop(telemetry_prefix, start_time, metadata, %{count: 0})
 
         error
+
+      {:error, :unknown_event_type, %UnknownEventTypeError{type: type}} ->
+        metadata =
+          state
+          |> telemetry_metadata()
+          |> Map.put(:error, :unknown_event_type)
+          |> Map.put(:event_type, type)
+
+        Telemetry.stop(telemetry_prefix, start_time, metadata, %{count: 0})
+
+        {:error, :unknown_event_type}
 
       {state, count, _answers} ->
         Telemetry.stop(telemetry_prefix, start_time, telemetry_metadata(state), %{count: count})

@@ -51,6 +51,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #
   #   request_catch_up | catching_up -> catch_up_retry -> (read again)
   #
+  # A catch-up read that meets an event of a type this instance does not know records it
+  # as `hold_pending` and reads nothing at or after it. Once the events before it are
+  # drained (acked or filtered, none queued or in flight), the subscription holds before
+  # it in `held`: it has written its checkpoint and released its lock, and probes on a
+  # backoff timer, without the lock, until another instance has delivered the event or
+  # this one knows its type (sparkle-space/sparklespace#7804):
+  #
+  #   (any delivering state) -> held -> disconnected | (subscribe as disconnected does)
+  #
 
   defstate initial do
     defevent subscribe, data: %SubscriptionState{transient: true} = data do
@@ -139,8 +148,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   end
 
   defstate subscribed do
-    # Notify events when subscribed
-    defevent notify_events(events), data: %SubscriptionState{} = data do
+    # Notify events when subscribed. While a hold is pending nothing at or after the held
+    # event is enqueued: the catch-all only tracks `last_received`.
+    defevent notify_events(events), data: %SubscriptionState{hold_pending: nil} = data do
       %SubscriptionState{last_received: last_received} = data
 
       expected_event = last_received + 1
@@ -187,6 +197,20 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
     defevent catch_up, data: %SubscriptionState{} = data do
       next_state(:request_catch_up, data)
+    end
+
+    # The publisher stopped a batch before `event_number`, an event of a type this
+    # instance does not know, and broadcast only the events before it. Read on from
+    # storage, as for a gap in the events received: the catch-up read meets the event and
+    # the subscription holds before it.
+    defevent notify_pending(event_number), data: %SubscriptionState{hold_pending: nil} = data do
+      %SubscriptionState{last_received: last_received} = data
+
+      if event_number > last_received do
+        next_state(:request_catch_up, track_last_received(data, event_number))
+      else
+        next_state(:subscribed, data)
+      end
     end
 
     defevent checkpoint(), data: %SubscriptionState{} = data do
@@ -266,29 +290,42 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   defstate disconnected do
     # Attempt to subscribe
     defevent subscribe, data: %SubscriptionState{} = data do
-      with {:ok, subscription} <- create_subscription(data),
-           {:ok, lock_ref} <- try_acquire_exclusive_lock(data, subscription) do
-        %Storage.Subscription{
-          subscription_id: subscription_id,
-          last_seen: last_seen
-        } = subscription
+      resubscribe(data)
+    end
+  end
 
-        last_ack = last_seen || 0
+  # Holding before an event of a type this instance does not know (#7804). The events
+  # before it were delivered and checkpointed, every subscriber was sent
+  # `{:subscription_lock_lost, subscription}`, and the advisory lock was released, so an
+  # instance that knows the type can take the lock and deliver the event. Nothing is
+  # delivered here and no lock is held; `Subscription.status/1` reports `:parked`.
+  #
+  # `Subscription` arms a timer with the wait drawn into `held`, and its `probe` reads, on
+  # the main pool and without the lock:
+  #
+  #   - the subscription's row: at or past the held event, or gone, means another instance
+  #     delivered it, so go to `disconnected`, a silent standby on the full interval;
+  #   - else the held event's type: known now, so subscribe as `disconnected` does (row,
+  #     lock, catch-up); still unknown, or the probe failed, so stay held, alarm again and
+  #     wait longer.
+  #
+  # Every other event is handled by the catch-alls: events and notices track
+  # `last_received` only, an ack or a checkpoint is ignored (nothing is in flight), and a
+  # late `:lock_released` for the released lock does not match `lock_ref` (now `nil`).
+  defstate held do
+    defevent probe, data: %SubscriptionState{held: %{event_number: event_number}} = data do
+      case probe_held(data, event_number) do
+        :delivered ->
+          next_state(:disconnected, %SubscriptionState{data | held: nil, subscribe_failures: 0})
 
-        data = %SubscriptionState{
-          data
-          | subscription_id: subscription_id,
-            lock_ref: lock_ref,
-            last_sent: last_ack,
-            last_ack: last_ack,
-            subscribe_failures: 0
-        }
+        :known ->
+          resubscribe(%SubscriptionState{data | held: nil})
 
-        notify_subscribed(data)
+        :unknown ->
+          hold_again(data, nil)
 
-        next_state(:request_catch_up, data)
-      else
-        failure -> next_state(:disconnected, subscribe_failed(data, failure))
+        {:error, reason} ->
+          hold_again(data, reason)
       end
     end
   end
@@ -317,9 +354,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       |> monitor_subscriber(subscriber, opts)
       |> notify_subscribers()
 
-    # A subscriber connecting while the subscription is parked without its lock is
-    # told it is subscribed once the lock is taken.
-    unless state in [:initial, :disconnected] do
+    # A subscriber connecting while the subscription is parked without its lock (or held,
+    # having released it) is told it is subscribed once the lock is taken.
+    unless state in [:initial, :disconnected, :held] do
       notify_subscribed(subscriber)
     end
 
@@ -335,7 +372,37 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     next_state(state, track_last_received(data, events))
   end
 
+  # A position notice outside `subscribed`: track `last_received` only, as for events.
+  defevent notify_pending(event_number), data: %SubscriptionState{} = data, state: state do
+    next_state(state, track_last_received(data, event_number))
+  end
+
   defevent catch_up, data: %SubscriptionState{} = data, state: state do
+    next_state(state, data)
+  end
+
+  # Checked after every event (`Subscription` sends it): once a hold is pending and the
+  # events before the held one are drained, none queued and none in flight (acked, or
+  # filtered by the selector), hold before it. A subscriber that never acks an event before
+  # it keeps the subscription where it is, as it would without the hold.
+  defevent hold,
+    data:
+      %SubscriptionState{
+        hold_pending: {_event_number, _event_type},
+        queue_size: 0,
+        in_flight_event_numbers: []
+      } = data,
+    state: state,
+    when: state in [:request_catch_up, :catching_up, :subscribed, :max_capacity, :catch_up_retry] do
+    hold_subscription(data)
+  end
+
+  defevent hold, data: %SubscriptionState{} = data, state: state do
+    next_state(state, data)
+  end
+
+  # A probe timer that fired after the subscription left `held`.
+  defevent probe, data: %SubscriptionState{} = data, state: state do
     next_state(state, data)
   end
 
@@ -463,6 +530,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   `retry_interval` until an attempt fails with anything but `:lock_already_taken`, then
   the capped backoff over the consecutive failed attempts.
   """
+  def resubscribe_wait(%SubscriptionState{held: %{wait: wait}}), do: wait
+
   def resubscribe_wait(%SubscriptionState{subscribe_failures: 0} = data) do
     %SubscriptionState{retry_interval: retry_interval} = data
 
@@ -478,7 +547,45 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   defp subscribe_to_events(%SubscriptionState{} = data) do
     %SubscriptionState{event_store: event_store, stream_uuid: stream_uuid} = data
 
-    PubSub.subscribe(event_store, stream_uuid)
+    # With the publisher's position notices, so a batch cut before an event of an unknown
+    # type still leads to a catch-up read, which holds before it.
+    PubSub.subscribe(event_store, stream_uuid, notices: true)
+  end
+
+  # Take the row and the lock again and catch up from the row's position: the subscribe of
+  # `disconnected`, and of `held` once the held event's type is known.
+  #
+  # `last_received` is raised to the row's position. Another instance can have delivered
+  # events this one never received (the publisher here cut their batch before an unknown
+  # type); left behind, an empty catch-up read would never find the subscription caught up.
+  defp resubscribe(%SubscriptionState{} = data) do
+    with {:ok, subscription} <- create_subscription(data),
+         {:ok, lock_ref} <- try_acquire_exclusive_lock(data, subscription) do
+      %Storage.Subscription{
+        subscription_id: subscription_id,
+        last_seen: last_seen
+      } = subscription
+
+      %SubscriptionState{last_received: last_received} = data
+
+      last_ack = last_seen || 0
+
+      data = %SubscriptionState{
+        data
+        | subscription_id: subscription_id,
+          lock_ref: lock_ref,
+          last_received: max(last_received, last_ack),
+          last_sent: last_ack,
+          last_ack: last_ack,
+          subscribe_failures: 0
+      }
+
+      notify_subscribed(data)
+
+      next_state(:request_catch_up, data)
+    else
+      failure -> next_state(:disconnected, subscribe_failed(data, failure))
+    end
   end
 
   defp monitor_subscriber(%SubscriptionState{} = data, pid, opts) when is_pid(pid) do
@@ -561,6 +668,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   defp last_event_number([%RecordedEvent{event_number: event_number}]), do: event_number
   defp last_event_number([_event | events]), do: last_event_number(events)
 
+  # A hold is pending: nothing at or after the held event is read. Wait in `catching_up`
+  # for the events before it to drain; the `hold` event then holds.
+  def catch_up_from_stream(%SubscriptionState{hold_pending: {_event_number, _event_type}} = data) do
+    next_state(:catching_up, data)
+  end
+
   def catch_up_from_stream(%SubscriptionState{queue_size: 0} = data) do
     %SubscriptionState{last_sent: last_sent, last_received: last_received} = data
 
@@ -575,7 +688,17 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       end
 
     case result do
-      {:ok, []} ->
+      # The read met an event of a type this instance does not know: send the events
+      # before it, and hold before it once they are drained (the `hold` event).
+      {:ok, events, {_event_number, _event_type} = pending} ->
+        data =
+          %SubscriptionState{data | hold_pending: pending}
+          |> enqueue_events(events)
+          |> notify_subscribers()
+
+        next_state(:catching_up, data)
+
+      {:ok, [], nil} ->
         if last_sent == last_received do
           # Subscriber is up-to-date with latest published events
           next_state(:subscribed, data)
@@ -584,7 +707,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           next_state(:request_catch_up, data)
         end
 
-      {:ok, events} ->
+      {:ok, events, nil} ->
         data = data |> enqueue_events(events) |> notify_subscribers()
 
         if empty_queue?(data) do
@@ -606,8 +729,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       {:error, reason} ->
         # Any other read error, such as a Postgres error or a query or queue timeout:
         # hold the subscription and retry the read on a backoff timer. This covers a
-        # read that returns an error, not one that raises: an event that fails to
-        # deserialize raises in the read and still crashes the subscription.
+        # read that returns an error. An event of a type this instance does not know is
+        # not an error: the read stops before it and the subscription holds there (see
+        # `held`). Any other event that fails to deserialize, such as a corrupt payload,
+        # raises in the read and still stops the subscription.
         hold_catch_up(data, reason)
     end
   end
@@ -678,6 +803,235 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     min(first * Integer.pow(2, min(attempt - 1, 32)), retry_interval)
   end
 
+  # Hold before the event of a type this instance does not know (#7804), once the events
+  # before it are drained. In order: write the checkpoint now, whatever the checkpoint
+  # threshold or delay, so the next owner starts at the held event; tell every subscriber
+  # the lock is lost (an event handler stays alive and drops its batch); release the lock;
+  # drop the event tracking; and alarm. Another instance can now take the lock and deliver
+  # the event. A checkpoint write that fails is only logged, as everywhere: the next owner
+  # then delivers some events again, and skips none.
+  #
+  # A transient subscription has no row and no lock, and its position lives in its process:
+  # it alarms and stops (`Subscription` stops it under `{:shutdown, {:unknown_event_type,
+  # type}}`), so its subscriber resubscribes from its own position.
+  defp hold_subscription(%SubscriptionState{hold_pending: {event_number, event_type}} = data) do
+    data = data |> cancel_checkpoint_timer() |> persist_checkpoint()
+
+    case data do
+      %SubscriptionState{transient: true} ->
+        held = %{event_number: event_number, type: event_type, attempt: 1, wait: nil}
+        data = %SubscriptionState{data | hold_pending: nil, held: held}
+
+        alarm(data, nil)
+
+        next_state(:held, data)
+
+      %SubscriptionState{transient: false} ->
+        notify_lock_lost(data)
+        release_held_lock(data)
+
+        %SubscriptionState{retry_interval: retry_interval} = data
+
+        held = %{
+          event_number: event_number,
+          type: event_type,
+          attempt: 1,
+          wait: held_wait(1, retry_interval)
+        }
+
+        data =
+          %SubscriptionState{
+            data
+            | lock_ref: nil,
+              catch_up_retry_token: nil,
+              catch_up_failures: 0,
+              held: held
+          }
+          |> SubscriptionState.reset_event_tracking()
+          |> purge_in_flight_events()
+
+        alarm(data, nil)
+
+        next_state(:held, data)
+    end
+  end
+
+  # A probe found the event still not deliverable here: stay held, wait longer, alarm again.
+  defp hold_again(%SubscriptionState{held: held} = data, reason) do
+    %SubscriptionState{retry_interval: retry_interval} = data
+    %{attempt: attempt} = held
+
+    attempt = attempt + 1
+
+    data = %SubscriptionState{
+      data
+      | held: %{held | attempt: attempt, wait: held_wait(attempt, retry_interval)}
+    }
+
+    alarm(data, reason)
+
+    next_state(:held, data)
+  end
+
+  # Release the advisory lock before holding. `{:error, :not_found}` means it was already
+  # released (a lost session), and a call that does not answer still leaves the lock to be
+  # unlocked, or its session ended, by `AdvisoryLocks`: either way the subscription holds
+  # with `lock_ref` cleared, so a late `:lock_released` for it is ignored.
+  defp release_held_lock(%SubscriptionState{lock_ref: nil}), do: :ok
+
+  defp release_held_lock(%SubscriptionState{lock_ref: lock_ref} = data) do
+    %SubscriptionState{event_store: event_store, query_timeout: query_timeout} = data
+
+    server = Module.concat(event_store, AdvisoryLocks)
+
+    try do
+      case AdvisoryLocks.unlock(server, lock_ref, query_timeout) do
+        :ok -> :ok
+        {:error, :not_found} -> :ok
+      end
+    catch
+      :exit, reason ->
+        Logger.warning(
+          describe(data) <> " did not hear back on releasing its lock due to: " <> inspect(reason)
+        )
+
+        :ok
+    end
+  end
+
+  defp cancel_checkpoint_timer(%SubscriptionState{checkpoint_timer_ref: nil} = data), do: data
+
+  defp cancel_checkpoint_timer(%SubscriptionState{checkpoint_timer_ref: ref} = data) do
+    _result = Process.cancel_timer(ref)
+
+    %SubscriptionState{data | checkpoint_timer_ref: nil}
+  end
+
+  # The probe of a held subscription, on the main pool and without the lock: `:delivered`
+  # when its row is at or past the held event, or gone (or replaced by a row of another
+  # id); else `:known` or `:unknown` for the held event's type; `{:error, reason}` when a
+  # read failed. An event no longer there reads as known, so the subscribe that follows
+  # finds out what the stream holds now.
+  defp probe_held(%SubscriptionState{} = data, event_number) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      stream_uuid: stream_uuid,
+      subscription_name: subscription_name,
+      subscription_id: subscription_id,
+      query_timeout: query_timeout
+    } = data
+
+    row =
+      Storage.Subscription.subscription(conn, stream_uuid, subscription_name,
+        schema: schema,
+        timeout: query_timeout
+      )
+
+    case row do
+      {:error, :subscription_not_found} ->
+        :delivered
+
+      {:ok, %Storage.Subscription{subscription_id: id}} when id != subscription_id ->
+        :delivered
+
+      {:ok, %Storage.Subscription{last_seen: last_seen}}
+      when is_integer(last_seen) and last_seen >= event_number ->
+        :delivered
+
+      {:ok, %Storage.Subscription{}} ->
+        probe_held_type(data, event_number)
+
+      {:error, _reason} = error ->
+        error
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp probe_held_type(%SubscriptionState{} = data, event_number) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      serializer: serializer,
+      stream_uuid: stream_uuid,
+      query_timeout: query_timeout,
+      correlation_id_type: correlation_id_type,
+      causation_id_type: causation_id_type
+    } = data
+
+    case Stream.read_event_type(conn, stream_uuid, event_number,
+           schema: schema,
+           timeout: query_timeout,
+           correlation_id_type: correlation_id_type,
+           causation_id_type: causation_id_type
+         ) do
+      {:ok, nil} -> :known
+      {:ok, type} -> if RecordedEvent.known_type?(serializer, type), do: :known, else: :unknown
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  The wait before the next probe of a held subscription, after its `attempt`th alarm: an
+  equal jitter over the capped doubling of a failed catch-up read's backoff, so that
+  `div(base, 2) <= wait <= base <= retry_interval`, where `base` is that backoff.
+  """
+  def held_wait(attempt, retry_interval) do
+    base = retry_backoff(attempt, retry_interval)
+    half = div(base, 2)
+
+    half + :rand.uniform(half + 1) - 1
+  end
+
+  # The alarm of a held subscription: a warning naming the event's type and number, never
+  # its data, and the `[:decree, :store, :subscription, :held]` telemetry event (documented
+  # on `c:Decree.Store.subscribe_to_stream/4`). Raised on every hold and on every probe
+  # that leaves the subscription held.
+  defp alarm(%SubscriptionState{held: held} = data, reason) do
+    %SubscriptionState{
+      event_store: event_store,
+      stream_uuid: stream_uuid,
+      subscription_name: subscription_name,
+      transient: transient
+    } = data
+
+    %{event_number: event_number, type: event_type, attempt: attempt, wait: wait} = held
+
+    next =
+      case transient do
+        true -> ", stopping"
+        false -> ", attempt #{attempt}, probing again in #{wait}ms"
+      end
+
+    because =
+      case reason do
+        nil -> ""
+        reason -> " (the probe failed due to: " <> inspect(reason) <> ")"
+      end
+
+    Logger.warning(
+      describe(data) <>
+        " is held before event #{event_number}: its type #{inspect(event_type)} is not " <>
+        "known to this instance" <> because <> next
+    )
+
+    :telemetry.execute(
+      [:decree, :store, :subscription, :held],
+      %{system_time: System.system_time()},
+      %{
+        event_store: event_store,
+        subscription_name: subscription_name,
+        stream_uuid: stream_uuid,
+        event_type: event_type,
+        event_number: event_number,
+        retry_interval: wait,
+        attempt: attempt,
+        transient: transient
+      }
+    )
+  end
+
   defp read_stream_forward(%SubscriptionState{} = data) do
     %SubscriptionState{
       conn: conn,
@@ -691,7 +1045,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       causation_id_type: causation_id_type
     } = data
 
-    Stream.read_stream_forward(conn, stream_uuid, last_sent + 1, max_size,
+    Stream.read_stream_forward_known(conn, stream_uuid, last_sent + 1, max_size,
       schema: schema,
       serializer: serializer,
       timeout: query_timeout,
