@@ -66,7 +66,8 @@ defmodule Decree.Store.AdvisoryLocks do
   # about a second, doubling up to its retry interval, and nothing queued behind them
   # here (a disconnect, a pool or owner `:DOWN`) waits on the pool. A lock already
   # taken is not a failure: its owner tries again after the full interval. The cleanup
-  # driven by the connection listener and by owner `:DOWN`s does queue: it runs during
+  # driven by the connection listener, by owner `:DOWN`s and by an owner's own `unlock/3`
+  # (a subscription holding before an event of an unknown type) does queue: it runs during
   # reconnects, when the connection is briefly unavailable, and failing it would end
   # the session on every disconnect. The listener's cleanup tells the owners of the
   # locks it handles before it queries, and an owner's `:DOWN` has no owner left to
@@ -182,6 +183,44 @@ defmodule Decree.Store.AdvisoryLocks do
     :exit, reason -> {:error, reason}
   end
 
+  @doc """
+  Release a lock the caller took with `try_advisory_lock/3`, while the caller lives on.
+
+  The lock is dropped from tracking first, so its owner is sent no `:lock_released` for it.
+  Its key is then unlocked as the cleanup after an owner terminated is: on the lock's own
+  pool, when that pool is current and the lock was taken on its current session (a lock on
+  an earlier session or pool is no longer held, so there is nothing to unlock). The unlock
+  queues for the connection, bounded by the query timeout, as every cleanup here does. If it
+  fails in any way (the checkout, the query, the pool lookup), the session is ended, as any
+  cleanup that cannot be confirmed ends it, so that no lock count is left behind.
+
+  Returns `:ok` once the key is unlocked or its session is being ended, and
+  `{:error, :not_found}` when the caller holds no tracked lock with that reference (one
+  already released, for example by a lost session).
+  """
+  @spec unlock(GenServer.server(), reference(), timeout()) :: :ok | {:error, :not_found}
+  def unlock(server, lock_ref, timeout \\ 5_000) when is_reference(lock_ref) do
+    GenServer.call(server, {:unlock, lock_ref, self()}, timeout)
+  end
+
+  def handle_call({:unlock, lock_ref, owner}, _from, %State{} = state) do
+    %State{locks: locks} = state
+
+    case Enum.find(locks, fn {_owner_ref, %Lock{ref: ref, owner: lock_owner}} ->
+           ref == lock_ref and lock_owner == owner
+         end) do
+      {owner_ref, %Lock{} = lock} ->
+        Process.demonitor(owner_ref, [:flush])
+
+        state = release_lock(lock, %State{state | locks: Map.delete(locks, owner_ref)})
+
+        {:reply, :ok, state}
+
+      nil ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
   def handle_call({:try_advisory_lock, key, owner, timeout, deadline}, _from, %State{} = state) do
     {reply, state} = try_advisory_lock(key, owner, timeout, deadline, state)
 
@@ -285,7 +324,7 @@ defmodule Decree.Store.AdvisoryLocks do
 
       {:error, :timeout} = reply ->
         # Acquired after the caller stopped waiting: no one would own it.
-        case unlock(pool, key, state) do
+        case unlock_key(pool, key, state) do
           :ok -> {reply, state}
           {:error, error} -> {reply, end_session(state, pool, {:unlock_failed, error})}
         end
@@ -353,7 +392,7 @@ defmodule Decree.Store.AdvisoryLocks do
       {:ok, held} ->
         Enum.reduce_while(released, :ok, fn %Lock{key: key}, :ok ->
           with true <- MapSet.member?(held, key),
-               {:error, error} <- unlock(pool, key, state) do
+               {:error, error} <- unlock_key(pool, key, state) do
             {:halt, {:error, {:unlock_failed, error}}}
           else
             _unlocked_or_not_held -> {:cont, :ok}
@@ -495,7 +534,7 @@ defmodule Decree.Store.AdvisoryLocks do
   defp release_lock(%Lock{key: key, pool: lock_pool}, %State{} = state) do
     case whereis_pool(state) do
       {:ok, ^lock_pool} ->
-        case unlock(lock_pool, key, state) do
+        case unlock_key(lock_pool, key, state) do
           :ok -> state
           {:error, error} -> end_session(state, lock_pool, {:unlock_failed, error})
         end
@@ -514,7 +553,7 @@ defmodule Decree.Store.AdvisoryLocks do
 
   # `:ok` when the key is unlocked or was not held, `{:error, reason}` when the
   # unlock failed.
-  defp unlock(pool, key, %State{} = state) do
+  defp unlock_key(pool, key, %State{} = state) do
     %State{query_timeout: query_timeout, schema: schema} = state
 
     Storage.Lock.unlock(pool, key, schema: schema, timeout: query_timeout)

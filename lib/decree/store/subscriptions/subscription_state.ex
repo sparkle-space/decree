@@ -44,7 +44,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     partitions: %{},
     acknowledged_event_numbers: MapSet.new(),
     in_flight_event_numbers: [],
-    transient: false
+    transient: false,
+    # A catch-up read met an event of a type this instance does not know, as
+    # `{event_number, event_type}`: nothing at or after it is read or enqueued, and once
+    # the events before it are drained the subscription holds (see `SubscriptionFsm`).
+    hold_pending: nil,
+    # While held, `%{event_number:, type:, attempt:, wait:}`: the event held before, the
+    # number of the alarm (one per hold and per failed probe), and the wait drawn for
+    # the next probe.
+    held: nil
   ]
 
   def reset_event_tracking(%SubscriptionState{} = state) do
@@ -54,7 +62,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
         partitions: %{},
         acknowledged_event_numbers: MapSet.new(),
         in_flight_event_numbers: [],
-        checkpoints_pending: 0
+        checkpoints_pending: 0,
+        hold_pending: nil
     }
   end
 

@@ -379,7 +379,10 @@ defmodule Decree.Decision do
   A raise from any callback, from a `Decree.Event.Tags` implementation, or from reading an
   event the reads matched, in the store's deserializing, the adapter's mapping or an upcaster,
   is rescued, and the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An
-  error from a `Decree.Event.Tags` implementation is the answer as it stands.
+  error from a `Decree.Event.Tags` implementation is the answer as it stands. A matched event
+  of a type this release does not know (one appended by a newer release) answers
+  `{:error, :unknown_event_type}`, with nothing appended and no retry: only an instance that
+  knows the type can decide on it.
 
   An exit or a throw from any of it, on any decision, answers
   `{:error, :decision_execution_failed}`. It logs nothing but what
@@ -394,7 +397,7 @@ defmodule Decree.Decision do
   answers `{:error, :decision_execution_timeout}`, whether or not its append landed, and
   one whose task died answers `{:error, :decision_execution_failed}`.
 
-  Seven refusals are named arms for an event handler, because a handler that dispatches a
+  Eight refusals are named arms for an event handler, because a handler that dispatches a
   decision must stop or park on them rather than retry:
 
     - `:decision_query_too_large` - more condition items than `max_items`, more probes than
@@ -407,6 +410,8 @@ defmodule Decree.Decision do
       same id, so it stops or parks here instead of spinning.
     - `:key_unknown` - a personal value it reads or writes has no key to hand. Only the key
       coming back changes that.
+    - `:unknown_event_type` - a matched event is of a type this release does not know. Only
+      an instance that knows it changes that.
     - `:tag_index_not_enabled` - a family its items require has no enabled index, or a fact
       cannot be read. Only a fact changes that.
     - `:decision_not_activated` - its activation event is not there. Only that event changes

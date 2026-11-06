@@ -134,6 +134,40 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
+  # A subscription's catch-up read: answers `{:ok, events, nil}`, or, when it meets an event
+  # whose type the serializer does not know, `{:ok, prefix, {event_number, event_type}}` with
+  # the events before it. Never raises for an unknown type.
+  def read_stream_forward_known(conn, stream_uuid, start_version, count, opts) do
+    with {:ok, stream} <- stream_info(conn, stream_uuid, :stream_exists, opts) do
+      %StreamInfo{stream_id: stream_id} = stream
+
+      {serializer, opts} = Keyword.pop(opts, :serializer)
+
+      with {:ok, recorded_events} <-
+             Storage.read_stream_forward(conn, stream_id, start_version, count, opts) do
+        {events, pending} = RecordedEvent.deserialize_known(recorded_events, serializer)
+
+        {:ok, events, pending}
+      end
+    end
+  end
+
+  # The type of the event at `event_number` in the stream, read without deserializing it:
+  # `{:ok, type}`, `{:ok, nil}` when there is no such event, or `{:error, reason}`.
+  def read_event_type(conn, stream_uuid, event_number, opts) do
+    with {:ok, stream} <- stream_info(conn, stream_uuid, :stream_exists, opts) do
+      %StreamInfo{stream_id: stream_id} = stream
+
+      {_serializer, opts} = Keyword.pop(opts, :serializer)
+
+      case Storage.read_stream_forward(conn, stream_id, event_number, 1, opts) do
+        {:ok, [%RecordedEvent{event_number: ^event_number, event_type: type}]} -> {:ok, type}
+        {:ok, _events} -> {:ok, nil}
+        {:error, _error} = reply -> reply
+      end
+    end
+  end
+
   def read_stream_backward(conn, stream_uuid, start_version, count, opts) do
     with {:ok, stream} <- stream_info(conn, stream_uuid, :stream_exists, opts) do
       read_storage_backward(conn, stream, start_version, count, opts)

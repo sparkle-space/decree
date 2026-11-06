@@ -990,7 +990,9 @@ defmodule Decree.PersonalFields.KeyStreamTest do
         capture_log(fn ->
           answer = KeyStream.head(@app, @prefix, subject)
 
-          assert answer == {:error, :badarg}
+          # The store raises `UnknownEventTypeError` for a type it does not know (#7804),
+          # reduced to its module: no bytes of the event.
+          assert answer == {:error, Decree.Store.UnknownEventTypeError}
           refute_leak_in_term(answer)
         end)
 

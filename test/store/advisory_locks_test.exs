@@ -513,6 +513,121 @@ defmodule Decree.Store.AdvisoryLocksTest do
     end
   end
 
+  # A subscription holding before an event of an unknown type releases its lock while it
+  # lives on (sparkle-space/sparklespace#7804).
+  describe "unlock" do
+    setup %{postgrex_config: postgrex_config} do
+      on_exit(fn -> restore_subscriptions_table(postgrex_config) end)
+    end
+
+    test "unlocks the key and stops tracking the lock, with no `lock_released`", %{conn: conn} do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      pool = MonitoredServer.whereis(@conn)
+      assert is_integer(lock_backend_pid(conn, 1))
+
+      assert :ok = AdvisoryLocks.unlock(@locks, lock)
+
+      assert tracked_locks() == []
+      assert lock_backend_pid(conn, 1) == nil
+      assert :ok = Storage.Lock.try_acquire_exclusive_lock(conn, 1, schema: "public")
+
+      # The session lives on.
+      assert Process.alive?(pool)
+      refute_receive {AdvisoryLocks, :lock_released, ^lock, _reason}, 200
+    end
+
+    test "answers `{:error, :not_found}` for a lock it does not track, or another owner's" do
+      assert {:error, :not_found} = AdvisoryLocks.unlock(@locks, make_ref())
+
+      owner = start_lock_owner(1)
+      assert_receive {:lock_owner, ^owner, {:ok, lock}}
+
+      assert {:error, :not_found} = AdvisoryLocks.unlock(@locks, lock)
+      assert [%Lock{key: 1, owner: ^owner}] = tracked_locks()
+
+      # One already released, by a lost session.
+      {:ok, released} = AdvisoryLocks.try_advisory_lock(@locks, 2)
+      send(Process.whereis(@locks), {:disconnected, self()})
+      assert_receive {AdvisoryLocks, :lock_released, ^released, :session_lost}
+
+      assert {:error, :not_found} = AdvisoryLocks.unlock(@locks, released)
+    end
+
+    test "ends the session when the unlock fails", %{conn: conn} do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      pool = MonitoredServer.whereis(@conn)
+
+      move_subscriptions_table(conn)
+
+      assert :ok = AdvisoryLocks.unlock(@locks, lock)
+
+      assert tracked_locks() == []
+      assert_session_ended(conn, pool, 1)
+    end
+
+    test "queues for a busy connection, and ends the session when the checkout fails", %{
+      conn: conn
+    } do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      pool = MonitoredServer.whereis(@conn)
+      test = self()
+
+      # The lock pool's only connection is busy past the pool's queue limits.
+      holder =
+        spawn(fn ->
+          Postgrex.transaction(
+            pool,
+            fn _conn ->
+              send(test, :holding)
+
+              receive do
+                :release -> :ok
+              end
+            end,
+            timeout: :infinity
+          )
+        end)
+
+      assert_receive :holding
+      on_exit(fn -> send(holder, :release) end)
+
+      {elapsed, reply} = timed(fn -> AdvisoryLocks.unlock(@locks, lock, 30_000) end)
+
+      # It waited for the connection rather than failing at once, as a lock attempt does.
+      assert reply == :ok
+      assert elapsed >= 500
+
+      assert tracked_locks() == []
+      assert_session_ended(conn, pool, 1)
+    end
+
+    test "has nothing to unlock for a lock taken on an earlier session", %{conn: conn} do
+      {:ok, lock} = AdvisoryLocks.try_advisory_lock(@locks, 1)
+      pool = MonitoredServer.whereis(@conn)
+      backend_pid = lock_backend_pid(conn, 1)
+
+      # As if the lock were taken on a session that has since ended: its key is not held
+      # by the current one, so there is nothing to unlock and no session to end.
+      :sys.replace_state(@locks, fn %AdvisoryLocks.State{locks: locks} = state ->
+        locks =
+          Map.new(locks, fn {ref, %Lock{} = tracked} ->
+            {ref, %Lock{tracked | backend_pid: -1}}
+          end)
+
+        %AdvisoryLocks.State{state | locks: locks}
+      end)
+
+      assert :ok = AdvisoryLocks.unlock(@locks, lock)
+
+      assert tracked_locks() == []
+      assert Process.alive?(pool)
+      refute_receive {AdvisoryLocks, :lock_released, ^lock, _reason}, 200
+
+      # No unlock ran: the current session still holds the count it took.
+      assert lock_backend_pid(conn, 1) == backend_pid
+    end
+  end
+
   describe "subscription locks" do
     test "should report the row and whether this session holds the lock", %{
       conn: conn,

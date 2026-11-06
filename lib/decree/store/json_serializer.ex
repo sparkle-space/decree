@@ -27,5 +27,16 @@ if Code.ensure_loaded?(Jason) do
           |> struct(Jason.decode!(binary, keys: :atoms!))
       end
     end
+
+    @doc """
+    Whether the type names a loaded struct module, the only types `deserialize/2` can build.
+    """
+    def known_type?(type) when is_binary(type) do
+      module = String.to_existing_atom(type)
+
+      Code.ensure_loaded?(module) and function_exported?(module, :__struct__, 0)
+    rescue
+      ArgumentError -> false
+    end
   end
 end

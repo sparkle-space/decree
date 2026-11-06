@@ -25,7 +25,7 @@ defmodule Decree.Store.RecordedEvent do
 
   """
 
-  alias Decree.Store.RecordedEvent
+  alias Decree.Store.{RecordedEvent, UnknownEventTypeError}
 
   @type uuid :: String.t()
 
@@ -55,7 +55,57 @@ defmodule Decree.Store.RecordedEvent do
     :created_at
   ]
 
+  # Raises `Decree.Store.UnknownEventTypeError` for an event of a type the serializer does
+  # not know (`c:Decree.Store.Serializer.known_type?/1`), before any of its data is read. Any
+  # other failure to deserialize, such as a corrupt payload, raises as the serializer raises
+  # it.
   def deserialize(%RecordedEvent{} = recorded_event, serializer) do
+    %RecordedEvent{event_type: event_type, event_number: event_number} = recorded_event
+
+    if known_type?(serializer, event_type) do
+      deserialize_known_type(recorded_event, serializer)
+    else
+      raise UnknownEventTypeError, type: event_type, event_number: event_number
+    end
+  end
+
+  @doc false
+  # Deserializes the events in order up to the first one whose type the serializer does not
+  # know, and answers `{deserialized, nil}` when every type is known, or
+  # `{deserialized_prefix, {event_number, event_type}}` naming the first unknown one. Nothing
+  # at or after that event is deserialized.
+  @spec deserialize_known([t()], module()) ::
+          {[t()], nil | {non_neg_integer(), String.t()}}
+  def deserialize_known(recorded_events, serializer) when is_list(recorded_events) do
+    deserialize_known(recorded_events, serializer, [])
+  end
+
+  defp deserialize_known([], _serializer, acc), do: {Enum.reverse(acc), nil}
+
+  defp deserialize_known([recorded_event | recorded_events], serializer, acc) do
+    %RecordedEvent{event_type: event_type, event_number: event_number} = recorded_event
+
+    if known_type?(serializer, event_type) do
+      event = deserialize_known_type(recorded_event, serializer)
+
+      deserialize_known(recorded_events, serializer, [event | acc])
+    else
+      {Enum.reverse(acc), {event_number, event_type}}
+    end
+  end
+
+  @doc false
+  # Whether the serializer can build an event of `type`. A serializer without the optional
+  # `c:Decree.Store.Serializer.known_type?/1` knows every type.
+  def known_type?(serializer, type) do
+    if Code.ensure_loaded?(serializer) and function_exported?(serializer, :known_type?, 1) do
+      serializer.known_type?(type)
+    else
+      true
+    end
+  end
+
+  defp deserialize_known_type(%RecordedEvent{} = recorded_event, serializer) do
     %RecordedEvent{data: data, metadata: metadata, event_type: event_type} = recorded_event
 
     %RecordedEvent{
