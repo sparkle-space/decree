@@ -500,6 +500,20 @@ defmodule Decree.Event.Handler do
   acks. A module's `error/3` decides, and a `:skip` from it is turned into a stop, so nothing
   can skip an event at this seam. The event stays unacked until the key can be read.
 
+  ### When a command meets an unknown event type
+
+  During a rolling deploy a handler on an older release can be part-way through an event it
+  knows when a newer release appends an event of a type the older one does not know to the
+  stream its follow-up command targets. The aggregate refuses that command with
+  `{:error, :unknown_event_type}` rather than fold past the event, and `handle/2` returns it.
+
+  `{:error, :unknown_event_type}` takes the same route as `{:error, :key_unknown}`: it never
+  reaches the handler's own `c:error/3` and goes to the application's
+  `on_event_handler_error`. `nil`, `:stop` and `:backoff` stop the handler, and a stop never
+  acks. A module's `error/3` decides, and a `:skip` from it is turned into a stop, so nothing
+  can skip an event at this seam. The event stays unacked until a pod that knows the type
+  serves the command.
+
   ### What stays out of logs
 
   A failure on an event decrypted for this handler is treated as carrying the value. A raise
@@ -655,6 +669,11 @@ defmodule Decree.Event.Handler do
   Use pattern matching on the error and/or failed event to explicitly handle
   certain errors or events. Use the context map to track any transient state you
   need to access between retried failures.
+
+  `{:error, :key_unknown}` and `{:error, :unknown_event_type}` never reach it: the
+  application's `on_event_handler_error` decides them, and nothing can skip them. See
+  "When a key can't be read" and "When a command meets an unknown event type" in the
+  module documentation.
 
   You can return one of the following responses depending upon the
   error severity:
@@ -1889,9 +1908,12 @@ defmodule Decree.Event.Handler do
     end
   end
 
-  # Never the module's own `error/3`, which could skip the event and lose the value. The
-  # application's seam decides, and at this seam nothing skips: a stop never acks.
-  defp on_error(%Handler{} = state, {:error, :key_unknown} = error, data, failure_context) do
+  # Never the module's own `error/3`, which could skip the event and lose its effect: a key
+  # that can't be read, or a follow-up command refused over an event type this release does
+  # not know. The application's seam decides, and at this seam nothing skips: a stop never
+  # acks.
+  defp on_error(%Handler{} = state, {:error, reason} = error, data, failure_context)
+       when reason in [:key_unknown, :unknown_event_type] do
     %Handler{application: application} = state
 
     case Decree.Application.on_event_handler_error(application) do
@@ -1900,7 +1922,7 @@ defmodule Decree.Event.Handler do
 
       module when is_atom(module) ->
         case module.error(error, data, failure_context) do
-          :skip -> {:stop, :key_unknown}
+          :skip -> {:stop, reason}
           response -> response
         end
     end
@@ -1930,6 +1952,16 @@ defmodule Decree.Event.Handler do
 
     Logger.warning(
       describe(state) <> " can't read a personal field of event ##{inspect(event_number)}"
+    )
+  end
+
+  defp log_event_error({:error, :unknown_event_type}, %RecordedEvent{} = failed_event, state) do
+    %RecordedEvent{event_number: event_number} = failed_event
+
+    Logger.warning(
+      describe(state) <>
+        " can't handle event ##{inspect(event_number)}: its follow-up met an event type" <>
+        " this release does not know"
     )
   end
 
