@@ -88,6 +88,53 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
     end
   end
 
+  defmodule FollowUpBatchHandler do
+    @moduledoc false
+
+    # `FollowUpHandler` as a `batch_size` handler: `handle_batch/1` deposits into `Control`'s
+    # target for each trigger and answers the dispatch's error. Its own `error/3` answers
+    # `:skip`, and must never be called for an unknown type.
+
+    use Decree.Event.Handler,
+      application: Decree.ExampleDomain.BankApp,
+      name: __MODULE__,
+      subscribe_to: "x16-handler-trigger",
+      batch_size: 5,
+      personal_fields: :opaque
+
+    alias Decree.Event.EventHandlerUnknownEventTypeTest.{Control, Trigger}
+    alias Decree.ExampleDomain.BankAccount.Commands.DepositMoney
+    alias Decree.ExampleDomain.BankApp
+    alias Decree.UUID
+
+    def handle_batch([]), do: :ok
+
+    def handle_batch([{%Trigger{}, _metadata} | rest]) do
+      command = %DepositMoney{
+        account_number: Control.target(),
+        transfer_uuid: UUID.uuid4(),
+        amount: 1
+      }
+
+      case BankApp.dispatch(command) do
+        :ok ->
+          Control.notify(:followed_up)
+          handle_batch(rest)
+
+        error ->
+          error
+      end
+    end
+
+    def handle_batch([{_event, _metadata} | rest]), do: handle_batch(rest)
+
+    def error(error, _events, _failure_context) do
+      Control.notify({:module_error, error})
+
+      :skip
+    end
+  end
+
   defmodule RetryingErrors do
     @moduledoc false
 
@@ -120,6 +167,7 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
   end
 
   @handler_name inspect(FollowUpHandler)
+  @batch_handler_name inspect(FollowUpBatchHandler)
 
   setup do
     start_supervised!(CommandAuditMiddleware)
@@ -223,6 +271,77 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
 
       assert_received {:telemetry, [:decree, :event, :handle, :stop], _measurements, metadata}
       assert metadata.error == :unknown_event_type
+    end
+  end
+
+  describe "a `batch_size` handler's follow-up refused over an unknown event type" do
+    test "holds the handler past its own `error/3`, then handles the batch once", context do
+      %{conn: conn} = context
+
+      start(context, RetryingErrors)
+
+      log =
+        capture_log(fn ->
+          start_supervised!({FollowUpBatchHandler, start_from: :origin})
+
+          for attempt <- 1..5 do
+            assert_receive {:held, ^attempt, {:error, :unknown_event_type}}, 5_000
+            assert acked(conn, @batch_handler_name) == 0
+          end
+
+          refute_received :followed_up
+          refute_received {:module_error, _error}
+
+          # A pod that knows the type serves the command.
+          Control.retarget(context.healthy)
+
+          assert_receive :followed_up, 5_000
+          Wait.until(fn -> assert acked(conn, @batch_handler_name) == 1 end)
+
+          refute_receive :followed_up
+          refute_received {:module_error, _error}
+        end)
+
+      # The batch path logs through the generic batch error line, as `:key_unknown` does.
+      assert log =~ "failed to handle batch"
+      assert log =~ ":unknown_event_type"
+    end
+
+    for posture <- [nil, :stop, :backoff] do
+      test "under `#{inspect(posture)}` stops the handler with nothing acked", context do
+        %{conn: conn} = context
+
+        start(context, unquote(posture))
+        Process.flag(:trap_exit, true)
+
+        capture_log(fn ->
+          {:ok, handler} = FollowUpBatchHandler.start_link(start_from: :origin)
+
+          assert_receive {:EXIT, ^handler, :unknown_event_type}, 5_000
+        end)
+
+        assert acked(conn, @batch_handler_name) == 0
+        refute_received {:module_error, _error}
+        refute_received :followed_up
+      end
+    end
+
+    test "under a module that answers `:skip` stops the handler", context do
+      %{conn: conn} = context
+
+      start(context, SkippingErrors)
+      Process.flag(:trap_exit, true)
+
+      capture_log(fn ->
+        {:ok, handler} = FollowUpBatchHandler.start_link(start_from: :origin)
+
+        assert_receive {:asked_to_skip, {:error, :unknown_event_type}}, 5_000
+        assert_receive {:EXIT, ^handler, :unknown_event_type}, 5_000
+      end)
+
+      assert acked(conn, @batch_handler_name) == 0
+      refute_received {:module_error, _error}
+      refute_received :followed_up
     end
   end
 

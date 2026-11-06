@@ -505,14 +505,19 @@ defmodule Decree.Event.Handler do
   During a rolling deploy a handler on an older release can be part-way through an event it
   knows when a newer release appends an event of a type the older one does not know to the
   stream its follow-up command targets. The aggregate refuses that command with
-  `{:error, :unknown_event_type}` rather than fold past the event, and `handle/2` returns it.
+  `{:error, :unknown_event_type}` rather than fold past the event, and `handle/2` or
+  `handle_batch/1` returns it.
 
-  `{:error, :unknown_event_type}` takes the same route as `{:error, :key_unknown}`: it never
-  reaches the handler's own `c:error/3` and goes to the application's
+  `{:error, :unknown_event_type}` takes the same route as `{:error, :key_unknown}`, from either
+  callback: it never reaches the handler's own `c:error/3` and goes to the application's
   `on_event_handler_error`. `nil`, `:stop` and `:backoff` stop the handler, and a stop never
   acks. A module's `error/3` decides, and a `:skip` from it is turned into a stop, so nothing
-  can skip an event at this seam. The event stays unacked until a pod that knows the type
-  serves the command.
+  can skip an event at this seam. The event, or the batch, stays unacked until a pod that knows
+  the type serves the command.
+
+  From `handle/2` it logs one warning naming the event's number, without the event. From
+  `handle_batch/1` it logs through the generic batch error line, which shows the batch's first
+  and last events as stored, as `{:error, :key_unknown}` does.
 
   ### What stays out of logs
 
