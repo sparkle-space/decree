@@ -73,8 +73,12 @@ defmodule Decree.Store.Notifications.Publisher do
   # Each notification's range is read and published on its own. A range that reaches an event
   # whose type this instance does not know is cut there: the events before it are broadcast,
   # and the subscription processes are sent a position notice for it (see `PubSub`), so they
-  # read on and hold before it. Nothing at or after it is broadcast, so no subscriber skips it,
-  # and nothing raises, so the notifications tree is not restarted.
+  # read on and hold before it. Nothing raises, so the notifications tree is not restarted.
+  #
+  # The cut holds within the notification only: a later notification's events are broadcast
+  # as usual. A subscription process sees the gap (it expects `last_received + 1`) and reads
+  # from storage, where it holds; an aggregate stops on the gap; a plain `subscribe/2`
+  # subscriber checks continuity itself.
 
   defp read_events(%Notification{} = notification, %State{} = state) do
     %Notification{

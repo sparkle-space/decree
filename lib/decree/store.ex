@@ -2137,7 +2137,9 @@ defmodule Decree.Store do
 
   A read (`read_*`, `stream_*`, `read_query`) that meets an event of an unknown type
   raises `Decree.Store.UnknownEventTypeError`, naming its type and number. A transient
-  `subscribe/2` subscriber is sent the events before it, and none at or after it.
+  `subscribe/2` subscriber is sent the events of its append before it, never it or the rest
+  of that append. An event from a later append is still sent, so such a subscriber checks
+  `stream_version` or `event_number` continuity itself.
 
   """
   @callback subscribe_to_stream(

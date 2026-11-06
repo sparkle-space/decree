@@ -110,9 +110,12 @@ defmodule Decree.Aggregates.Aggregate do
   `{:shutdown, :unknown_event_type}` and the caller gets `{:error, :unknown_event_type}`, in
   the same places as `:key_unknown`: populating on dispatch, the rebuild after a
   `:wrong_expected_version`, and a cold `aggregate_state/4`. A running aggregate never receives
-  such an event: the event store's publisher stops a batch before it, so the next event it
-  receives leaves a gap and it stops, and a command it runs meanwhile fails to append with
-  `:wrong_expected_version` and refuses on the rebuild.
+  such an event: the event store's publisher stops a batch before it. A command it runs
+  meanwhile fails to append with `:wrong_expected_version` and refuses on the rebuild. A later
+  event, from a later append, is still sent, and the aggregate stops on the gap it leaves: a
+  command already queued in its mailbox at that moment answers
+  `{:error, :aggregate_execution_failed}`, as for any gap, and the next command refuses with
+  `{:error, :unknown_event_type}`.
 
   `format_status/1` keeps the state, and the dispatch metadata a command carries, out of crash
   reports and `:sys.get_status/1`. An aggregate that uses `Decree.PersonalFields.Aggregate` can

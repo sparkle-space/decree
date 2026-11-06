@@ -27,6 +27,10 @@ defmodule Decree.Store.PubSub do
   `notices: true` also sends the caller `{:events_pending, event_number}` when the publisher
   stops a batch before an event whose type this instance does not know. A subscription
   process registers with it; an aggregate or a transient subscriber does not.
+
+  The publisher cuts each notification's batch on its own: an event appended after the
+  unknown one, in a later append, is still broadcast. A subscriber without notices checks
+  `stream_version` or `event_number` continuity itself.
   """
   @spec subscribe(
           Decree.Store.t(),
@@ -70,10 +74,10 @@ defmodule Decree.Store.PubSub do
     send(pid, {:events, events})
   end
 
-  # A position notice from the publisher: the events from `event_number` on were not
-  # broadcast, as the first is of a type this instance does not know. Only a subscription
-  # process registers for it (`notices: true`); every other subscriber sees the events
-  # before it and nothing more.
+  # A position notice from the publisher: the events of this batch from `event_number` on
+  # were not broadcast, as the first is of a type this instance does not know. Only a
+  # subscription process registers for it (`notices: true`); every other subscriber sees the
+  # events before it, and a later batch's events still, so it checks continuity itself.
   defp notify_subscriber(pid, {:events_pending, _event_number} = message, opts) do
     if Keyword.get(opts, :notices, false), do: send(pid, message)
   end

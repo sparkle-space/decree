@@ -396,6 +396,51 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
     end
   end
 
+  describe "an unknown type between separate appends" do
+    # E1, E2 of the new type and E3 in three appends, so three notifications: the publisher
+    # cuts only E2's, and broadcasts E3 as usual.
+    test "the subscription holds before it; a plain subscriber is sent the later event", %{
+      conn: conn,
+      subscription_name: name
+    } do
+      stream_uuid = UUID.uuid4()
+
+      plain = forwarder(:plain)
+      run_in(plain, fn -> TestEventStore.subscribe("$all", name: @old) end)
+
+      subscriber = forwarder(:old)
+      subscription = subscribe(@old, name, subscriber)
+
+      :ok = TestEventStore.append_to_stream(stream_uuid, 0, [known_event(1)])
+
+      assert_receive {:old, {:events, [%RecordedEvent{event_number: 1}]}}
+      :ok = Subscription.ack(subscription, 1, subscriber)
+      assert_receive {:plain, {:events, [%RecordedEvent{event_number: 1}]}}
+
+      :ok = TestEventStore.append_to_stream(stream_uuid, 1, [new_event(2)])
+
+      assert_receive {:old, {:subscription_lock_lost, ^subscription}}
+      assert_receive {:held, _measurements, %{event_number: 2, event_type: @new_type}}
+
+      :ok = TestEventStore.append_to_stream(stream_uuid, 2, [known_event(3)])
+
+      # The plain subscriber is sent E3, with E2 missing before it, and no notice: it must
+      # check continuity itself. The publisher works in order, so nothing else is on its way.
+      assert_receive {:plain,
+                      {:events, [%RecordedEvent{event_number: 3, stream_uuid: ^stream_uuid}]}}
+
+      refute_received {:plain, _message}
+
+      # E3 reached the subscription process too, which stays held and delivers nothing.
+      Wait.until(3_000, fn -> assert fsm(subscription).data.last_received == 3 end)
+
+      refute_receive {:old, {:events, _events}}, 300
+      assert fsm(subscription).state == :held
+      assert [%{pid: ^subscription, status: :parked}] = local(@old, name)
+      assert %Storage.Subscription{last_seen: 1} = row(conn, name)
+    end
+  end
+
   describe "reads" do
     test "raise UnknownEventTypeError, naming the type and number, never the data" do
       stream_uuid = UUID.uuid4()
@@ -461,13 +506,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
   end
 
   describe "the held backoff" do
-    test "draws each wait between half the capped backoff and the retry interval" do
-      for retry_interval <- [1, 200, 1_000, 5_000, 60_000],
+    test "draws each wait between half the capped backoff and the retry interval, never 0" do
+      for retry_interval <- [1, 2, 3, 200, 1_000, 5_000, 60_000],
           attempt <- 1..12,
           _sample <- 1..50 do
         base = min(min(1_000, retry_interval) * Integer.pow(2, attempt - 1), retry_interval)
         wait = SubscriptionFsm.held_wait(attempt, retry_interval)
 
+        assert wait >= 1
         assert div(base, 2) <= wait
         assert wait <= base
         assert wait <= retry_interval

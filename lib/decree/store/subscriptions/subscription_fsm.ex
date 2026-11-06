@@ -528,7 +528,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   @doc """
   The wait before the next subscribe attempt of a parked subscription: the full
   `retry_interval` until an attempt fails with anything but `:lock_already_taken`, then
-  the capped backoff over the consecutive failed attempts.
+  the capped backoff over the consecutive failed attempts. A held subscription waits the
+  wait `held_wait/2` drew for its next probe.
   """
   def resubscribe_wait(%SubscriptionState{held: %{wait: wait}}), do: wait
 
@@ -975,13 +976,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   @doc """
   The wait before the next probe of a held subscription, after its `attempt`th alarm: an
   equal jitter over the capped doubling of a failed catch-up read's backoff, so that
-  `div(base, 2) <= wait <= base <= retry_interval`, where `base` is that backoff.
+  `max(1, div(base, 2)) <= wait <= max(1, base)`, where `base <= retry_interval` is that backoff.
+  It is never under one millisecond, so a held subscription never probes in a tight loop.
   """
   def held_wait(attempt, retry_interval) do
     base = retry_backoff(attempt, retry_interval)
     half = div(base, 2)
 
-    half + :rand.uniform(half + 1) - 1
+    max(1, half + :rand.uniform(half + 1) - 1)
   end
 
   # The alarm of a held subscription: a warning naming the event's type and number, never

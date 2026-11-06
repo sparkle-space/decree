@@ -97,12 +97,13 @@ defmodule Decree.Aggregates.AggregateUnknownEventTypeTest do
       assert [_opened, %{event_type: @unknown_type}] = stored(account_number)
     end
 
-    test "a resident aggregate stops on the gap the publisher leaves", %{
-      account_number: account_number
-    } do
+    test "a resident aggregate stops on the gap a later append leaves; the next command refuses",
+         %{account_number: account_number} do
       pid = resident(account_number)
       ref = Process.monitor(pid)
 
+      # Separate appends, so separate notifications: the publisher cuts the unknown event's,
+      # and sends the later deposit as usual.
       append_unknown(account_number, 1)
 
       :ok =
@@ -122,6 +123,19 @@ defmodule Decree.Aggregates.AggregateUnknownEventTypeTest do
       capture_log(fn ->
         assert_receive {:DOWN, ^ref, :process, ^pid, :unexpected_event_received}, 5_000
       end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :unknown_event_type} = BankApp.dispatch(deposit(account_number))
+        end)
+
+      assert log =~ "unknown event type"
+
+      assert_received {:telemetry, @populate_stop, %{count: 0},
+                       %{error: :unknown_event_type, event_type: @unknown_type}}
+
+      # Nothing was appended past the deposit.
+      assert [_opened, %{event_type: @unknown_type}, _deposited] = stored(account_number)
     end
   end
 

@@ -397,7 +397,7 @@ defmodule Decree.Decision do
   answers `{:error, :decision_execution_timeout}`, whether or not its append landed, and
   one whose task died answers `{:error, :decision_execution_failed}`.
 
-  Seven refusals are named arms for an event handler, because a handler that dispatches a
+  Eight refusals are named arms for an event handler, because a handler that dispatches a
   decision must stop or park on them rather than retry:
 
     - `:decision_query_too_large` - more condition items than `max_items`, more probes than
@@ -410,6 +410,8 @@ defmodule Decree.Decision do
       same id, so it stops or parks here instead of spinning.
     - `:key_unknown` - a personal value it reads or writes has no key to hand. Only the key
       coming back changes that.
+    - `:unknown_event_type` - a matched event is of a type this release does not know. Only
+      an instance that knows it changes that.
     - `:tag_index_not_enabled` - a family its items require has no enabled index, or a fact
       cannot be read. Only a fact changes that.
     - `:decision_not_activated` - its activation event is not there. Only that event changes
