@@ -57,8 +57,10 @@ pgx() {
     PGPASSWORD="$GATE_PG_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -h "$GATE_PG_HOST" -p "$GATE_PG_PORT" -U "$GATE_PG_USER" -d "$GATE_DB" "$@"
   fi
 }
+# Only with method B on (AG_HOME set): without it the arms connect as GATE_PG_USER, as before, so
+# a server the rig does not own gets no cluster-wide roles.
 GATE_ROLE_PW="$GATE_PG_PASSWORD" ; export GATE_ROLE_PW
-for arm in dec_main dec_fix rcold_main rcold_fix tel_dec_main tel_dec_fix tel_rcold_main tel_rcold_fix rt_fix dec_fw6 rcold_fw6; do
+[ -n "${AG_HOME:-}" ] && for arm in dec_main dec_fix rcold_main rcold_fix tel_dec_main tel_dec_fix tel_rcold_main tel_rcold_fix rt_fix dec_fw6 rcold_fw6; do
   pgx -v role="arm_$arm" <<'SQL'
 \getenv pw GATE_ROLE_PW
 SELECT format('CREATE ROLE %I LOGIN', :'role') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
@@ -71,10 +73,15 @@ SELECT format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO %I', :'role') 
 SELECT format('GRANT pg_checkpoint TO %I', :'role') \gexec
 SQL
 done
-echo "arm roles ready: arm_<arm name>, one per arm"
+[ -n "${AG_HOME:-}" ] && echo "arm roles ready: arm_<arm name>, one per arm"
 pgx -At -c "SELECT 'store events after setup: ' || stream_version FROM streams WHERE stream_id = 0" -c "SELECT 'server: shared_buffers ' || current_setting('shared_buffers') || ', data_checksums ' || current_setting('data_checksums') || ', wal_log_hints ' || current_setting('wal_log_hints') || ', pg_stat_statements ' || (current_setting('shared_preload_libraries') LIKE '%pg_stat_statements%')"
 pgx -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" 2>/dev/null || echo "note: pg_stat_statements is not loaded on this server: method B is unavailable"
 if [ "${GATE_PRODSHAPE:-0}" = 1 ] && [ -n "${AG_HOME:-}" ]; then
   python3 "$AG_HOME/shape_check.py" "$GATE_PG_CONTAINER" "$GATE_DB" public --scale "${AG_SCALE:-1.0}" || { echo "the production-shaped store is off its shape"; exit 1; }
 fi
+# The setup record drive.py checks before a STORE=prod run: this preset, scale and head, so a
+# reused or grown store is refused.
+head=$(pgx -At -c "SELECT stream_version FROM streams WHERE stream_id = 0")
+python3 -c 'import json,sys; json.dump({"rig": sys.argv[1], "store": sys.argv[2], "scale": float(sys.argv[3]), "head": int(sys.argv[4])}, open(sys.argv[5], "w"))' \
+  "$RIG" "${STORE:-large}" "${AG_SCALE:-1.0}" "$head" "$WORK/setup.json"
 echo "SETUP OK"

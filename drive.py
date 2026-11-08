@@ -52,6 +52,11 @@ LOAD_LIMIT = 15.0
 # round, and prints factors.py's table for each pair: the first arm is the unchanged baseline.
 CADENCE = int(os.environ.get('CADENCE', '0'))
 AG_HOME = os.environ.get('AG_HOME', '')
+# Method B is on whenever AG_HOME is: then each arm connects as its own role, and a missing
+# snapshot or a failed factor table makes the run INCOMPLETE, never VALID. Without AG_HOME the
+# rig is the hot gate as it was, connecting as GATE_PG_USER.
+METHOD_B = bool(AG_HOME)
+METHOD_B_FAILED = 'INCOMPLETE (method B failed)'
 SNAPS = os.path.join(work, 'snaps-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 
 
@@ -59,7 +64,9 @@ def start(name, path, mode, build):
     env = dict(os.environ)
     env.update(DECREE_PATH=path, GATE_BUILD=work + '/build-' + build, BENCH_ARM=name,
                BENCH_MODE=mode, MIX_ENV='prod', ELIXIR_ERL_OPTIONS=FLAGS,
-               PATH=os.environ['GATE_PATH'], GATE_PG_USER='arm_' + name, BENCH_CADENCE=str(CADENCE))
+               PATH=os.environ['GATE_PATH'], BENCH_CADENCE=str(CADENCE))
+    if METHOD_B:
+        env['GATE_PG_USER'] = 'arm_' + name
     p = subprocess.Popen([os.environ['GATE_MIX'], 'run', '--no-compile', '--no-deps-check', '--no-start', 'server.exs'],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env, bufsize=1,
                          cwd=home)
@@ -212,7 +219,27 @@ if SMALL:
                  (start_head + projection, SMALL_CEILING))
 else:
     print('store %s: events at start %s' % (STORE, start_head), flush=True)
-    if STORE == 'prod' and start_head:
+    if STORE == 'prod':
+        # The store must be the one setup.sh just built for this preset: full size (a scaled
+        # prefill is for SMOKE only), the same RIG and STORE, and not grown by an earlier run.
+        scale = os.environ.get('AG_SCALE', '1.0')
+        if float(scale) != 1.0 and not SMOKE:
+            sys.exit('REFUSED: AG_SCALE=%s is a smoke store; a reportable STORE=prod run needs the full prefill' % scale)
+        marker_path = os.path.join(work, 'setup.json')
+        try:
+            marker = json.load(open(marker_path))
+        except (OSError, ValueError):
+            sys.exit('REFUSED: no setup record %s: run ./setup.sh with this STORE first' % marker_path)
+        want = {'rig': os.environ.get('RIG'), 'store': STORE, 'scale': float(scale), 'head': start_head}
+        got = {k: marker.get(k) for k in want}
+        if got != want:
+            sys.exit('REFUSED: the store is not the one setup.sh built for this run (setup %s, now %s): run ./setup.sh again' %
+                     (got, want))
+        check = subprocess.run([sys.executable, os.path.join(AG_HOME, 'shape_check.py'), container, os.environ['GATE_DB'],
+                                'public', '--scale', scale], capture_output=True, text=True)
+        print('store prod: shape check %s' % (check.stdout.strip().splitlines() or ['no output'])[-1], flush=True)
+        if check.returncode != 0:
+            sys.exit('REFUSED: the store is off its production shape:\n' + check.stdout + check.stderr)
         growth = len(arms) * 3 * (warm + bn * (rounds + 3))
         print('store prod: projected growth %d events (%.0f%% of the start)' % (growth, 100.0 * growth / start_head), flush=True)
 procs = {a[0]: start(*a) for a in arms}
@@ -308,6 +335,17 @@ try:
     snapped = snap('end') and snapped and not stopped_early
     void = bool(interfered) and not TOLERANT
     verdict = ('DECOMPOSITION' if DECOMPOSE else 'SMOKE' if SMOKE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
+    # Method B, before the rows are written: a missing snapshot or a failed factor table makes an
+    # otherwise VALID run INCOMPLETE, so it reports no pass line and its rows say so.
+    method_b = []
+    if METHOD_B and snapped and not void:
+        for a, b in pairs:
+            out = subprocess.run([sys.executable, os.path.join(AG_HOME, 'factors.py'), '--snaps', SNAPS, '--from', 'start',
+                                  '--to', 'end', '--baseline', 'arm_' + a, '--change', 'arm_' + b],
+                                 capture_output=True, text=True)
+            method_b.append((a, b, out.returncode, (out.stdout + out.stderr).rstrip()))
+    if METHOD_B and verdict == 'VALID' and (not snapped or not method_b or any(rc != 0 for _, _, rc, _ in method_b)):
+        verdict = METHOD_B_FAILED
 finally:
     for p in procs.values():
         p.terminate()
@@ -336,6 +374,8 @@ else:
           '| void', interfered if interfered else 'none')
 if void:
     print('VOID: per the rule, no numbers are reported from this run.')
+elif verdict == METHOD_B_FAILED:
+    print('%s: method A + B needs both snapshots and every factor table, so no numbers are reported.' % METHOD_B_FAILED)
 elif left_small:
     print('%s: no numbers are reported from this run.' % LEFT_SMALL)
 else:
@@ -359,15 +399,12 @@ else:
         print(line)
     if any(n.startswith('tel_') for n in names):
         print('read_tags spans in span-arm dispatches: 0 (each span arm ends itself on one)')
-if snapped and not void:
+for a, b, rc, text in method_b:
     # Method B: per-statement factors for each pair, the first arm as the unchanged baseline.
-    for a, b in pairs:
-        out = subprocess.run([sys.executable, os.path.join(AG_HOME, 'factors.py'), '--snaps', SNAPS, '--from', 'start',
-                              '--to', 'end', '--baseline', 'arm_' + a, '--change', 'arm_' + b],
-                             capture_output=True, text=True)
-        print('=== method B: %s minus %s' % (b, a))
-        print((out.stdout + out.stderr).rstrip())
-elif not AG_HOME:
+    label = ' (SMOKE: checks the scripts only; never reported)' if SMOKE else ''
+    print('=== method B: %s minus %s%s%s' % (b, a, label, '' if rc == 0 else ' FAILED, exit %d' % rc))
+    print(text)
+if not METHOD_B:
     print('method B: AG_HOME is not set, so no per-statement factors')
 if SMALL:
     # Each side's own read statement, EXPLAINed on this store: main's `yes` proves the store stayed
@@ -384,3 +421,5 @@ if SMALL:
         else:
             print('plan check %s: FAILED (exit %d): %s' % (side, out.returncode, (out.stdout + out.stderr).strip()[-300:]))
 print('=== END RESULTS')
+# A run that method B could not complete is not evidence: say so in the exit status too.
+sys.exit(3 if verdict == METHOD_B_FAILED else 0)
