@@ -64,11 +64,13 @@ defprotocol Decree.Event.Tags do
        else. A dispatch refuses a command without a canonical `command_id`
        (`Decree.Middleware.CommandId`); a command without a `correlation_id` gets no tag
        of that kind.
-    4. Route each stream by an identity that is a lowercase canonical UUID, as the
-       requester sent it, and name its kind with `stream_tag:` on `dispatch` where the
-       field's name does not give it. Nothing converts an identity: any other answers
-       `{:error, :invalid_aggregate_identity}`, unless the route declares `opaque: true`
-       for an identity that is another system's. See `Decree.Commands.Router.dispatch/2`.
+    4. Route each stream by an identity that is a lowercase canonical UUID, and name its
+       kind with `stream_tag:` on `dispatch` where the field's name does not give it. The
+       identity is checked as the route resolves it, the command's field after the
+       router's own middleware or what a `by:` function answered, before the prefix, and
+       decree converts nothing: any other answers `{:error, :invalid_aggregate_identity}`,
+       unless the route declares `opaque: true` for an identity that is another system's.
+       See `Decree.Commands.Router.dispatch/2`.
 
   A tag must be a string of valid UTF-8 with no NUL byte, 512 bytes at most. The store
   answers `{:error, :invalid_tag}` or `{:error, :tag_too_long}` otherwise. See
