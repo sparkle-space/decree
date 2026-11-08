@@ -2,8 +2,8 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
   use Decree.Store.StorageCase
 
   alias Decree.Store.{Config, EventFactory, LockSession, StoreRows, UUID}
-  alias Decree.Store.Snapshots.SnapshotData
-  alias Decree.Store.Storage.Initializer
+  alias Decree.Store.Snapshots.{SnapshotData, Snapshotter}
+  alias Decree.Store.Storage.{DeleteStream, Initializer}
 
   # One row per source and snapshot version in `versioned_snapshots`, beside the one-row
   # `snapshots` table that a pod from before store migration 1.10.0 still reads and writes.
@@ -249,6 +249,65 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         assert count(context, "versioned_snapshots", deleted) == 0
         assert count(context, "snapshots", kept) == 1
         assert count(context, "versioned_snapshots", kept) == 2
+      end
+
+      test "waits on a versioned write that holds its stream, and then removes its row",
+           context do
+        %{store: store, schema: schema, conn: observer, postgrex_config: postgrex_config} =
+          context
+
+        source_uuid = stream(store)
+        :ok = store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"}))
+
+        # The store's own versioned write, its stream's row held FOR KEY SHARE and its row
+        # upserted, held open before commit.
+        writer = LockSession.start(postgrex_config)
+
+        :ok =
+          LockSession.run(writer, fn tx ->
+            Snapshotter.record_snapshot(tx, snapshot(source_uuid, 1, %Snap{at: 1}),
+              schema: schema,
+              serializer: context.serializer
+            )
+          end)
+
+        erase = Task.async(fn -> store.delete_stream(source_uuid, :any_version, :hard) end)
+
+        LockSession.wait_until_waiting(observer, writer.backend, 1)
+
+        {:ok, :ok} = LockSession.commit(writer)
+
+        assert Task.await(erase) == :ok
+        assert StoreRows.stream_id(%{observer: observer, schema: schema}, source_uuid) == nil
+        assert count(context, "versioned_snapshots", source_uuid) == 0
+        assert count(context, "snapshots", source_uuid) == 0
+      end
+
+      test "held before commit, makes a versioned write wait, which then finds no stream",
+           context do
+        %{store: store, schema: schema, conn: observer, postgrex_config: postgrex_config} =
+          context
+
+        source_uuid = stream(store)
+        stream_id = StoreRows.stream_id(%{observer: observer, schema: schema}, source_uuid)
+
+        # The store's own hard delete, all six statements, held open before commit.
+        eraser = LockSession.start(postgrex_config)
+
+        :ok =
+          LockSession.run(eraser, fn tx ->
+            Postgrex.query!(tx, "SET LOCAL eventstore.enable_hard_deletes TO 'on'", [])
+            DeleteStream.hard_delete(tx, stream_id, schema: schema)
+          end)
+
+        write =
+          Task.async(fn -> store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1})) end)
+
+        LockSession.wait_until_waiting(observer, eraser.backend, 1)
+        {:ok, :ok} = LockSession.commit(eraser)
+
+        assert Task.await(write) == {:error, :stream_not_found}
+        assert count(context, "versioned_snapshots", source_uuid) == 0
       end
     end
   end

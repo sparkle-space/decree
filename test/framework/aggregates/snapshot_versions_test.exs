@@ -154,6 +154,32 @@ defmodule Decree.Aggregates.SnapshotVersionsTest do
     end
   end
 
+  describe "`Decree.EventStore.read_snapshot/2`" do
+    setup do
+      start_supervised!(DefaultApp)
+
+      :ok
+    end
+
+    test "reads the legacy row recorded without a version, never a versioned row" do
+      stream = UUID.uuid4()
+      tally(stream, 1..2)
+
+      assert {:error, :snapshot_not_found} = EventStore.read_snapshot(DefaultApp, stream)
+
+      record_tally(stream, 3, 2)
+      assert {:error, :snapshot_not_found} = EventStore.read_snapshot(DefaultApp, stream)
+
+      record_tally(stream, nil, 1)
+
+      assert {:ok, %SnapshotData{snapshot_version: nil, data: %Tally{count: 1}}} =
+               EventStore.read_snapshot(DefaultApp, stream)
+
+      assert {:ok, %SnapshotData{snapshot_version: 3, data: %Tally{count: 2}}} =
+               EventStore.read_snapshot(DefaultApp, stream, 3)
+    end
+  end
+
   describe "`Decree.Aggregate.prune_snapshots/2`" do
     setup do
       start_supervised!(DefaultApp)
@@ -213,6 +239,18 @@ defmodule Decree.Aggregates.SnapshotVersionsTest do
         source_type: source_type,
         snapshot_version: version,
         data: %{"count" => 1},
+        metadata: %{"snapshot_module_version" => version}
+      })
+  end
+
+  defp record_tally(stream, version, count) do
+    :ok =
+      EventStore.record_snapshot(DefaultApp, %SnapshotData{
+        source_uuid: stream,
+        source_version: count,
+        source_type: TypeProvider.to_string(%Tally{}),
+        snapshot_version: version,
+        data: %Tally{count: count},
         metadata: %{"snapshot_module_version" => version}
       })
   end

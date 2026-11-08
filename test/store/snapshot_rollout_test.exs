@@ -5,12 +5,12 @@ defmodule Decree.Store.SnapshotRolloutTest do
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Storage.{Database, Snapshot}
   alias Decree.Store.Streams.Stream
-  alias Decree.Store.Tasks.Migrate
+  alias Decree.Store.Tasks.{Create, Init, Migrate}
 
   @moduletag :migration
 
   # A rolling deploy across store migration 1.10.0: the store is migrated, and an "old pod"
-  # (the snapshot SQL at the production pin, rendered from the copies under
+  # (the snapshot and hard delete SQL at the production pin, rendered from the copies under
   # `test/store/fixture/snapshot_sql_f46d1d039/`) runs beside a "new pod" (this release's
   # store API) on the same rows. The old pod knows only the one-row `snapshots` table.
 
@@ -101,7 +101,46 @@ defmodule Decree.Store.SnapshotRolloutTest do
         assert old_read(context) == :none
         assert new_read(context, 1) == {:ok, 2, "new at version 1"}
       end
+
+      test "an old pod's hard delete leaves no new pod's row, at any version", context do
+        assert_old_hard_delete_leaves_no_versioned_row(context)
+      end
     end
+
+    # A store created at this release, with an old pod still running beside it.
+    describe "a new store under #{name}" do
+      setup %{config: config} do
+        schema = unquote(schema)
+        config = Keyword.put(config, :schema, schema)
+
+        Database.drop(config)
+        Create.exec(config, quiet: true)
+        :ok = Init.exec(config, quiet: true)
+
+        {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
+
+        [conn: conn, schema: schema, source_uuid: stream!(conn, schema)]
+      end
+
+      test "an old pod's hard delete leaves no new pod's row, at any version", context do
+        assert_old_hard_delete_leaves_no_versioned_row(context)
+      end
+    end
+  end
+
+  # An old pod's hard delete knows nothing of `versioned_snapshots`, so it is the stream
+  # row's delete that has to take a new pod's rows with it.
+  defp assert_old_hard_delete_leaves_no_versioned_row(context) do
+    new_write(context, 1, 2, "new at version 1")
+    new_write(context, 2, 2, "new at version 2")
+    assert versioned_count(context) == 2
+
+    old_hard_delete(context)
+
+    assert stream_id(context) == nil
+    assert new_read(context, 1) == {:error, :snapshot_not_found}
+    assert new_read(context, 2) == {:error, :snapshot_not_found}
+    assert versioned_count(context) == 0
   end
 
   # The old pod: the pinned SQL, rendered for the store's schema.
@@ -127,6 +166,20 @@ defmodule Decree.Store.SnapshotRolloutTest do
 
   defp old_delete(context) do
     Postgrex.query!(context.conn, pinned("delete_snapshot", context), [context.source_uuid])
+  end
+
+  # The pinned hard delete's statements that delete rows, in its order, in one transaction:
+  # the stream's events and their links, then the stream's row. The pin sends nothing after
+  # them.
+  defp old_hard_delete(context) do
+    stream_id = stream_id(context)
+
+    {:ok, %Postgrex.Result{num_rows: 1, rows: [[^stream_id]]}} =
+      Postgrex.transaction(context.conn, fn tx ->
+        Postgrex.query!(tx, "SET LOCAL eventstore.enable_hard_deletes TO 'on'", [])
+        Postgrex.query!(tx, pinned("hard_delete_stream", context), [stream_id])
+        Postgrex.query!(tx, pinned("delete_stream_row", context), [stream_id])
+      end)
   end
 
   defp pinned(statement, context) do
@@ -173,6 +226,31 @@ defmodule Decree.Store.SnapshotRolloutTest do
   end
 
   defp opts(context), do: [schema: context.schema]
+
+  defp stream_id(context) do
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(
+        context.conn,
+        ~s|SELECT stream_id FROM "#{context.schema}".streams WHERE stream_uuid = $1|,
+        [context.source_uuid]
+      )
+
+    case rows do
+      [] -> nil
+      [[stream_id]] -> stream_id
+    end
+  end
+
+  defp versioned_count(context) do
+    %Postgrex.Result{rows: [[count]]} =
+      Postgrex.query!(
+        context.conn,
+        ~s|SELECT count(*) FROM "#{context.schema}".versioned_snapshots WHERE source_uuid = $1|,
+        [context.source_uuid]
+      )
+
+    count
+  end
 
   # A versioned write takes its stream's row, so the source is a stream with an event.
   defp stream!(conn, schema) do

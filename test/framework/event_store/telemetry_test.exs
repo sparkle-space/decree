@@ -53,6 +53,15 @@ defmodule Decree.EventStore.TelemetryTest do
 
     test "emit `[:decree, :event_store, :read_snapshot, :start | :stop]` event" do
       uuid = UUID.uuid4()
+      assert {:error, :snapshot_not_found} = EventStore.read_snapshot(DefaultApp, uuid)
+
+      assert_receive {[:decree, :event_store, :read_snapshot, :start], 1, _meas, _meta}
+      assert_receive {[:decree, :event_store, :read_snapshot, :stop], 2, _meas, meta}
+      assert %{application: DefaultApp, source_uuid: ^uuid} = meta
+    end
+
+    test "emit `[:decree, :event_store, :read_snapshot, :start | :stop]` event at a version" do
+      uuid = UUID.uuid4()
       assert {:error, :snapshot_not_found} = EventStore.read_snapshot(DefaultApp, uuid, 1)
 
       assert_receive {[:decree, :event_store, :read_snapshot, :start], 1, _meas, _meta}
