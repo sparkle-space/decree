@@ -1,0 +1,4 @@
+# Rig outputs and builds: never committed (the coordinator asks for gate-rows*.json).
+work/
+gate-rows*.json
+__pycache__/

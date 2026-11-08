@@ -26,6 +26,16 @@ tel_rcold_main:$WORK/main:rule_cold_span:main,tel_rcold_fix:$WORK/fix:rule_cold_
     fi
     export BLOCKS=${BLOCKS:-401} BENCH_N=${BENCH_N:-51} BENCH_WARM=${BENCH_WARM:-300}
     ;;
+  prod)
+    # Method A (sparklespace#7787): the four gated arms on the production-shaped store. Each
+    # dispatch adds 3 events, so the defaults keep the run's growth to about a quarter of the
+    # prefill: 4 arms x 3 x (BENCH_WARM + BENCH_N x (BLOCKS + 3)).
+    if [ "${DECOMPOSE:-0}" = 1 ]; then echo "DECOMPOSE=1 is only for STORE=large"; exit 2; fi
+    export ARMS="dec_main:$WORK/main:decision:main,dec_fix:$WORK/fix:decision:fix,rcold_main:$WORK/main:rule_cold:main,rcold_fix:$WORK/fix:rule_cold:fix"
+    export PAIRS="dec_main-dec_fix,rcold_main-rcold_fix"
+    if [ "$CADENCE" != 0 ]; then export BENCH_N=$((CADENCE / 2)); else export BENCH_N=${BENCH_N:-11}; fi
+    export BLOCKS=${BLOCKS:-101} BENCH_WARM=${BENCH_WARM:-50}
+    ;;
   *)
     if [ "${DECOMPOSE:-0}" = 1 ]; then echo "DECOMPOSE=1 is only for STORE=large"; exit 2; fi
     export ARMS="dec_main:$WORK/main:decision:main,dec_fix:$WORK/fix:decision:fix,rcold_main:$WORK/main:rule_cold:main,rcold_fix:$WORK/fix:rule_cold:fix"
@@ -37,10 +47,14 @@ tel_rcold_main:$WORK/main:rule_cold_span:main,tel_rcold_fix:$WORK/fix:rule_cold_
     ;;
 esac
 # SMOKE=1 checks the run path only: two tiny rounds, no start rule, numbers meaningless.
-if [ "${SMOKE:-0}" = 1 ]; then export BLOCKS=2 BENCH_N=3 BENCH_WARM=5; fi
+if [ "${SMOKE:-0}" = 1 ]; then export BLOCKS=2 BENCH_WARM=5; [ "$CADENCE" = 0 ] && export BENCH_N=3; fi
 
 loads() { /usr/bin/env python3 -c 'import os; print(" ".join("%.2f" % l for l in os.getloadavg()))'; }
-quiet() { /usr/bin/env python3 -c 'import os,sys; sys.exit(0 if all(l < 4 for l in os.getloadavg()) else 1)'; }
+quiet() {
+  /usr/bin/env python3 -c 'import os,sys; sys.exit(0 if all(l < 4 for l in os.getloadavg()) else 1)' || return 1
+  # sparklespace#7787: with AG_HOME, the quiet-host rule also refuses heavy memory pressure.
+  if [ -n "${AG_HOME:-}" ]; then /usr/bin/env python3 "$AG_HOME/quiet.py" >/dev/null || return 1; fi
+}
 
 if [ "${SMOKE:-0}" = 1 ]; then echo "=== SMOKE RUN: checks the scripts only; its numbers mean nothing and are never reported"; fi
 if [ "${DECOMPOSE:-0}" = 1 ]; then echo "=== DECOMPOSITION RUN, not the gate: no start rule, nothing voids it"; fi
@@ -57,7 +71,7 @@ elif [ -n "$foreign" ]; then
   exit 2
 fi
 echo "=== 7752 gate run"
-echo "store $STORE${SMALL_BEFORE:+ (SMALL_BEFORE=$SMALL_BEFORE)}"
+echo "rig $RIG; store $STORE${SMALL_BEFORE:+ (SMALL_BEFORE=$SMALL_BEFORE)}; cadence $CADENCE"
 echo "main (pre-FW-6) $MAIN_SHA"
 echo "fix $BRANCH_SHA"
 [ "${SMALL_BEFORE:-0}" = 1 ] && echo "fw6 $FW6_SHA"
@@ -69,7 +83,10 @@ until [ "${SMOKE:-0}" = 1 ] || [ "${DECOMPOSE:-0}" = 1 ] || quiet; do
   sleep 30; waited=$((waited + 30))
 done
 echo "start loads (1/5/15 min): $(loads)"
-/usr/bin/env python3 "$GATE_HOME/drive.py"
-echo "DRIVE_EXIT=$?"
+drive_exit=0
+/usr/bin/env python3 "$GATE_HOME/drive.py" || drive_exit=$?
+echo "DRIVE_EXIT=$drive_exit"
 date
 echo "end loads (1/5/15 min): $(loads)"
+# The driver's status is the run's: 3 is a run method B could not complete (not evidence).
+exit "$drive_exit"

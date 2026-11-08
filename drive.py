@@ -39,19 +39,34 @@ DECOMPOSE = os.environ.get('DECOMPOSE', '0') == '1'
 SMOKE = os.environ.get('SMOKE', '0') == '1'
 TOLERANT = DECOMPOSE or SMOKE
 STORE = os.environ.get('STORE', 'large')
-SMALL = STORE != 'large'
+SMALL = STORE in ('small2k', 'small20k')
 SMALL_CEILING = int(os.environ.get('SMALL_CEILING', '0'))
 TRACE_EVERY = 10 if SMALL else 50
 LEFT_SMALL = 'INCOMPLETE (store left the small range)'
 CPU_LIMIT = 10.0
 LOAD_LIMIT = 15.0
+# Method A + B (sparklespace#7787). CADENCE=N: each arm's block is N appends after a CHECKPOINT
+# and its value is the block's mean (server.exs). Method B: each arm connects as its own role,
+# arm_<name> (setup.sh creates them), so pg_stat_statements keeps its statements apart; with
+# AG_HOME set, the driver snapshots them after the warm-up rounds and after the last counted
+# round, and prints factors.py's table for each pair: the first arm is the unchanged baseline.
+CADENCE = int(os.environ.get('CADENCE', '0'))
+AG_HOME = os.environ.get('AG_HOME', '')
+# Method B is on whenever AG_HOME is: then each arm connects as its own role, and a missing
+# snapshot or a failed factor table makes the run INCOMPLETE, never VALID. Without AG_HOME the
+# rig is the hot gate as it was, connecting as GATE_PG_USER.
+METHOD_B = bool(AG_HOME)
+METHOD_B_FAILED = 'INCOMPLETE (method B failed)'
+SNAPS = os.path.join(work, 'snaps-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 
 
 def start(name, path, mode, build):
     env = dict(os.environ)
     env.update(DECREE_PATH=path, GATE_BUILD=work + '/build-' + build, BENCH_ARM=name,
                BENCH_MODE=mode, MIX_ENV='prod', ELIXIR_ERL_OPTIONS=FLAGS,
-               PATH=os.environ['GATE_PATH'])
+               PATH=os.environ['GATE_PATH'], BENCH_CADENCE=str(CADENCE))
+    if METHOD_B:
+        env['GATE_PG_USER'] = 'arm_' + name
     p = subprocess.Popen([os.environ['GATE_MIX'], 'run', '--no-compile', '--no-deps-check', '--no-start', 'server.exs'],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env, bufsize=1,
                          cwd=home)
@@ -203,7 +218,30 @@ if SMALL:
         sys.exit('REFUSED: the projected end %d exceeds SMALL_CEILING %d; lower BLOCKS, BENCH_N or BENCH_WARM' %
                  (start_head + projection, SMALL_CEILING))
 else:
-    print('store large: events at start', start_head, flush=True)
+    print('store %s: events at start %s' % (STORE, start_head), flush=True)
+    if STORE == 'prod':
+        # The store must be the one setup.sh just built for this preset: full size (a scaled
+        # prefill is for SMOKE only), the same RIG and STORE, and not grown by an earlier run.
+        scale = os.environ.get('AG_SCALE', '1.0')
+        if float(scale) != 1.0 and not SMOKE:
+            sys.exit('REFUSED: AG_SCALE=%s is a smoke store; a reportable STORE=prod run needs the full prefill' % scale)
+        marker_path = os.path.join(work, 'setup.json')
+        try:
+            marker = json.load(open(marker_path))
+        except (OSError, ValueError):
+            sys.exit('REFUSED: no setup record %s: run ./setup.sh with this STORE first' % marker_path)
+        want = {'rig': os.environ.get('RIG'), 'store': STORE, 'scale': float(scale), 'head': start_head}
+        got = {k: marker.get(k) for k in want}
+        if got != want:
+            sys.exit('REFUSED: the store is not the one setup.sh built for this run (setup %s, now %s): run ./setup.sh again' %
+                     (got, want))
+        check = subprocess.run([sys.executable, os.path.join(AG_HOME, 'shape_check.py'), container, os.environ['GATE_DB'],
+                                'public', '--scale', scale], capture_output=True, text=True)
+        print('store prod: shape check %s' % (check.stdout.strip().splitlines() or ['no output'])[-1], flush=True)
+        if check.returncode != 0:
+            sys.exit('REFUSED: the store is off its production shape:\n' + check.stdout + check.stderr)
+        growth = len(arms) * 3 * (warm + bn * (rounds + 3))
+        print('store prod: projected growth %d events (%.0f%% of the start)' % (growth, 100.0 * growth / start_head), flush=True)
 procs = {a[0]: start(*a) for a in arms}
 print('beam.smp at start', len(pids('beam.smp')), 'for', len(procs), 'arms', flush=True)
 
@@ -237,6 +275,19 @@ def sample(label):
     return void
 
 
+def snap(label):
+    """Method B's snapshot of every arm's role; a no-op without AG_HOME or a container."""
+    if not AG_HOME or not container:
+        return False
+    env = dict(os.environ, AG_CONTAINER=container, AG_DB=os.environ['GATE_DB'],
+               AG_ROLES=','.join('arm_' + n for n in names))
+    out = subprocess.run(['bash', os.path.join(AG_HOME, 'snap.sh'), SNAPS, label], capture_output=True, text=True, env=env)
+    if out.returncode != 0:
+        print('method B snapshot %s failed: %s' % (label, (out.stdout + out.stderr).strip()[-300:]), flush=True)
+        return False
+    return True
+
+
 def write_rows(rows, verdict):
     """The raw blocks, void or not. An earlier file is kept under a new name, never overwritten."""
     if os.path.exists(rows_path):
@@ -246,6 +297,7 @@ def write_rows(rows, verdict):
            'fix': os.environ.get('BRANCH_SHA'),
            'fw6': os.environ.get('FW6_SHA') if any(n.endswith('_fw6') for n in names) else None,
            'arms': names, 'pairs': ['-'.join(p) for p in pairs], 'block_n': os.environ.get('BENCH_N'),
+           'cadence': CADENCE, 'quantity': 'block mean' if CADENCE else 'block median',
            'smoke': os.environ.get('SMOKE', '0') == '1', 'decompose': DECOMPOSE, 'verdict': verdict, 'trace': trace_log,
            'rows': rows}
     data = json.dumps(doc, indent=1).encode()
@@ -264,6 +316,7 @@ try:
         for name in names:
             block(name, procs[name])
 
+    snapped = snap('start')
     interfered = sample('start')
     # A void condition voids the whole run, so the run stops at the first one: measuring on would
     # report nothing.
@@ -279,8 +332,29 @@ try:
             stopped_early = (bool(interfered) and not TOLERANT) or bool(left_small)
     if not stopped_early:
         interfered = sample('end')
+    snapped = snap('end') and snapped and not stopped_early
     void = bool(interfered) and not TOLERANT
+    # Method B, before the verdict and the rows: a missing snapshot, a malformed pair or a failed
+    # factor table makes an otherwise VALID run INCOMPLETE, so it reports no number and its rows
+    # say so. Any exception here is a method B failure too, never a VALID artifact.
+    method_b = []
+    method_b_ok = not METHOD_B
+    if METHOD_B and snapped and not void:
+        try:
+            for pair in pairs:
+                if len(pair) != 2 or not all(pair):
+                    raise ValueError('malformed pair %r in PAIRS' % '-'.join(pair))
+                a, b = pair
+                out = subprocess.run([sys.executable, os.path.join(AG_HOME, 'factors.py'), '--snaps', SNAPS, '--from',
+                                      'start', '--to', 'end', '--baseline', 'arm_' + a, '--change', 'arm_' + b],
+                                     capture_output=True, text=True)
+                method_b.append((a, b, out.returncode, out.stdout.rstrip(), out.stderr.rstrip()))
+            method_b_ok = bool(method_b) and all(rc == 0 for _, _, rc, _, _ in method_b)
+        except Exception as e:  # noqa: BLE001 - any failure here is reported, never VALID
+            method_b.append(('?', '?', -1, '', 'method B raised: %r' % e))
     verdict = ('DECOMPOSITION' if DECOMPOSE else 'SMOKE' if SMOKE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
+    if METHOD_B and verdict == 'VALID' and not method_b_ok:
+        verdict = METHOD_B_FAILED
 finally:
     for p in procs.values():
         p.terminate()
@@ -296,6 +370,8 @@ def stat(values):
 
 
 print('=== RESULTS (paste everything from here to END RESULTS)')
+print('method A: %s' % ('a CHECKPOINT before every block of %d appends (%s dispatches); a block is its mean' % (CADENCE, bn)
+                        if CADENCE else 'no cadence arm (hot); a block is its median'))
 end_head = trace_log[-1]['store'] if trace_log else None
 print('store %s: events at start %s, at end %s' % (STORE, start_head, end_head))
 if DECOMPOSE:
@@ -307,6 +383,8 @@ else:
           '| void', interfered if interfered else 'none')
 if void:
     print('VOID: per the rule, no numbers are reported from this run.')
+elif verdict == METHOD_B_FAILED:
+    print('%s: method A + B needs both snapshots and every factor table, so no numbers are reported.' % METHOD_B_FAILED)
 elif left_small:
     print('%s: no numbers are reported from this run.' % LEFT_SMALL)
 else:
@@ -330,6 +408,21 @@ else:
         print(line)
     if any(n.startswith('tel_') for n in names):
         print('read_tags spans in span-arm dispatches: 0 (each span arm ends itself on one)')
+for a, b, rc, text, err in method_b:
+    # Method B: per-statement factors for each pair, the first arm as the unchanged baseline. A run
+    # method B could not complete prints only each table's status and its error, never numbers.
+    label = ' (SMOKE: checks the scripts only; never reported)' if SMOKE else ''
+    print('=== method B: %s minus %s%s%s' % (b, a, label, '' if rc == 0 else ' FAILED, exit %d' % rc))
+    if verdict == METHOD_B_FAILED:
+        # stdout is the table, so it is dropped whole; only stderr's tail says what failed.
+        if rc != 0:
+            print('\n'.join(err.splitlines()[-5:]) or '(no error output)')
+    else:
+        print(text + ('\n' + err if err else ''))
+if METHOD_B and not method_b and snapped and not void:
+    print('method B: no factor table ran')
+if not METHOD_B:
+    print('method B: AG_HOME is not set, so no per-statement factors')
 if SMALL:
     # Each side's own read statement, EXPLAINed on this store: main's `yes` proves the store stayed
     # below the flip; the fix side should say `no`.
@@ -345,3 +438,5 @@ if SMALL:
         else:
             print('plan check %s: FAILED (exit %d): %s' % (side, out.returncode, (out.stdout + out.stderr).strip()[-300:]))
 print('=== END RESULTS')
+# A run that method B could not complete is not evidence: say so in the exit status too.
+sys.exit(3 if verdict == METHOD_B_FAILED else 0)

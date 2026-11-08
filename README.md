@@ -52,6 +52,40 @@ With `SMALL_BEFORE=1` (pass it to `setup.sh` too, which then also builds fw6) th
 - **Plan check (small only):** after the arms stop, inside the results block, the rig renders each side's own read statement (`Decree.Store.Storage.Reader.Query.read_query_statement`), runs `EXPLAIN` on the facts' query on the final store, and prints `plan check <side> at store N: Seq Scan on stream_events: yes|no`. Expected: `yes` for main (proof the store stayed below the flip) and `no` for the fix.
 - The results print the store size at start and at end.
 
+## Method A + B (sparklespace#7787)
+
+The founder's gate method (2026-11-05, on sparklespace#7492) applies to this rig and to `bench/fw6-gate`'s, which it now carries as a preset. The shared tooling is in the sparklespace checkout, `dev/bench/append-gate/` (its README has the method), and this rig points at it with `AG_HOME`.
+
+- **`RIG=fw6`** runs `bench/fw6-gate`'s gate (sparklespace#7627): FW-6 at decree#20's head `57cc85c` against the same main, in the database `gate_fw6`. That branch's eight arms are this rig's `STORE=large` arms with FW-6 as the branch side, so the branch stays as it was and this preset replaces it. The side keeps the name `fix` (arms `dec_fix`, `rcold_fix` and so on). `RIG=7752`, the default, is #7752's fix.
+- **The instance:** `GATE_INSTANCE=<dir>` names an owned instance with production's settings, made with `bash $AG_HOME/prod-instance.sh create <dir>`: `shared_buffers` 256MB, checksums and `wal_log_hints` on, `pg_stat_statements` loaded, a 2 GB memory limit. With it set, the instance's port, password and container replace `GATE_PG_*`, and setup and the run refuse an instance that is not production-shaped. The 3 GB server above stays possible for `STORE=large`, without method B's factors.
+- **`STORE=prod` (method A's store):** the four gated arms on a production-shaped store. After the facts, `init.exs` appends W1's shape (55,510 events, 36,318 tag rows; `$AG_HOME/shape.json`) through the branch side's decree with `AppendGate.Prefill`, then runs `VACUUM ANALYZE` and one `CHECKPOINT`. `setup.sh` checks the shape (`shape_check.py`). Defaults: `BENCH_WARM` 50, `BLOCKS` 101, `BENCH_N` 11, so the run grows the store by about a quarter. The driver prints the projection. With checksums on, the arms' reads take hint-bit full-page images on pages they touch first after a checkpoint, as production's do.
+- **`CADENCE=N` (method A's arm), `STORE=prod` only:** every block is N appends after a `CHECKPOINT` the arm issues outside its timed region. A gated dispatch is two appends (the seed's and its own), so a block is N/2 dispatches, and N must be even. A block's value is its mean, not its median. Q2 and Q3 keep their +500 µs threshold on the paired block means. Run it at production's cadence, `CADENCE=12` and `CADENCE=20`, each after a fresh `setup.sh`.
+- **Per-statement factors (method B), every store:** `setup.sh` creates one login role per arm, `arm_<arm>`, and each arm connects as its own role, so `pg_stat_statements` keeps their statements apart. With `AG_HOME` set, the driver snapshots every arm's role after the warm-up and after the last counted round. Then, for each pair, it prints `factors.py`'s table with the main arm as the unchanged baseline, and the other arm's projection. Read it as that README says:
+  - a decision's and a rule's read statements have no production numerator yet, because production runs no decision until P6. So they print as `founder reads only`, with the class heuristic as an early warning;
+  - a new or reshaped statement prints `NEW OR RESHAPED: founder reads only`.
+  The small stores keep their size by design: they get the factors and no cadence arm.
+- **Quiet host:** with `AG_HOME` set, the start rule also requires normal memory pressure (`$AG_HOME/quiet.py`), beside the loads under 4.
+
+```bash
+export AG_HOME=<sparklespace checkout>/dev/bench/append-gate GATE_INSTANCE=/private/tmp/gate-decree-pg
+```
+
+```bash
+bash $AG_HOME/prod-instance.sh create $GATE_INSTANCE
+```
+
+```bash
+RIG=fw6 STORE=prod CADENCE=12 ./setup.sh && RIG=fw6 STORE=prod CADENCE=12 ./run.sh
+```
+
+```bash
+RIG=fw6 STORE=prod CADENCE=20 ./setup.sh && RIG=fw6 STORE=prod CADENCE=20 ./run.sh
+```
+
+```bash
+RIG=7752 STORE=small2k ./setup.sh && RIG=7752 STORE=small2k ./run.sh
+```
+
 ## Requirements
 
 - **Toolchain:** the one decree's `mise.toml` pins at every commit, **Erlang 29.1.2** and **Elixir 1.20.4-otp-29**, through [mise](https://mise.jdx.dev). `setup.sh` runs `mise install` in the exported fix tree.

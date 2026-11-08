@@ -3,9 +3,15 @@
 # if it sends any `read_tags`: decision_span and rule_cold_span. read_tags times the index
 # facts' `read_tags` call alone.
 # On each stdin line runs one block and prints its median in µs.
+# BENCH_CADENCE=N > 0 (sparklespace#7787, method A): each block first issues a CHECKPOINT on the
+# arm's own connection, outside every timed region, then runs its BENCH_N dispatches and prints
+# `APPENDS <k>` (the block's store appends) and `BLOCK <mean>`: the mean, since a checkpoint's
+# cost falls on the first appends after it and a median would hide it. BENCH_CADENCE=0 (the
+# default) is the median block, unchanged. The driver sets BENCH_N so a block is N appends.
 Logger.configure(level: :warning)
 mode = System.fetch_env!("BENCH_MODE")
 n = String.to_integer(System.get_env("BENCH_N", "501"))
+cadence = String.to_integer(System.get_env("BENCH_CADENCE", "0"))
 uuid = &Decree.UUID.uuid4/0
 median = fn l -> l |> Enum.sort() |> Enum.at(div(length(l), 2)) end
 {:ok, _} = Application.ensure_all_started(:decree)
@@ -29,7 +35,11 @@ seed = fn ->
       holder,
       :any_version,
       [
-        event.("Elixir.Gate.Registered", %Gate.Registered{user_id: holder, digest: digest, note: "n"}, [Gate.Shape.email_tag(digest)]),
+        event.(
+          "Elixir.Gate.Registered",
+          %Gate.Registered{user_id: holder, digest: digest, note: "n"},
+          [Gate.Shape.email_tag(digest)]
+        ),
         event.("Elixir.Gate.Released", %Gate.Released{user_id: holder}, ["user:" <> holder])
       ],
       name: Gate.Store
@@ -116,6 +126,17 @@ one =
       fn -> time.(fn -> Gate.Decompose.read_facts(positions) end) end
   end
 
+# Store appends per dispatch: the seed's one `append_to_stream` and the dispatch's one; noop
+# appends through no store and read_tags appends nothing.
+appends_per_dispatch = if mode in ["noop", "read_tags"], do: 0, else: 2
+
+checkpoint =
+  if cadence > 0 do
+    config = Decree.Store.Config.parsed(Gate.Store, :gate_bench)
+    {:ok, conn} = Postgrex.start_link(Decree.Store.Config.default_postgrex_opts(config))
+    fn -> Postgrex.query!(conn, "CHECKPOINT", [], timeout: :infinity) end
+  end
+
 for _ <- 1..String.to_integer(System.get_env("BENCH_WARM", "300")), do: one.()
 IO.puts("READY")
 
@@ -124,8 +145,15 @@ loop = fn loop ->
     :eof ->
       :ok
 
-    _ ->
+    _ when cadence == 0 ->
       IO.puts("BLOCK #{median.(for _ <- 1..n, do: one.())}")
+      loop.(loop)
+
+    _ ->
+      checkpoint.()
+      times = for _ <- 1..n, do: one.()
+      IO.puts("APPENDS #{appends_per_dispatch * n}")
+      IO.puts("BLOCK #{Enum.sum(times) / length(times)}")
       loop.(loop)
   end
 end
