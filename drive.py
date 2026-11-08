@@ -348,10 +348,10 @@ try:
                 out = subprocess.run([sys.executable, os.path.join(AG_HOME, 'factors.py'), '--snaps', SNAPS, '--from',
                                       'start', '--to', 'end', '--baseline', 'arm_' + a, '--change', 'arm_' + b],
                                      capture_output=True, text=True)
-                method_b.append((a, b, out.returncode, (out.stdout + out.stderr).rstrip()))
-            method_b_ok = bool(method_b) and all(rc == 0 for _, _, rc, _ in method_b)
+                method_b.append((a, b, out.returncode, out.stdout.rstrip(), out.stderr.rstrip()))
+            method_b_ok = bool(method_b) and all(rc == 0 for _, _, rc, _, _ in method_b)
         except Exception as e:  # noqa: BLE001 - any failure here is reported, never VALID
-            method_b.append(('?', '?', -1, 'method B raised: %r' % e))
+            method_b.append(('?', '?', -1, '', 'method B raised: %r' % e))
     verdict = ('DECOMPOSITION' if DECOMPOSE else 'SMOKE' if SMOKE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
     if METHOD_B and verdict == 'VALID' and not method_b_ok:
         verdict = METHOD_B_FAILED
@@ -408,16 +408,17 @@ else:
         print(line)
     if any(n.startswith('tel_') for n in names):
         print('read_tags spans in span-arm dispatches: 0 (each span arm ends itself on one)')
-for a, b, rc, text in method_b:
+for a, b, rc, text, err in method_b:
     # Method B: per-statement factors for each pair, the first arm as the unchanged baseline. A run
     # method B could not complete prints only each table's status and its error, never numbers.
     label = ' (SMOKE: checks the scripts only; never reported)' if SMOKE else ''
     print('=== method B: %s minus %s%s%s' % (b, a, label, '' if rc == 0 else ' FAILED, exit %d' % rc))
     if verdict == METHOD_B_FAILED:
+        # stdout is the table, so it is dropped whole; only stderr's tail says what failed.
         if rc != 0:
-            print('\n'.join(text.splitlines()[-5:]))
+            print('\n'.join(err.splitlines()[-5:]) or '(no error output)')
     else:
-        print(text)
+        print(text + ('\n' + err if err else ''))
 if METHOD_B and not method_b and snapped and not void:
     print('method B: no factor table ran')
 if not METHOD_B:
