@@ -1,0 +1,5 @@
+<%# The production pin's delete_snapshot.sql.eex, decree f46d1d039 (unchanged at ccfc0f8):
+    what a pod from before store migration 1.10.0 sends. Copied as it was there,
+    below this comment; never edit it. %>
+DELETE FROM "<%= schema %>".snapshots
+WHERE source_uuid = $1;
