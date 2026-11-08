@@ -58,19 +58,23 @@ defmodule Decree.Store.Storage.DeleteStream do
   # seen and removed with the event, and every `stream_events` row of an event is touched only
   # while that event's row is held. With the event rows held no link of them is in flight, so
   # the stream's row, after them and on its own because the order of a statement's CTEs is
-  # undocumented, finds no link's KEY SHARE on it and nothing still referencing it. The one
-  # KEY SHARE it can still wait on is a versioned snapshot write's, which the last statement
-  # answers for.
+  # undocumented, finds no link's KEY SHARE on it and nothing still referencing it but the
+  # stream's `versioned_snapshots` rows. The one KEY SHARE it can still wait on is a versioned
+  # snapshot write's.
   #
-  # The stream's snapshot rows go last, in both tables and at every version, by the
-  # `stream_uuid` the deleted row returns, the `source_uuid` a snapshot of it is recorded
-  # under. A versioned snapshot
-  # write takes the stream's row FOR KEY SHARE first (`Snapshot.record_snapshot/3`), and the
-  # row's DELETE conflicts with that. So a write that holds the row is committed before that
-  # DELETE goes on, and this statement's snapshot, which starts after it, sees the row and
-  # deletes it; a write that comes to the row after the DELETE waits for this transaction and
-  # then finds no stream. A legacy write, with no `snapshot_version`, takes no lock: only an
-  # old pod's, during a rollout.
+  # Those rows go with the stream's row, in any pod: their foreign key to `streams` cascades
+  # its DELETE, which is how an old pod's hard delete, with no statement for that table,
+  # leaves none behind. A versioned write holds the stream's row FOR KEY SHARE, the lock its
+  # foreign key's check also takes, and the row's DELETE conflicts with it. So a write that
+  # holds the row commits before the DELETE goes on, and the cascade deletes its row; a write
+  # that comes to the row after the DELETE waits for this transaction and then finds no
+  # stream (`Snapshot.record_snapshot/3`).
+  #
+  # The last statement deletes the stream's legacy `snapshots` row, by the `stream_uuid` the
+  # deleted row returns, the `source_uuid` a snapshot of it is recorded under. That table
+  # has no foreign key, because an old pod writes a row there for any source, stream or not,
+  # and takes no lock to do it. The statement also deletes any versioned row, which the
+  # cascade has already removed.
   def hard_delete(conn, stream_id, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {expected_version, opts} = Keyword.pop(opts, :expected_version, :any_version)

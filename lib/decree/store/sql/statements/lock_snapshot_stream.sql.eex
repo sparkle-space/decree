@@ -1,8 +1,10 @@
 <%!--
   The first statement of a versioned snapshot's write: see
-  `Decree.Store.Storage.Snapshot.record_snapshot/3`. KEY SHARE conflicts with the hard
-  delete's DELETE of this row and not with an append's NO KEY UPDATE, so appends never wait
-  on a snapshot, and a hard delete and a snapshot of its stream are ordered on this row.
+  `Decree.Store.Storage.Snapshot.record_snapshot/3`. It takes the lock the row's foreign key
+  check would take at insert, first, so a stream with no row answers `:stream_not_found`
+  early. KEY SHARE conflicts with a hard delete's DELETE of this row and not with an
+  append's NO KEY UPDATE, so appends never wait on a snapshot, and a hard delete and a
+  snapshot of its stream are ordered on this row.
 --%>
 SELECT 1
 FROM "<%= schema %>".streams

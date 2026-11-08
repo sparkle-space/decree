@@ -189,6 +189,12 @@ defmodule Decree.EventStore.Adapter do
               :ok | {:error, :subscription_not_found} | {:error, error}
 
   @doc """
+  Read a snapshot, if available, for a given source.
+  """
+  @callback read_snapshot(adapter_meta, source_uuid) ::
+              {:ok, SnapshotData.t()} | {:error, :snapshot_not_found}
+
+  @doc """
   Read a snapshot, if available, for a given source at a snapshot version, or from the
   store's legacy one-row table when the version is nil.
   """

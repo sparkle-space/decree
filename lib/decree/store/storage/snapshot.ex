@@ -70,13 +70,15 @@ defmodule Decree.Store.Storage.Snapshot do
   # One transaction: the stream's row FOR KEY SHARE, then the upsert. No row answers
   # `:stream_not_found` and writes nothing.
   #
-  # A hard delete deletes the stream's row before it deletes the stream's snapshot rows
-  # (`DeleteStream.hard_delete/3`), and that DELETE conflicts with KEY SHARE. So a snapshot
-  # that took the row first commits before the DELETE goes on, and the hard delete's later
-  # statement, with a snapshot of its own, sees its row and deletes it; one that comes to the
-  # row after the DELETE waits for the hard delete to commit, and then finds no row. Either
-  # way no snapshot outlives the stream it was taken of. KEY SHARE does not conflict with the
-  # NO KEY UPDATE an append takes, so an append never waits on a snapshot write.
+  # No row outlives the stream it was taken of, whichever pod hard deletes the stream: the
+  # row's foreign key to `streams` cascades the stream row's DELETE, and its check takes the
+  # stream's row FOR KEY SHARE at insert. The explicit lock is that same lock taken first, so
+  # a write with no stream answers `:stream_not_found` early rather than a foreign key
+  # violation. A write that holds the row commits before a hard delete's DELETE of it goes
+  # on, and the cascade deletes its row; one that comes to the row after the DELETE waits
+  # for the hard delete to commit, and then finds no row (`DeleteStream.hard_delete/3`). KEY
+  # SHARE does not conflict with the NO KEY UPDATE an append takes, so an append never waits
+  # on a snapshot write.
   def record_snapshot(conn, %SnapshotData{snapshot_version: snapshot_version} = snapshot, opts)
       when is_integer(snapshot_version) and snapshot_version >= 0 do
     %SnapshotData{

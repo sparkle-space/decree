@@ -87,6 +87,9 @@ defmodule Decree.Event.Tagging.Adapter do
   defdelegate delete_subscription(adapter_meta, stream, name), to: Adapter
 
   @impl Decree.EventStore.Adapter
+  defdelegate read_snapshot(adapter_meta, source_uuid), to: Adapter
+
+  @impl Decree.EventStore.Adapter
   defdelegate read_snapshot(adapter_meta, source_uuid, snapshot_version), to: Adapter
 
   @impl Decree.EventStore.Adapter

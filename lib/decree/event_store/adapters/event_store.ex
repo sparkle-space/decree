@@ -183,6 +183,17 @@ defmodule Decree.EventStore.Adapters.EventStore do
   end
 
   @impl Decree.EventStore.Adapter
+  def read_snapshot(adapter_meta, source_uuid) do
+    {event_store, name} = extract_adapter_meta(adapter_meta)
+
+    with {:ok, snapshot_data} <- event_store.read_snapshot(source_uuid, name: name) do
+      snapshot = Mapper.from_snapshot_data(snapshot_data)
+
+      {:ok, snapshot}
+    end
+  end
+
+  @impl Decree.EventStore.Adapter
   def read_snapshot(adapter_meta, source_uuid, snapshot_version) do
     {event_store, name} = extract_adapter_meta(adapter_meta)
 

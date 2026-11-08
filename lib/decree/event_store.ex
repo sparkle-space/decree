@@ -16,6 +16,7 @@ defmodule Decree.EventStore do
     * delete_subscription/3
     * prune_snapshots/3
     * read_query/3
+    * read_snapshot/2
     * read_snapshot/3
     * read_tags/3
     * record_snapshot/2
@@ -341,6 +342,20 @@ defmodule Decree.EventStore do
       {adapter, adapter_meta} = Application.event_store_adapter(application)
 
       adapter.delete_subscription(adapter_meta, subscribe_to, handler_name)
+    end)
+  end
+
+  @doc """
+  Read a snapshot, if available, for a given source.
+
+  The read from before snapshot versions, unchanged: it reads the store's legacy one-row
+  table, never a versioned row. `read_snapshot/3` reads a snapshot version's row.
+  """
+  def read_snapshot(application, source_uuid) do
+    {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+    span(:read_snapshot, %{application: application, source_uuid: source_uuid}, fn ->
+      adapter.read_snapshot(adapter_meta, source_uuid)
     end)
   end
 

@@ -1,8 +1,9 @@
 <%!--
   The fifth of a hard delete's six statements: see `DeleteStream.hard_delete/3`. Its DELETE
-  conflicts with the KEY SHARE a versioned snapshot write takes on this row, which is what
-  orders such a write before or after the sixth, `delete_snapshot`, which deletes by the
-  `stream_uuid` this returns.
+  cascades to the stream's `versioned_snapshots` rows, and conflicts with the KEY SHARE a
+  versioned snapshot write takes on this row, which orders such a write before it or after
+  the commit. The sixth, `delete_snapshot`, deletes the legacy row by the `stream_uuid` this
+  returns.
 --%>
 DELETE FROM "<%= schema %>".streams
 WHERE stream_id = $1

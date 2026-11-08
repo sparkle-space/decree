@@ -108,7 +108,8 @@ defmodule Decree.Aggregates.Aggregate do
   each aggregate from its events, for the new version only, until a row exists for it:
   `Decree.Aggregate.warm_snapshot/3` records that row without starting the aggregate, and
   `Decree.Aggregate.prune_snapshots/2` deletes the older versions' rows once no running code
-  reads them. A hard delete of a stream deletes its rows at every version.
+  reads them. A hard delete of a stream deletes its rows at every version, in any pod: a
+  row's foreign key to its stream cascades the delete.
 
   ## Personal fields
 

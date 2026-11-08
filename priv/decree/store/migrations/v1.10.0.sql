@@ -10,6 +10,9 @@ BEGIN
   -- `Migrate` sends a file as one statement, so this is one block. `snapshots` resolves
   -- through the `SET LOCAL search_path` Migrate runs. Its column type differs per store, so
   -- the new table takes it from there, as `Decree.Store.Sql.Init` takes it from the config.
+  --
+  -- A row belongs to its stream: the foreign key's cascade deletes it with the stream's row,
+  -- so an old pod's hard delete, which knows nothing of this table, leaves none behind.
   SELECT format_type(atttypid, atttypmod) INTO STRICT v_data_type
   FROM pg_attribute
   WHERE attrelid = 'snapshots'::regclass AND attname = 'data';
@@ -24,7 +27,9 @@ BEGIN
     || 'data ' || v_data_type || ' NOT NULL, '
     || 'metadata ' || v_data_type || ' NULL, '
     || 'created_at timestamp with time zone DEFAULT NOW() NOT NULL, '
-    || 'PRIMARY KEY (source_uuid, snapshot_version)'
+    || 'PRIMARY KEY (source_uuid, snapshot_version), '
+    || 'CONSTRAINT fk_versioned_snapshots_stream FOREIGN KEY (source_uuid) '
+    || 'REFERENCES streams (stream_uuid) ON DELETE CASCADE'
     || ')';
 
   -- Record schema migration

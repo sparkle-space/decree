@@ -2359,8 +2359,9 @@ defmodule Decree.Store do
   A snapshot whose `snapshot_version` is an integer is recorded as that version's row of
   `versioned_snapshots`, replacing only that version's. It is written in one transaction
   that first takes the row of the stream named `source_uuid`: with no such stream it
-  answers `{:error, :stream_not_found}` and writes nothing, so a snapshot never outlives a
-  hard delete of its stream. One whose `snapshot_version` is nil is the legacy one-row
+  answers `{:error, :stream_not_found}` and writes nothing. The row's foreign key to its
+  stream cascades the stream's hard delete, by this release or an older one, so a snapshot
+  never outlives its stream. One whose `snapshot_version` is nil is the legacy one-row
   `snapshots` table, written as before, with no stream needed.
 
   Returns `:ok` on success.
