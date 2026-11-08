@@ -8,19 +8,19 @@ defmodule Decree.ExampleDomain.BankAccount do
 
   defmodule Commands do
     defmodule OpenAccount do
-      defstruct [:account_number, :initial_balance]
+      defstruct [:account_number, :command_id, :initial_balance]
     end
 
     defmodule DepositMoney do
-      defstruct [:account_number, :transfer_uuid, :amount]
+      defstruct [:account_number, :command_id, :transfer_uuid, :amount]
     end
 
     defmodule WithdrawMoney do
-      defstruct [:account_number, :transfer_uuid, :amount, :by_user]
+      defstruct [:account_number, :command_id, :transfer_uuid, :amount, :by_user]
     end
 
     defmodule CloseAccount do
-      defstruct [:account_number]
+      defstruct [:account_number, :command_id]
     end
   end
 

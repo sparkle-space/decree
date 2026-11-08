@@ -84,10 +84,16 @@ defmodule Decree.Decision do
   Middleware runs as it does on an aggregate route, then, in a task as an aggregate command
   runs but with no aggregate process and no registry entry:
 
-    0. Refuse a command with no `command_id`, `{:error, :missing_command_id}`, a route
-       identity that is not a canonical UUID or has no stream tag,
-       `{:error, :invalid_decision_identity}`, and a `c:scope_tags/1` answer that is not a
-       list of non-empty strings, `{:error, :invalid_scope_tags}`. None sends a statement.
+    0. Refuse a command whose `command_id` is not a canonical UUID,
+       `{:error, :command_id_required}` or `{:error, :invalid_command_id}`
+       (`Decree.Command.check_id/1`), a route identity that is not a canonical UUID or has no
+       stream tag, `{:error, :invalid_decision_identity}`, and a `c:scope_tags/1` answer that
+       is not a list of non-empty strings, `{:error, :invalid_scope_tags}`. None sends a
+       statement. The first two are a backstop: the default middleware has already answered
+       a bad `command_id` (`Decree.Middleware.CommandId`) and an identity that is not a
+       canonical UUID, `{:error, :invalid_aggregate_identity}`
+       (`Decree.Middleware.ExtractAggregateIdentity`), before the task starts, so on a routed
+       dispatch `:invalid_decision_identity` here is a route with no stream tag.
     1. Call `c:query/2`. Its error is the answer. On a create, put the fact item first.
        Refuse an item naming no types or a malformed `replay: true` item. Refuse more
        condition items than `max_items` and more probes than `max_probes`. Read the items
@@ -417,8 +423,9 @@ defmodule Decree.Decision do
     - `:decision_not_activated` - its activation event is not there. Only that event changes
       that.
 
-  The other refusals are a bug in a command or a decision: `:missing_command_id`,
-  `:invalid_decision_identity`, `:invalid_query`, `:decision_returned_no_events` for `[]`,
+  The other refusals are a bug in a command or a decision: `:command_id_required`,
+  `:invalid_command_id`, `:invalid_aggregate_identity`, `:invalid_decision_identity`,
+  `:invalid_query`, `:decision_returned_no_events` for `[]`,
   `:ok` or `nil` from `c:decide/2` and `[]` for a member, `:invalid_decision_return` for
   anything else it may not answer, `:invalid_decision_stream` for a malformed member,
   `:batch_lacks_scope_tag`, `:batch_lacks_fact`, `:invalid_scope_tags`,

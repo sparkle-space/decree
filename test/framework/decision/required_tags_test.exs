@@ -68,6 +68,13 @@ defmodule Decree.Decision.RequiredTagsTest do
 
   defp stored_plain(%Emit{ledger_id: ledger_id}), do: stored(ledger_id, PlainApp)
 
+  # What preparing the events answers for `command`, before any store, as every append does.
+  defp prepared(command, events) do
+    context = %ExecutionContext{command: command, metadata: %{}}
+
+    Append.prepare_events(PlainApp, command.ledger_id, List.wrap(events), context)
+  end
+
   # An aggregate route answers no position, so the stream's entity tag finds the event.
   defp stored_tags(%Emit{ledger_id: ledger_id}) do
     assert {:ok, %ReadResult{events: [%{event_number: position}]}} =
@@ -342,28 +349,31 @@ defmodule Decree.Decision.RequiredTagsTest do
   end
 
   describe "the command's identity" do
-    test "a nil `command_id` on an opted-in aggregate route refuses" do
-      command = emit(%Addressed{}, command_id: nil)
+    # A dispatch refuses a missing or blank `command_id` first, in the default middleware
+    # (`Decree.Middleware.CommandId`), so the required `command` kind is a backstop there: it
+    # still holds where events are prepared, which every append path goes through.
+    for command_id <- [nil, ""] do
+      test "a #{inspect(command_id)} `command_id` on an opted-in aggregate route refuses" do
+        command = emit(%Addressed{}, command_id: unquote(command_id))
 
-      assert {:error, :missing_required_tag} = PlainApp.dispatch(command)
-      assert stored_plain(command) == []
-    end
+        assert {:error, :command_id_required} = PlainApp.dispatch(command)
+        assert stored_plain(command) == []
 
-    test "an empty `command_id` on an opted-in aggregate route refuses" do
-      command = emit(%Addressed{}, command_id: "")
-
-      assert {:error, :missing_required_tag} = PlainApp.dispatch(command)
-      assert stored_plain(command) == []
+        assert {:error, :missing_required_tag} = prepared(command, %Addressed{})
+      end
     end
 
     test "a domain tag of the `command` kind does not stand in for a missing `command_id`" do
       for forged <- ["command:forged", "command"], command_id <- [nil, ""] do
         command = emit(%Forged{tags: [forged]}, command_id: command_id)
 
-        assert {:error, :missing_required_tag} = PlainApp.dispatch(command),
+        assert {:error, :command_id_required} = PlainApp.dispatch(command),
                inspect({forged, command_id})
 
         assert stored_plain(command) == []
+
+        assert {:error, :missing_required_tag} = prepared(command, %Forged{tags: [forged]}),
+               inspect({forged, command_id})
       end
     end
 
@@ -376,29 +386,37 @@ defmodule Decree.Decision.RequiredTagsTest do
       assert Enum.count(stored_tags(command), &(&1 == tag)) == 1
     end
 
-    test "a decision's step 0 still answers first" do
+    test "a decision's `command_id` refusal still answers first" do
       for command_id <- [nil, ""] do
         command = %{deciding(Unindexed, read_nothing(), %Addressed{}) | command_id: command_id}
 
-        assert {:error, :missing_command_id} = DecisionApp.dispatch(command)
+        assert {:error, :command_id_required} = DecisionApp.dispatch(command)
       end
     end
   end
 
   describe "a plain route with an event that exports nothing" do
-    test "appends as it did, with a nil `command_id`" do
+    test "is refused with a nil `command_id`, by the default middleware" do
       command = emit(%Unopted{}, command_id: nil)
 
-      assert :ok = PlainApp.dispatch(command)
-      assert [%RecordedEvent{data: %Unopted{}}] = stored_plain(command)
+      assert {:error, :command_id_required} = PlainApp.dispatch(command)
+      assert stored_plain(command) == []
     end
 
     test "keeps a `command` kind tag, with no usable `command_id`" do
       for forged <- ["command:forged", "command"], command_id <- [nil, ""] do
         command = emit(%Unopted{tags: [forged]}, command_id: command_id)
+        context = %ExecutionContext{command: command, metadata: %{}}
 
-        assert :ok = PlainApp.dispatch(command)
-        assert forged in stored_tags(command)
+        assert {:ok, [%EventData{tags: tags}]} =
+                 Append.prepare_events(
+                   PlainApp,
+                   command.ledger_id,
+                   [%Unopted{tags: [forged]}],
+                   context
+                 )
+
+        assert forged in tags
       end
     end
 

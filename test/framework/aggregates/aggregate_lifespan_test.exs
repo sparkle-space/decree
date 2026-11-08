@@ -34,7 +34,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       aggregate_uuid: aggregate_uuid,
       ref: ref
     } do
-      command = %Command{uuid: aggregate_uuid, action: :event}
+      command = %Command{command_id: UUID.uuid4(), uuid: aggregate_uuid, action: :event}
 
       assert :ok = DefaultLifespanRouter.dispatch(command, application: DefaultApp)
 
@@ -45,7 +45,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       aggregate_uuid: aggregate_uuid,
       ref: ref
     } do
-      command = %Command{uuid: aggregate_uuid, action: :noop}
+      command = %Command{command_id: UUID.uuid4(), uuid: aggregate_uuid, action: :noop}
 
       assert :ok = DefaultLifespanRouter.dispatch(command, application: DefaultApp)
 
@@ -56,7 +56,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       aggregate_uuid: aggregate_uuid,
       ref: ref
     } do
-      command = %Command{uuid: aggregate_uuid, action: :error}
+      command = %Command{command_id: UUID.uuid4(), uuid: aggregate_uuid, action: :error}
 
       {:error, {:failed, nil, nil}} =
         DefaultLifespanRouter.dispatch(command, application: DefaultApp)
@@ -69,6 +69,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :event,
         reply_to: reply_to,
@@ -88,6 +89,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :event,
         reply_to: reply_to,
@@ -105,6 +107,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         reply_to: reply_to,
         action: :event,
@@ -124,6 +127,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         reply_to: reply_to,
         action: :event,
@@ -144,6 +148,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         reply_to: reply_to,
         action: :event,
@@ -162,6 +167,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :noop,
         reply_to: reply_to,
@@ -181,6 +187,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :noop,
         reply_to: reply_to,
@@ -197,6 +204,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :error,
         reply_to: reply_to,
@@ -217,6 +225,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       reply_to: reply_to
     } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :error,
         reply_to: reply_to,
@@ -237,6 +246,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       lifespan = 100
 
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :noop,
         reply_to: reply_to,
@@ -266,7 +276,12 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
            aggregate_uuid: aggregate_uuid,
            ref: ref
          } do
-      command = %Command{uuid: aggregate_uuid, action: :noop, lifespan: :stop}
+      command = %Command{
+        command_id: UUID.uuid4(),
+        uuid: aggregate_uuid,
+        action: :noop,
+        lifespan: :stop
+      }
 
       tasks =
         for _i <- 1..3 do
@@ -285,7 +300,12 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
            aggregate_uuid: aggregate_uuid,
            ref: ref
          } do
-      command = %Command{uuid: aggregate_uuid, action: :error, lifespan: :stop}
+      command = %Command{
+        command_id: UUID.uuid4(),
+        uuid: aggregate_uuid,
+        action: :error,
+        lifespan: :stop
+      }
 
       tasks =
         for _i <- 1..3 do
@@ -304,7 +324,12 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       aggregate_uuid: aggregate_uuid,
       ref: ref
     } do
-      command = %Command{uuid: aggregate_uuid, action: :noop, lifespan: :stop}
+      command = %Command{
+        command_id: UUID.uuid4(),
+        uuid: aggregate_uuid,
+        action: :noop,
+        lifespan: :stop
+      }
 
       :ok = LifespanRouter.dispatch(command, application: DefaultApp)
 
@@ -317,6 +342,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
            ref: ref
          } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :event,
         lifespan: :infinity
@@ -325,6 +351,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       :ok = LifespanRouter.dispatch(command, application: DefaultApp)
 
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :event,
         lifespan: :stop
@@ -343,6 +370,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
            ref: ref
          } do
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :event,
         lifespan: :infinity
@@ -351,6 +379,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       :ok = LifespanRouter.dispatch(command, application: DefaultApp)
 
       command = %Command{
+        command_id: UUID.uuid4(),
         uuid: aggregate_uuid,
         action: :event,
         lifespan: 1

@@ -3,27 +3,27 @@ defmodule Decree.Middleware.Commands do
 
   defmodule IncrementCount do
     @moduledoc false
-    defstruct aggregate_uuid: nil, by: 1
+    defstruct aggregate_uuid: nil, command_id: nil, by: 1
   end
 
   defmodule Fail do
     @moduledoc false
-    defstruct [:aggregate_uuid]
+    defstruct [:aggregate_uuid, :command_id]
   end
 
   defmodule RaiseError do
     @moduledoc false
-    defstruct [:aggregate_uuid]
+    defstruct [:aggregate_uuid, :command_id]
   end
 
   defmodule Timeout do
     @moduledoc false
-    defstruct [:aggregate_uuid]
+    defstruct [:aggregate_uuid, :command_id]
   end
 
   defmodule Validate do
     @moduledoc false
-    defstruct [:aggregate_uuid, :valid?]
+    defstruct [:aggregate_uuid, :command_id, :valid?]
   end
 
   defmodule CountIncremented do

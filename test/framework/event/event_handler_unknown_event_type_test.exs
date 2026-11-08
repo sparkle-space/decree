@@ -68,6 +68,7 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
 
     def handle(%Trigger{}, _metadata) do
       command = %DepositMoney{
+        command_id: UUID.uuid4(),
         account_number: Control.target(),
         transfer_uuid: UUID.uuid4(),
         amount: 1
@@ -111,6 +112,7 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
 
     def handle_batch([{%Trigger{}, _metadata} | rest]) do
       command = %DepositMoney{
+        command_id: UUID.uuid4(),
         account_number: Control.target(),
         transfer_uuid: UUID.uuid4(),
         amount: 1
@@ -353,7 +355,12 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
     start_supervised!({BankApp, on_event_handler_error: posture})
 
     for account_number <- [poisoned, healthy] do
-      :ok = BankApp.dispatch(%OpenAccount{account_number: account_number, initial_balance: 10})
+      :ok =
+        BankApp.dispatch(%OpenAccount{
+          command_id: UUID.uuid4(),
+          account_number: account_number,
+          initial_balance: 10
+        })
     end
 
     :ok =
@@ -381,6 +388,7 @@ defmodule Decree.Event.EventHandlerUnknownEventTypeTest do
     assert {:error, :unknown_event_type} =
              capture_log_result(fn ->
                BankApp.dispatch(%DepositMoney{
+                 command_id: UUID.uuid4(),
                  account_number: poisoned,
                  transfer_uuid: UUID.uuid4(),
                  amount: 1

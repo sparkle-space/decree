@@ -11,7 +11,11 @@ defmodule Decree.Commands.CommandTimeoutTest do
   end
 
   test "should allow timeout to be specified during command registration" do
-    command = %TimeoutCommand{aggregate_uuid: UUID.uuid4(), sleep_in_ms: 2_000}
+    command = %TimeoutCommand{
+      command_id: UUID.uuid4(),
+      aggregate_uuid: UUID.uuid4(),
+      sleep_in_ms: 2_000
+    }
 
     # Handler is set to take longer than the configured timeout
     case TimeoutRouter.dispatch(command, application: DefaultApp) do
@@ -22,19 +26,31 @@ defmodule Decree.Commands.CommandTimeoutTest do
   end
 
   test "should succeed when handler completes within configured timeout" do
-    command = %TimeoutCommand{aggregate_uuid: UUID.uuid4(), sleep_in_ms: 100}
+    command = %TimeoutCommand{
+      command_id: UUID.uuid4(),
+      aggregate_uuid: UUID.uuid4(),
+      sleep_in_ms: 100
+    }
 
     :ok = TimeoutRouter.dispatch(command, application: DefaultApp)
   end
 
   test "should succeed when timeout is overridden during dispatch" do
-    command = %TimeoutCommand{aggregate_uuid: UUID.uuid4(), sleep_in_ms: 100}
+    command = %TimeoutCommand{
+      command_id: UUID.uuid4(),
+      aggregate_uuid: UUID.uuid4(),
+      sleep_in_ms: 100
+    }
 
     :ok = TimeoutRouter.dispatch(command, application: DefaultApp, timeout: 2_000)
   end
 
   test "should accept :infinity as timeout option" do
-    command = %TimeoutCommand{aggregate_uuid: UUID.uuid4(), sleep_in_ms: 1}
+    command = %TimeoutCommand{
+      command_id: UUID.uuid4(),
+      aggregate_uuid: UUID.uuid4(),
+      sleep_in_ms: 1
+    }
 
     :ok = TimeoutRouter.dispatch(command, application: DefaultApp, timeout: :infinity)
   end

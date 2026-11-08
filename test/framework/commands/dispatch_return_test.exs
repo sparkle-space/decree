@@ -12,6 +12,7 @@ defmodule Decree.Commands.DispatchReturnTest do
   }
 
   alias Decree.Helpers.CommandAuditMiddleware
+  alias Decree.UUID
 
   setup do
     start_supervised!(BankApp)
@@ -21,13 +22,21 @@ defmodule Decree.Commands.DispatchReturnTest do
 
   describe "dispatch return disabled" do
     test "should return `:ok`" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 1_000
+      }
 
       assert :ok == BankApp.dispatch(command, returning: false)
     end
 
     test "should return an error on failure" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: -1}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: -1
+      }
 
       assert {:error, :invalid_initial_balance} == BankApp.dispatch(command, returning: false)
     end
@@ -37,19 +46,27 @@ defmodule Decree.Commands.DispatchReturnTest do
     test "should return aggregate's updated state" do
       assert {:ok, %BankAccount{account_number: "ACC123", balance: 1_000, state: :active}} ==
                BankApp.dispatch(
-                 %OpenAccount{account_number: "ACC123", initial_balance: 1_000},
+                 %OpenAccount{
+                   command_id: UUID.uuid4(),
+                   account_number: "ACC123",
+                   initial_balance: 1_000
+                 },
                  returning: :aggregate_state
                )
 
       assert {:ok, %BankAccount{account_number: "ACC123", balance: 1_100, state: :active}} ==
                BankApp.dispatch(
-                 %DepositMoney{account_number: "ACC123", amount: 100},
+                 %DepositMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 100},
                  returning: :aggregate_state
                )
     end
 
     test "should return an error on failure" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: -1}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: -1
+      }
 
       assert {:error, :invalid_initial_balance} ==
                BankApp.dispatch(command, returning: :aggregate_state)
@@ -60,19 +77,27 @@ defmodule Decree.Commands.DispatchReturnTest do
     test "should return aggregate's updated version" do
       assert {:ok, 1} ==
                BankApp.dispatch(
-                 %OpenAccount{account_number: "ACC123", initial_balance: 1_000},
+                 %OpenAccount{
+                   command_id: UUID.uuid4(),
+                   account_number: "ACC123",
+                   initial_balance: 1_000
+                 },
                  returning: :aggregate_version
                )
 
       assert {:ok, 2} ==
                BankApp.dispatch(
-                 %DepositMoney{account_number: "ACC123", amount: 100},
+                 %DepositMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 100},
                  returning: :aggregate_version
                )
     end
 
     test "should return an error on failure" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: -1}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: -1
+      }
 
       assert {:error, :invalid_initial_balance} ==
                BankApp.dispatch(command, returning: :aggregate_version)
@@ -82,7 +107,12 @@ defmodule Decree.Commands.DispatchReturnTest do
   describe "dispatch return events" do
     test "should return resultant events" do
       assert {:ok, events} =
-               BankApp.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 1_000},
+               BankApp.dispatch(
+                 %OpenAccount{
+                   command_id: UUID.uuid4(),
+                   account_number: "ACC123",
+                   initial_balance: 1_000
+                 },
                  returning: :events
                )
 
@@ -95,7 +125,7 @@ defmodule Decree.Commands.DispatchReturnTest do
 
       assert {:ok, events} =
                BankApp.dispatch(
-                 %DepositMoney{account_number: "ACC123", amount: 100},
+                 %DepositMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 100},
                  returning: :events
                )
 
@@ -114,12 +144,19 @@ defmodule Decree.Commands.DispatchReturnTest do
 
     test "should return empty list when no events produced" do
       assert {:ok, _events} =
-               BankApp.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 1},
+               BankApp.dispatch(
+                 %OpenAccount{
+                   command_id: UUID.uuid4(),
+                   account_number: "ACC123",
+                   initial_balance: 1
+                 },
                  returning: :events
                )
 
       assert {:ok, events} =
-               BankApp.dispatch(%CloseAccount{account_number: "ACC123"}, returning: :events)
+               BankApp.dispatch(%CloseAccount{command_id: UUID.uuid4(), account_number: "ACC123"},
+                 returning: :events
+               )
 
       assert match?(
                [%BankAccountClosed{account_number: "ACC123"}],
@@ -127,11 +164,17 @@ defmodule Decree.Commands.DispatchReturnTest do
              )
 
       assert {:ok, []} =
-               BankApp.dispatch(%CloseAccount{account_number: "ACC123"}, returning: :events)
+               BankApp.dispatch(%CloseAccount{command_id: UUID.uuid4(), account_number: "ACC123"},
+                 returning: :events
+               )
     end
 
     test "should return an error on failure" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: -1}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: -1
+      }
 
       assert {:error, :invalid_initial_balance} == BankApp.dispatch(command, returning: :events)
     end
@@ -140,7 +183,12 @@ defmodule Decree.Commands.DispatchReturnTest do
   describe "dispatch return execution result" do
     test "should return created events" do
       metadata = %{"ip_address" => "127.0.0.1"}
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 1_000
+      }
 
       assert BankApp.dispatch(command, metadata: metadata, returning: :execution_result) ==
                {
@@ -160,7 +208,11 @@ defmodule Decree.Commands.DispatchReturnTest do
     end
 
     test "should return an error on failure" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: -1}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: -1
+      }
 
       assert {:error, :invalid_initial_balance} ==
                BankApp.dispatch(command, returning: :execution_result)
@@ -171,13 +223,17 @@ defmodule Decree.Commands.DispatchReturnTest do
     test "should return aggregate's updated version" do
       assert {:ok, 1} ==
                BankApp.dispatch(
-                 %OpenAccount{account_number: "ACC123", initial_balance: 1_000},
+                 %OpenAccount{
+                   command_id: UUID.uuid4(),
+                   account_number: "ACC123",
+                   initial_balance: 1_000
+                 },
                  include_aggregate_version: true
                )
 
       assert {:ok, 2} ==
                BankApp.dispatch(
-                 %DepositMoney{account_number: "ACC123", amount: 100},
+                 %DepositMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 100},
                  include_aggregate_version: true
                )
     end
@@ -186,7 +242,12 @@ defmodule Decree.Commands.DispatchReturnTest do
   describe "dispatch include execution result" do
     test "should return created events" do
       metadata = %{"ip_address" => "127.0.0.1"}
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 1_000
+      }
 
       assert BankApp.dispatch(command,
                metadata: metadata,
@@ -220,12 +281,14 @@ defmodule Decree.Commands.DispatchReturnTest do
     test "should return aggregate's updated version" do
       assert {:ok, 1} ==
                DefaultDispatchReturnApp.dispatch(%OpenAccount{
+                 command_id: UUID.uuid4(),
                  account_number: "ACC123",
                  initial_balance: 1_000
                })
 
       assert {:ok, 2} ==
                DefaultDispatchReturnApp.dispatch(%DepositMoney{
+                 command_id: UUID.uuid4(),
                  account_number: "ACC123",
                  amount: 100
                })
@@ -234,12 +297,14 @@ defmodule Decree.Commands.DispatchReturnTest do
     test "should allow default to be overridden during dispatch" do
       assert {:ok, 1} ==
                DefaultDispatchReturnApp.dispatch(%OpenAccount{
+                 command_id: UUID.uuid4(),
                  account_number: "ACC123",
                  initial_balance: 1_000
                })
 
       assert {:ok, 2} ==
                DefaultDispatchReturnApp.dispatch(%DepositMoney{
+                 command_id: UUID.uuid4(),
                  account_number: "ACC123",
                  amount: 100
                })

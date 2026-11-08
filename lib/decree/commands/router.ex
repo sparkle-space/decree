@@ -24,7 +24,11 @@ defmodule Decree.Commands.Router do
   Once configured, you can either dispatch a command by using the module and
   specifying the application:
 
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: command_id,
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       :ok = BankRouter.dispatch(command, application: BankApp)
 
@@ -38,7 +42,11 @@ defmodule Decree.Commands.Router do
 
   Then dispatch commands using the app:
 
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: command_id,
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       :ok = BankApp.dispatch(command)
 
@@ -100,6 +108,42 @@ defmodule Decree.Commands.Router do
   The prefix is used as the stream identity when appending and reading the
   aggregate's events: `"<identity_prefix><aggregate_uuid>"`. It can be a string or
   a zero arity function returning a string.
+
+  ### A canonical identity
+
+  The identity a route resolves, the command's field or what the `by:` function answered,
+  must be a lowercase canonical UUID (`Decree.UUID.canonical?/1`), which the requester mints.
+  It is checked as it was given, before the prefix, and nothing converts, trims or downcases
+  it: anything else, a missing field and nil included, answers
+  `{:error, :invalid_aggregate_identity}` before the aggregate is opened.
+
+  An aggregate whose identity is someone else's, such as a Stripe id, declares it opaque:
+
+      identify StripeCustomer, by: :customer_id, prefix: "stripe-customer-", opaque: true
+
+  An opaque identity is any non-empty binary, taken as it is. `opaque:` is declared once, on
+  the `identify`, or on a `dispatch` route for an aggregate with no `identify`; a route's
+  `opaque:` for an aggregate that has an `identify` is refused when the router compiles,
+  because the `identify` owns the identity. A decision's identity is never opaque: it is its
+  stream's entity tag, so `decide/2` takes no `opaque:`, and an `identify` of a decision
+  module with `opaque: true` is refused when the router compiles.
+
+  ## Command id
+
+  Every dispatched command carries a `command_id`, a lowercase canonical UUID its requester
+  mints (see `Decree.Command`). The default middleware `Decree.Middleware.CommandId` refuses
+  any other with `{:error, :command_id_required}` or `{:error, :invalid_command_id}`. It runs
+  after every middleware the router registers, which see the command first and whose own
+  refusal is the answer, and before `Decree.Middleware.ExtractAggregateIdentity`, so a bad
+  `command_id` is refused before the identity is looked at. The `command_uuid` a dispatch
+  mints never stands in for it.
+
+  A router refuses, when it compiles, a command module that does not
+  `use Decree.Command` only when it asks to:
+
+      use Decree.Commands.Router, require_decree_command: true
+
+  It is off by default for now, and the dispatch refusal does not depend on it.
 
   ## Check a command against a rule
 
@@ -241,6 +285,7 @@ defmodule Decree.Commands.Router do
   defmacro __using__(opts) do
     otp_app = Keyword.get(opts, :otp_app, :decree)
     app_module = Keyword.get(opts, :application)
+    require_decree_command = Keyword.get(opts, :require_decree_command, false)
 
     quote do
       require Logger
@@ -253,6 +298,8 @@ defmodule Decree.Commands.Router do
       Module.register_attribute(__MODULE__, :registered_commands, accumulate: true)
       Module.register_attribute(__MODULE__, :registered_middleware, accumulate: true)
       Module.register_attribute(__MODULE__, :registered_identities, accumulate: false)
+
+      @require_decree_command Router.require_decree_command!(unquote(require_decree_command))
 
       @default_dispatch_opts [
         application: unquote(app_module),
@@ -274,6 +321,7 @@ defmodule Decree.Commands.Router do
       ]
 
       @default_middleware [
+        Decree.Middleware.CommandId,
         Decree.Middleware.ExtractAggregateIdentity,
         Decree.Middleware.ConsistencyGuarantee
       ]
@@ -288,7 +336,11 @@ defmodule Decree.Commands.Router do
 
   The middleware module must implement the `Decree.Middleware` behaviour.
 
-  Middleware modules are executed in the order they are defined.
+  Middleware modules are executed in the order they are defined, and all of them before
+  the router's default middleware: `Decree.Middleware.CommandId`, which refuses a command
+  whose `command_id` is not a canonical UUID, then
+  `Decree.Middleware.ExtractAggregateIdentity` and `Decree.Middleware.ConsistencyGuarantee`.
+  A registered middleware so sees every command, and its own halt is the answer.
 
   ## Example
 
@@ -326,6 +378,9 @@ defmodule Decree.Commands.Router do
           prefix: "bank-account-"
       end
 
+  The options are `by:`, a field or a one-arity function, `prefix:`, a string or a zero-arity
+  function, and `opaque:`, `true` for an identity that is any non-empty binary rather than a
+  canonical UUID, `false` by default. See "Define aggregate identity" in the module doc.
   """
   defmacro identify(aggregate_module, opts) do
     quote location: :keep, bind_quoted: [aggregate_module: aggregate_module, opts: opts] do
@@ -361,9 +416,22 @@ defmodule Decree.Commands.Router do
                 raise "#{inspect(aggregate_module)} aggregate has an invalid identity prefix: #{inspect(invalid)}"
             end
 
+          opaque =
+            case Keyword.fetch(opts, :opaque) do
+              :error ->
+                false
+
+              {:ok, opaque} when is_boolean(opaque) ->
+                opaque
+
+              {:ok, invalid} ->
+                raise "#{inspect(aggregate_module)} aggregate has an invalid `opaque` option: #{inspect(invalid)}, expected true or false"
+            end
+
           @registered_identities Map.put(@registered_identities, aggregate_module,
                                    by: by,
-                                   prefix: prefix
+                                   prefix: prefix,
+                                   opaque: opaque
                                  )
 
         config ->
@@ -420,6 +488,16 @@ defmodule Decree.Commands.Router do
   `dispatch` refuses, with an `ArgumentError` when the router compiles, a `rule:` that is not a
   compiled `Decree.Decision.Rule`, and a command with no `:rule_result` field. `decide/2` takes
   no `rule:`: a decision is its own rule.
+
+  ## Opaque identity
+
+  `opaque: true` takes any non-empty binary as the route's identity, rather than only a
+  canonical UUID, for an aggregate with no `identify`:
+
+      dispatch RecordStripeEvent, to: StripeEvent, identity: :event_id, opaque: true
+
+  For an aggregate with an `identify`, `opaque:` belongs there, and a route's is refused when
+  the router compiles. See "Define aggregate identity" in the module doc.
 
   """
   defmacro dispatch(command_module_or_modules, opts) do
@@ -482,8 +560,10 @@ defmodule Decree.Commands.Router do
 
         command_opts = Keyword.merge(@default_dispatch_opts, unquote(opts))
 
+        Router.validate_decree_command!(unquote(command_module), @require_decree_command)
         Router.validate_stream_tag!(unquote(command_module), command_opts)
         Router.validate_rule!(unquote(command_module), command_opts)
+        Router.validate_opaque!(unquote(command_module), command_opts)
 
         @registered_commands {unquote(command_module), command_opts}
       end
@@ -506,7 +586,11 @@ defmodule Decree.Commands.Router do
 
   ## Example
 
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: command_id,
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       :ok = BankRouter.dispatch(command)
 
@@ -579,7 +663,11 @@ defmodule Decree.Commands.Router do
 
   ## Example
 
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: command_id,
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       :ok = BankRouter.dispatch(command, consistency: :strong, timeout: 30_000)
 
@@ -606,6 +694,8 @@ defmodule Decree.Commands.Router do
       def __stream_prefixes__, do: @stream_prefixes
 
       @conditional_targets Router.conditional_targets(@registered_commands)
+
+      Router.validate_opaque_routes!(__MODULE__, @registered_commands, @registered_identities)
 
       @doc false
       def __conditional_targets__, do: @conditional_targets
@@ -639,6 +729,7 @@ defmodule Decree.Commands.Router do
         @lifespan Keyword.get(command_opts, :lifespan)
         @identity Keyword.get(command_opts, :identity)
         @identity_prefix Keyword.get(command_opts, :identity_prefix)
+        @identity_opaque Keyword.get(command_opts, :opaque, false)
         @stream_tag Keyword.get(command_opts, :stream_tag)
         @rule Keyword.get(command_opts, :rule)
 
@@ -682,16 +773,17 @@ defmodule Decree.Commands.Router do
                 false
             end
 
-          {identity, identity_prefix} =
+          {identity, identity_prefix, identity_opaque} =
             case Map.get(@registered_identities, @identified_by) do
               nil ->
-                {@identity, @identity_prefix}
+                {@identity, @identity_prefix, @identity_opaque}
 
               config ->
                 identity = Keyword.get(config, :by, @identity)
                 prefix = Keyword.get(config, :prefix, @identity_prefix)
+                opaque = Keyword.get(config, :opaque, @identity_opaque)
 
-                {identity, prefix}
+                {identity, prefix, opaque}
             end
 
           payload = %Payload{
@@ -708,6 +800,7 @@ defmodule Decree.Commands.Router do
             decision_module: @decision,
             identity: identity,
             identity_prefix: identity_prefix,
+            identity_opaque: identity_opaque,
             stream_tag: @stream_tag,
             rule: @rule,
             returning: returning,
@@ -806,6 +899,64 @@ defmodule Decree.Commands.Router do
     end
   end
 
+  @doc false
+  def require_decree_command!(value) when is_boolean(value), do: value
+
+  def require_decree_command!(value) do
+    raise ArgumentError,
+          "invalid `require_decree_command` option: #{inspect(value)}, expected true or false"
+  end
+
+  # Off until every command adopts `Decree.Command`. `Code.ensure_compiled/1` and not a load
+  # test, as for a rule: under the compiler a command module may not be compiled yet.
+  @doc false
+  def validate_decree_command!(_command_module, false), do: :ok
+
+  def validate_decree_command!(command_module, true) do
+    unless match?({:module, _}, Code.ensure_compiled(command_module)) and
+             Decree.Command.command?(command_module) do
+      raise ArgumentError,
+            "#{inspect(command_module)} is not a Decree.Command, which this router requires " <>
+              "(`require_decree_command: true`): `use Decree.Command` in it"
+    end
+
+    :ok
+  end
+
+  # Checked on the evaluated value, as `stream_tag:` is.
+  @doc false
+  def validate_opaque!(command_module, command_opts) do
+    case Keyword.fetch(command_opts, :opaque) do
+      :error ->
+        :ok
+
+      {:ok, opaque} when is_boolean(opaque) ->
+        :ok
+
+      {:ok, invalid} ->
+        raise ArgumentError,
+              "#{inspect(command_module)} has an invalid `opaque` option: #{inspect(invalid)}, " <>
+                "expected true or false"
+    end
+  end
+
+  # Here and not in the macro, because an `identify` may follow its `dispatch`: the
+  # `identify` owns the identity, so a route cannot say it is opaque, nor that it is not.
+  @doc false
+  def validate_opaque_routes!(router, registered_commands, registered_identities) do
+    for {command, opts} <- registered_commands,
+        Keyword.has_key?(opts, :opaque),
+        aggregate = opts[:aggregate],
+        Map.has_key?(registered_identities, aggregate) do
+      raise ArgumentError,
+            "#{inspect(command)} in #{inspect(router)} declares `opaque:` on its route to " <>
+              "#{inspect(aggregate)}, which has an `identify`: declare `opaque:` on the " <>
+              "`identify`, which owns the identity"
+    end
+
+    :ok
+  end
+
   # What a condition on this router's rule routes names as its target.
   @doc false
   def conditional_targets(registered_commands) do
@@ -833,8 +984,9 @@ defmodule Decree.Commands.Router do
     decisions =
       for {command, opts} <- registered_commands, decision = opts[:decision] do
         {identity, prefix} = route_identity(registered_identities, decision, opts)
+        opaque = registered_identities |> Map.get(decision, []) |> Keyword.get(:opaque, false)
 
-        validate_decision_route!(router, command, decision, identity, prefix, opts)
+        validate_decision_route!(router, command, decision, identity, prefix, opaque, opts)
 
         {decision, prefix}
       end
@@ -896,12 +1048,17 @@ defmodule Decree.Commands.Router do
     end
   end
 
-  defp validate_decision_route!(router, command, decision, identity, prefix, opts) do
+  defp validate_decision_route!(router, command, decision, identity, prefix, opaque, opts) do
     named = "#{inspect(command)} decided by #{inspect(decision)} in #{inspect(router)}"
 
     cond do
       is_nil(identity) ->
         raise ArgumentError, "#{named} has no identity: name `identity:` or `identify ... by:`"
+
+      opaque ->
+        raise ArgumentError,
+              "#{named} has an `identify` with `opaque: true`: a decision's identity is its " <>
+                "stream's entity tag, so it must be a canonical UUID"
 
       is_function(prefix) ->
         raise ArgumentError, "#{named} has a function prefix, which cannot be checked at build"
@@ -956,6 +1113,7 @@ defmodule Decree.Commands.Router do
     :identity_prefix,
     :stream_tag,
     :rule,
+    :opaque,
     :timeout,
     :lifespan,
     :consistency

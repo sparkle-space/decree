@@ -230,7 +230,7 @@ defmodule Decree.Event.Tagging.Commands do
 
   defmodule EmitByRef do
     @moduledoc false
-    defstruct [:content_ref, events: []]
+    defstruct [:content_ref, :command_id, events: []]
   end
 
   defmodule EmitPrefixed do
@@ -240,17 +240,17 @@ defmodule Decree.Event.Tagging.Commands do
 
   defmodule EmitIdentified do
     @moduledoc false
-    defstruct [:user_id, events: []]
+    defstruct [:user_id, :command_id, events: []]
   end
 
   defmodule EmitByFunction do
     @moduledoc false
-    defstruct [:key, events: []]
+    defstruct [:key, :command_id, events: []]
   end
 
   defmodule EmitByFunctionTagged do
     @moduledoc false
-    defstruct [:key, events: []]
+    defstruct [:key, :command_id, events: []]
   end
 
   defmodule EmitMulti do
@@ -266,23 +266,23 @@ defmodule Decree.Event.Tagging.Commands do
   defmodule RaceByFunction do
     @moduledoc false
     # `keys` are the answers the identity function gives, one per call.
-    defstruct [:keys, events: []]
+    defstruct [:keys, :command_id, events: []]
   end
 
   defmodule EmitRewritten do
     @moduledoc false
     # A middleware moves `rewrite_to` into `user_id` before the identity is extracted.
-    defstruct [:user_id, :rewrite_to, events: []]
+    defstruct [:user_id, :command_id, :rewrite_to, events: []]
   end
 
   defmodule Attempt do
     @moduledoc false
-    defstruct [:user_id, events: []]
+    defstruct [:user_id, :command_id, events: []]
   end
 
   defmodule AttemptMulti do
     @moduledoc false
-    defstruct [:user_id, events: []]
+    defstruct [:user_id, :command_id, events: []]
   end
 end
 
@@ -473,12 +473,13 @@ defmodule Decree.Event.Tagging.Router do
   identify PrefixedLedger, by: :user_id, prefix: "ledger-"
   identify IdentifiedLedger, by: :user_id
   identify FunctionLedger, by: &__MODULE__.key/1
-  identify FunctionTaggedLedger, by: &__MODULE__.key/1
+  # Opaque, so an answer that is no UUID routes, and shows the tag absent for it.
+  identify FunctionTaggedLedger, by: &__MODULE__.key/1, opaque: true
   identify FunctionRaceLedger, by: &__MODULE__.next_key/1
 
   dispatch Emit, to: Ledger, identity: :user_id
   dispatch EmitAsRequester, to: Ledger, identity: :requester_user_id, stream_tag: :user
-  dispatch EmitByRef, to: Ledger, identity: :content_ref
+  dispatch EmitByRef, to: Ledger, identity: :content_ref, opaque: true
   dispatch EmitPrefixed, to: PrefixedLedger
   dispatch EmitIdentified, to: IdentifiedLedger, stream_tag: :member
   dispatch EmitByFunction, to: FunctionLedger

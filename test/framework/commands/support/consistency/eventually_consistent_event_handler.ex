@@ -21,7 +21,7 @@ defmodule Decree.Commands.EventuallyConsistentEventHandler do
 
   # Dispatch a command.
   def handle(%DispatchRequestedEvent{uuid: uuid, delay: delay}, _metadata) do
-    command = %ConsistencyCommand{uuid: uuid, delay: delay}
+    command = %ConsistencyCommand{uuid: uuid, command_id: Decree.UUID.uuid4(), delay: delay}
 
     ConsistencyApp.dispatch(command)
   end

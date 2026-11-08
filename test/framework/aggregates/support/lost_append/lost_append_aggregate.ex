@@ -9,12 +9,12 @@ defmodule Decree.Aggregates.LostAppendAggregate do
 
   defmodule Open do
     @derive Jason.Encoder
-    defstruct [:uuid]
+    defstruct [:uuid, :command_id]
   end
 
   defmodule Close do
     @derive Jason.Encoder
-    defstruct [:uuid]
+    defstruct [:uuid, :command_id]
   end
 
   defmodule Opened do

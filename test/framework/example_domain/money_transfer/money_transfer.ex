@@ -12,7 +12,13 @@ defmodule Decree.ExampleDomain.MoneyTransfer do
   defmodule Commands do
     defmodule TransferMoney do
       @derive Jason.Encoder
-      defstruct(transfer_uuid: nil, debit_account: nil, credit_account: nil, amount: nil)
+      defstruct(
+        transfer_uuid: nil,
+        command_id: nil,
+        debit_account: nil,
+        credit_account: nil,
+        amount: nil
+      )
     end
   end
 

@@ -43,7 +43,11 @@ defmodule Decree.PersonalFields.Case do
 
   @doc "Stores events through a real dispatch."
   def dispatch!(stream, events, opts \\ []) do
-    :ok = App.dispatch(%Emit{account_id: stream, events: List.wrap(events)}, opts)
+    :ok =
+      App.dispatch(
+        %Emit{account_id: stream, command_id: UUID.uuid4(), events: List.wrap(events)},
+        opts
+      )
   end
 
   @doc "Reads a stream, upcast, as a consumer does."

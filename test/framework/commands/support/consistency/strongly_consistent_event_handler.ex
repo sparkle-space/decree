@@ -11,7 +11,7 @@ defmodule Decree.Commands.StronglyConsistentEventHandler do
   def handle(%DispatchRequestedEvent{uuid: uuid, delay: delay}, _metadata) do
     :timer.sleep(delay)
 
-    command = %ConsistencyCommand{uuid: uuid, delay: delay}
+    command = %ConsistencyCommand{uuid: uuid, command_id: Decree.UUID.uuid4(), delay: delay}
 
     ConsistencyApp.dispatch(command, consistency: :strong)
   end

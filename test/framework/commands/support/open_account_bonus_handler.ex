@@ -16,6 +16,7 @@ defmodule Decree.Commands.OpenAccountBonusHandler do
 
     deposit_welcome_bonus = %DepositMoney{
       account_number: account_number,
+      command_id: UUID.uuid4(),
       transfer_uuid: UUID.uuid4(),
       amount: 100
     }

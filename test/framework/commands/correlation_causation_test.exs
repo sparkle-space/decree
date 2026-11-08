@@ -22,7 +22,11 @@ defmodule Decree.Commands.CorrelationCasuationTest do
 
   describe "`causation_id`" do
     test "should be `nil` when not provided" do
-      open_account = %OpenAccount{account_number: "ACC123", initial_balance: 500}
+      open_account = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 500
+      }
 
       :ok = BankRouter.dispatch(open_account, application: BankApp, causation_id: nil)
 
@@ -31,7 +35,12 @@ defmodule Decree.Commands.CorrelationCasuationTest do
 
     test "should be copied to dispatched command" do
       causation_id = UUID.uuid4()
-      open_account = %OpenAccount{account_number: "ACC123", initial_balance: 500}
+
+      open_account = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 500
+      }
 
       :ok = BankRouter.dispatch(open_account, application: BankApp, causation_id: causation_id)
 
@@ -40,7 +49,11 @@ defmodule Decree.Commands.CorrelationCasuationTest do
     end
 
     test "should fall back to `command_uuid` on created event when not provided" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 500}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 500
+      }
 
       :ok = BankRouter.dispatch(command, application: BankApp)
 
@@ -52,7 +65,12 @@ defmodule Decree.Commands.CorrelationCasuationTest do
 
     test "should be set from explicit `:causation_id` dispatch option on created event" do
       causation_id = UUID.uuid4()
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 500}
+
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 500
+      }
 
       :ok = BankRouter.dispatch(command, application: BankApp, causation_id: causation_id)
 
@@ -64,7 +82,11 @@ defmodule Decree.Commands.CorrelationCasuationTest do
 
   describe "`correlation_id`" do
     test "should default to a generated UUID when not provided" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 500}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 500
+      }
 
       :ok = BankRouter.dispatch(command, application: BankApp, correlation_id: nil)
 
@@ -73,7 +95,12 @@ defmodule Decree.Commands.CorrelationCasuationTest do
     end
 
     test "should be copied to dispatched command" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 500}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 500
+      }
+
       correlation_id = UUID.uuid4()
 
       :ok = BankRouter.dispatch(command, application: BankApp, correlation_id: correlation_id)
@@ -85,13 +112,15 @@ defmodule Decree.Commands.CorrelationCasuationTest do
       correlation_id = UUID.uuid4()
 
       :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 500},
+        BankRouter.dispatch(
+          %OpenAccount{command_id: UUID.uuid4(), account_number: "ACC123", initial_balance: 500},
           application: BankApp,
           correlation_id: correlation_id
         )
 
       :ok =
-        BankRouter.dispatch(%WithdrawMoney{account_number: "ACC123", amount: 1_000},
+        BankRouter.dispatch(
+          %WithdrawMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 1_000},
           application: BankApp,
           correlation_id: correlation_id
         )
@@ -112,7 +141,8 @@ defmodule Decree.Commands.CorrelationCasuationTest do
       correlation_id = UUID.uuid4()
 
       :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 500},
+        BankRouter.dispatch(
+          %OpenAccount{command_id: UUID.uuid4(), account_number: "ACC123", initial_balance: 500},
           application: BankApp,
           correlation_id: correlation_id
         )
@@ -130,7 +160,8 @@ defmodule Decree.Commands.CorrelationCasuationTest do
 
     test "should copy `causation_id` from handled event" do
       :ok =
-        BankRouter.dispatch(%OpenAccount{account_number: "ACC123", initial_balance: 500},
+        BankRouter.dispatch(
+          %OpenAccount{command_id: UUID.uuid4(), account_number: "ACC123", initial_balance: 500},
           application: BankApp
         )
 

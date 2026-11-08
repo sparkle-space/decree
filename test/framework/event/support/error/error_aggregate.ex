@@ -5,11 +5,11 @@ defmodule Decree.Event.ErrorAggregate do
 
   defmodule Commands do
     defmodule RaiseError do
-      defstruct [:uuid, :strategy, :delay, :reply_to]
+      defstruct [:uuid, :command_id, :strategy, :delay, :reply_to]
     end
 
     defmodule RaiseException do
-      defstruct [:uuid, :strategy, :delay, :reply_to]
+      defstruct [:uuid, :command_id, :strategy, :delay, :reply_to]
     end
   end
 

@@ -256,7 +256,7 @@ defmodule Decree.Decision.DispatchTest do
       supervisor = Module.concat([App, Decree.Aggregates.Supervisor])
       before = DynamicSupervisor.count_children(supervisor).active
 
-      command = %ParityAggregateCommand{id: UUID.uuid4(), scope: "s"}
+      command = %ParityAggregateCommand{command_id: UUID.uuid4(), id: UUID.uuid4(), scope: "s"}
 
       assert :ok = App.dispatch(command)
       assert DynamicSupervisor.count_children(supervisor).active == before + 1
@@ -269,30 +269,37 @@ defmodule Decree.Decision.DispatchTest do
       :ok
     end
 
-    for {name, command_id} <- [{"nil", nil}, {"an empty string", ""}, {"an integer", 123}] do
-      test "a `command_id` that is #{name} is `:missing_command_id`" do
-        assert {:error, :missing_command_id} =
+    for {name, command_id, refusal} <- [
+          {"nil", nil, :command_id_required},
+          {"an empty string", "", :command_id_required},
+          {"an integer", 123, :invalid_command_id},
+          {"an uppercase UUID", "6F9619FF-8B86-D011-B42D-00C04FC964FF", :invalid_command_id}
+        ] do
+      test "a `command_id` that is #{name} is `#{inspect(refusal)}`" do
+        assert {:error, unquote(refusal)} =
                  App.dispatch(claim(command_id: unquote(command_id)))
 
         refute_received {:telemetry, _, _, _}
       end
     end
 
+    # The default middleware answers a route identity that is not a canonical UUID, as on an
+    # aggregate route, before the decision's step 0 would.
     for {name, identity} <- [
           {"not a UUID", "not-a-uuid"},
           {"uppercase", "6F9619FF-8B86-D011-B42D-00C04FC964FF"},
           {"an integer", 7}
         ] do
-      test "an identity that is #{name} is `:invalid_decision_identity`" do
-        assert {:error, :invalid_decision_identity} =
+      test "an identity that is #{name} is `:invalid_aggregate_identity`" do
+        assert {:error, :invalid_aggregate_identity} =
                  App.dispatch(claim(claim_id: unquote(identity)))
 
         refute_received {:telemetry, _, _, _}
       end
     end
 
-    test "`:missing_command_id` comes before the identity" do
-      assert {:error, :missing_command_id} =
+    test "`:command_id_required` comes before the identity" do
+      assert {:error, :command_id_required} =
                App.dispatch(claim(command_id: nil, claim_id: "not-a-uuid"))
     end
 
@@ -1184,14 +1191,17 @@ defmodule Decree.Decision.DispatchTest do
     end
 
     test "an aggregate's function prefix landing in a decision's prefix" do
-      command = %Decree.DecisionFixtures.StrayCommand{id: UUID.uuid4()}
+      command = %Decree.DecisionFixtures.StrayCommand{command_id: UUID.uuid4(), id: UUID.uuid4()}
 
       assert {:error, :plain_append_to_conditional_prefix} =
                StrayRouter.dispatch(command, application: App)
     end
 
     test "an aggregate's bare identity landing in a decision's prefix" do
-      command = %Decree.DecisionFixtures.BareStrayCommand{id: "claim-" <> UUID.uuid4()}
+      command = %Decree.DecisionFixtures.BareStrayCommand{
+        command_id: UUID.uuid4(),
+        id: "claim-" <> UUID.uuid4()
+      }
 
       assert {:error, :plain_append_to_conditional_prefix} =
                StrayRouter.dispatch(command, application: App)

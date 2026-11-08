@@ -27,33 +27,37 @@ defmodule Decree.Commands.DispatchConsistencyTest do
     setup [:start_event_handlers]
 
     test "should wait for strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 0}
+      command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4(), delay: 0}
 
       assert :ok = ConsistencyApp.dispatch(command, consistency: :strong)
     end
 
     # default consistency timeout set to 1s test config
     test "should timeout waiting for strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 5_000}
+      command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4(), delay: 5_000}
 
       assert {:error, :consistency_timeout} =
                ConsistencyApp.dispatch(command, consistency: :strong)
     end
 
     test "should not wait when command creates no events" do
-      command = %NoOpCommand{uuid: UUID.uuid4()}
+      command = %NoOpCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4()}
 
       assert :ok = ConsistencyApp.dispatch(command, consistency: :strong)
     end
 
     test "should allow strongly consistent event handler to dispatch a command" do
-      command = %RequestDispatchCommand{uuid: UUID.uuid4(), delay: 0}
+      command = %RequestDispatchCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4(), delay: 0}
 
       assert :ok = ConsistencyApp.dispatch(command, consistency: :strong)
     end
 
     test "should timeout waiting for strongly consistent handler dispatching a command" do
-      command = %RequestDispatchCommand{uuid: UUID.uuid4(), delay: 5_000}
+      command = %RequestDispatchCommand{
+        command_id: UUID.uuid4(),
+        uuid: UUID.uuid4(),
+        delay: 5_000
+      }
 
       assert {:error, :consistency_timeout} =
                ConsistencyApp.dispatch(command, consistency: :strong)
@@ -66,7 +70,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
     # The opt-in handler sleeps 300ms, inside the 1s timeout; the other strongly consistent
     # handler sleeps 3s, past it, so waiting for that one would answer a timeout.
     test "should only wait for opt-in strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 3_000}
+      command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4(), delay: 3_000}
       opts = [application: ConsistencyApp, consistency: [OptionalStronglyConsistentEventHandler]]
 
       assert :ok = ConsistencyApp.dispatch(command, opts)
@@ -75,7 +79,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
     # Default consistency timeout set to 1s test config, and this handler sleeps a tenth
     # of the delay
     test "should timeout waiting for strongly consistent event handler to handle event" do
-      command = %ConsistencyCommand{uuid: UUID.uuid4(), delay: 20_000}
+      command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4(), delay: 20_000}
 
       opts = [
         application: ConsistencyApp,
@@ -91,7 +95,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
 
     test "should wait for strongly consistent event handler to handle event" do
       uuid = UUID.uuid4()
-      command = %ConsistencyCommand{uuid: uuid, delay: 0}
+      command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: uuid, delay: 0}
 
       assert :ok =
                ConsistencyPrefixRouter.dispatch(command,
@@ -102,7 +106,7 @@ defmodule Decree.Commands.DispatchConsistencyTest do
 
     test "should append events to stream using prefixed aggregate uuid" do
       uuid = UUID.uuid4()
-      command = %ConsistencyCommand{uuid: uuid, delay: 0}
+      command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: uuid, delay: 0}
 
       assert {:ok, %ExecutionResult{aggregate_uuid: aggregate_uuid}} =
                ConsistencyPrefixRouter.dispatch(command,

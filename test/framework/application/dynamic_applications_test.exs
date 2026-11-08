@@ -64,7 +64,12 @@ defmodule Decree.DynamicApplicationsTest do
 
     test "should error without application name" do
       account_number = UUID.uuid4()
-      command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       assert_raise RuntimeError, fn ->
         :ok = ExampleApplication.dispatch(command)
@@ -118,7 +123,11 @@ defmodule Decree.DynamicApplicationsTest do
   end
 
   defp open_account(application, account_number \\ UUID.uuid4()) do
-    command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+    command = %OpenAccount{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      initial_balance: 1_000
+    }
 
     :ok = ExampleApplication.dispatch(command, application: application)
 

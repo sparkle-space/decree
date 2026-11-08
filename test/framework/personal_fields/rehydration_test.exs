@@ -182,7 +182,8 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       log =
         capture_log(fn ->
-          assert App.dispatch(%Emit{account_id: stream, events: []}) == {:error, :key_unknown}
+          assert App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream, events: []}) ==
+                   {:error, :key_unknown}
         end)
 
       refute log =~ "terminating"
@@ -190,7 +191,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       Keys.set(subject, :key)
 
-      assert :ok = App.dispatch(%Emit{account_id: stream, events: []})
+      assert :ok = App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream, events: []})
     end
 
     test "an unknown key from preparing an append does not stop it", context do
@@ -203,6 +204,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       assert {:error, :key_unknown} =
                App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
                  account_id: stream,
                  events: [%Registered{user_id: other, email: email()}]
                })
@@ -225,6 +227,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
       task =
         Task.async(fn ->
           App.dispatch(%Hold{
+            command_id: UUID.uuid4(),
             account_id: stream,
             events: [%Registered{user_id: writer, email: email("writer")}]
           })
@@ -247,6 +250,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       assert :ok =
                App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
                  account_id: stream,
                  events: [%Registered{user_id: writer, email: email("writer")}]
                })
@@ -261,7 +265,10 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       [concurrent] = prepare!(stream, %Linked{user_id: subject, provider_uid: "elsewhere"})
 
-      holding = Task.async(fn -> App.dispatch(%Hold{account_id: stream, events: [%Plain{}]}) end)
+      holding =
+        Task.async(fn ->
+          App.dispatch(%Hold{command_id: UUID.uuid4(), account_id: stream, events: [%Plain{}]})
+        end)
 
       assert_receive {:executing, aggregate}
       ref = Process.monitor(aggregate)
@@ -284,12 +291,18 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       [concurrent] = prepare!(stream, %Linked{user_id: subject, provider_uid: "elsewhere"})
 
-      holding = Task.async(fn -> App.dispatch(%Hold{account_id: stream, events: [%Plain{}]}) end)
+      holding =
+        Task.async(fn ->
+          App.dispatch(%Hold{command_id: UUID.uuid4(), account_id: stream, events: [%Plain{}]})
+        end)
 
       assert_receive {:executing, aggregate}
       ref = Process.monitor(aggregate)
 
-      queued = Task.async(fn -> App.dispatch(%Emit{account_id: stream, events: [%Plain{}]}) end)
+      queued =
+        Task.async(fn ->
+          App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream, events: [%Plain{}]})
+        end)
 
       Wait.until(fn ->
         assert {:message_queue_len, length} = Process.info(aggregate, :message_queue_len)
@@ -306,7 +319,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       Keys.set(subject, :key)
 
-      assert :ok = App.dispatch(%Emit{account_id: stream, events: []})
+      assert :ok = App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream, events: []})
     end
   end
 
@@ -547,7 +560,11 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
             # The next command opens a fresh aggregate, whose fold fails the same way: an error
             # answered, not a call left waiting.
-            assert {:error, answer} = App.dispatch(%Emit{account_id: fresh}, timeout: 5_000)
+            assert {:error, answer} =
+                     App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: fresh},
+                       timeout: 5_000
+                     )
+
             refute inspect(answer, limit: :infinity) =~ "secret.example"
 
             Process.sleep(50)
@@ -663,7 +680,12 @@ defmodule Decree.PersonalFields.RehydrationTest do
         %{stream: stream, subject: subject} = context
 
         registered(stream, subject)
-        command = %Emit{account_id: stream, events: [%StateFails{mode: unquote(mode)}]}
+
+        command = %Emit{
+          command_id: UUID.uuid4(),
+          account_id: stream,
+          events: [%StateFails{mode: unquote(mode)}]
+        }
 
         log =
           capture_log([level: :info], fn ->
@@ -750,6 +772,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
         capture_log(fn ->
           assert {:error, :aggregate_execution_failed} =
                    App.dispatch(%PlainFail{
+                     command_id: UUID.uuid4(),
                      account_id: stream,
                      mode: unquote(mode),
                      note: "shown"
@@ -763,7 +786,12 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
     test "on a raise from `execute/2`", %{stream: stream} do
       assert {:error, %MatchError{term: "shown"}} =
-               App.dispatch(%PlainFail{account_id: stream, mode: "match", note: "shown"})
+               App.dispatch(%PlainFail{
+                 command_id: UUID.uuid4(),
+                 account_id: stream,
+                 mode: "match",
+                 note: "shown"
+               })
     end
 
     defp open_plain(stream) do
@@ -787,7 +815,11 @@ defmodule Decree.PersonalFields.RehydrationTest do
           capture_log([level: :info], fn ->
             assert {:error, :aggregate_execution_failed} =
                      App.dispatch(
-                       struct(unquote(command), account_id: stream, mode: unquote(mode))
+                       struct(unquote(command),
+                         account_id: stream,
+                         command_id: UUID.uuid4(),
+                         mode: unquote(mode)
+                       )
                      )
 
             assert_receive {:DOWN, ^ref, :process, ^pid, reason}
@@ -825,7 +857,13 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
         {reply, log} =
           with_log([level: :debug], fn ->
-            App.dispatch(struct(unquote(command), account_id: stream, mode: unquote(mode)))
+            App.dispatch(
+              struct(unquote(command),
+                account_id: stream,
+                command_id: UUID.uuid4(),
+                mode: unquote(mode)
+              )
+            )
           end)
 
         assert reply == {:error, :aggregate_execution_failed}
@@ -868,7 +906,11 @@ defmodule Decree.PersonalFields.RehydrationTest do
           capture_log([level: :info], fn ->
             assert {:error, %RedactedError{type: unquote(type)}} =
                      App.dispatch(
-                       struct(unquote(command), account_id: stream, mode: unquote(mode))
+                       struct(unquote(command),
+                         account_id: stream,
+                         command_id: UUID.uuid4(),
+                         mode: unquote(mode)
+                       )
                      )
           end)
 
@@ -896,7 +938,9 @@ defmodule Decree.PersonalFields.RehydrationTest do
         log =
           capture_log([level: :error], fn ->
             assert {:error, %RedactedError{type: unquote(type)}} =
-                     App.dispatch(struct(unquote(command), account_id: stream))
+                     App.dispatch(
+                       struct(unquote(command), account_id: stream, command_id: UUID.uuid4())
+                     )
           end)
 
         assert log =~ "details redacted"
@@ -921,7 +965,8 @@ defmodule Decree.PersonalFields.RehydrationTest do
       log =
         capture_log(fn ->
           assert {:error, :aggregate_execution_failed} =
-                   App.dispatch(%ExitNow{account_id: stream, reason: :boom},
+                   App.dispatch(
+                     %ExitNow{command_id: UUID.uuid4(), account_id: stream, reason: :boom},
                      metadata: %{"password_hash" => "hash-in-the-metadata"}
                    )
 
@@ -959,7 +1004,7 @@ defmodule Decree.PersonalFields.RehydrationTest do
       :ok = :sys.log(pid, true)
 
       {:ok, %ExecutionResult{}} =
-        App.dispatch(%Emit{account_id: stream},
+        App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream},
           metadata: %{"password_hash" => "hash-in-the-metadata"},
           returning: :execution_result
         )
@@ -998,7 +1043,8 @@ defmodule Decree.PersonalFields.RehydrationTest do
       log =
         capture_log(fn ->
           assert {:error, :aggregate_execution_failed} =
-                   App.dispatch(%ExitNow{account_id: stream, reason: :boom},
+                   App.dispatch(
+                     %ExitNow{command_id: UUID.uuid4(), account_id: stream, reason: :boom},
                      metadata: %{"email" => "in-the-context@secret.example"}
                    )
 

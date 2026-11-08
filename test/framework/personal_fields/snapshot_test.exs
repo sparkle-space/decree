@@ -294,7 +294,10 @@ defmodule Decree.PersonalFields.SnapshotTest do
 
       Keys.set(subject, :unknown)
 
-      assert App.dispatch(%Decree.PersonalFields.Fixtures.Commands.Emit{account_id: stream}) ==
+      assert App.dispatch(%Decree.PersonalFields.Fixtures.Commands.Emit{
+               command_id: UUID.uuid4(),
+               account_id: stream
+             }) ==
                {:error, :key_unknown}
 
       assert {{:shutdown, :key_unknown}, {GenServer, :call, _call}} =

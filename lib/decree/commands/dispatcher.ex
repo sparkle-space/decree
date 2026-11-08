@@ -33,6 +33,7 @@ defmodule Decree.Commands.Dispatcher do
       :metadata,
       :retry_attempts,
       :returning,
+      identity_opaque: false,
       middleware: []
     ]
   end

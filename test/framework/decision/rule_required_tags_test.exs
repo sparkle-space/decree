@@ -161,18 +161,20 @@ defmodule Decree.Decision.RuleRequiredTagsTest do
     end
   end
 
+  # A dispatch refuses a command with no `command_id` in the default middleware
+  # (`Decree.Middleware.CommandId`), before the rule reads, so the `command` kind a conditional
+  # append requires is a backstop there, and a plain append no longer goes without one.
   describe "the kinds a conditional append always requires" do
-    test "refuse a command with no `command_id`, event opted in or not" do
+    test "a command with no `command_id` is refused first, event opted in or not" do
       command = ruled(command_id: nil)
 
-      assert_refused(command, :missing_required_tag)
+      assert_refused(command, :command_id_required)
     end
 
-    test "are not a plain append's: `[]` from `query/2` has no condition" do
+    test "a command with no `command_id` is refused with no condition too" do
       command = ruled(command_id: nil, query: fn _command, _tag_context -> [] end)
 
-      assert :ok = App.dispatch(command)
-      assert [%{data: %Noted{}}] = stored(ruled_stream(command), App)
+      assert_refused(command, :command_id_required)
     end
   end
 

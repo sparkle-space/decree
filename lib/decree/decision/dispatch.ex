@@ -9,6 +9,7 @@ defmodule Decree.Decision.Dispatch do
   # one framework item is the index item.
 
   alias Decree.Aggregates.ExecutionContext
+  alias Decree.Command
   alias Decree.Commands.Router
   alias Decree.Decision.{Index, Read}
   alias Decree.Decision.Read.Merged
@@ -242,21 +243,26 @@ defmodule Decree.Decision.Dispatch do
       {{:left, kind, reduced, RedactedError.scrub_stacktrace(__STACKTRACE__)}, nil}
   end
 
-  # Step 0.
+  # Step 0. A backstop: on a routed dispatch the default middleware has already answered a bad
+  # `command_id` (`Decree.Middleware.CommandId`) and a non-canonical identity
+  # (`Decree.Middleware.ExtractAggregateIdentity`), with the same rule.
   defp ready(%__MODULE__{context: context} = dispatch) do
     %ExecutionContext{command: command, aggregate_identity: identity} = context
 
-    case {Append.command_tag(command), UUID.canonical?(identity), Append.stream_tag(context)} do
-      {nil, _canonical?, _stream_tag} ->
-        {:error, :missing_command_id}
+    case {Command.check_id(Map.get(command, :command_id)), UUID.canonical?(identity),
+          Append.stream_tag(context)} do
+      {{:error, _reason} = refusal, _canonical?, _stream_tag} ->
+        refusal
 
-      {_command_tag, false, _stream_tag} ->
+      {:ok, false, _stream_tag} ->
         {:error, :invalid_decision_identity}
 
-      {_command_tag, true, nil} ->
+      {:ok, true, nil} ->
         {:error, :invalid_decision_identity}
 
-      {command_tag, true, stream_tag} ->
+      {:ok, true, stream_tag} ->
+        command_tag = Append.command_tag(command)
+
         with {:ok, scope_tags} <- scope_tags(dispatch) do
           {:ok,
            %__MODULE__{

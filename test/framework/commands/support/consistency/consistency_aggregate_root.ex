@@ -5,17 +5,17 @@ defmodule Decree.Commands.ConsistencyAggregateRoot do
 
   defmodule ConsistencyCommand do
     @derive Jason.Encoder
-    defstruct [:uuid, :delay]
+    defstruct [:uuid, :command_id, :delay]
   end
 
   defmodule NoOpCommand do
     @derive Jason.Encoder
-    defstruct [:uuid]
+    defstruct [:uuid, :command_id]
   end
 
   defmodule RequestDispatchCommand do
     @derive Jason.Encoder
-    defstruct [:uuid, :delay]
+    defstruct [:uuid, :command_id, :delay]
   end
 
   defmodule ConsistencyEvent do
