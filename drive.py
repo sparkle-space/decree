@@ -334,17 +334,26 @@ try:
         interfered = sample('end')
     snapped = snap('end') and snapped and not stopped_early
     void = bool(interfered) and not TOLERANT
-    verdict = ('DECOMPOSITION' if DECOMPOSE else 'SMOKE' if SMOKE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
-    # Method B, before the rows are written: a missing snapshot or a failed factor table makes an
-    # otherwise VALID run INCOMPLETE, so it reports no pass line and its rows say so.
+    # Method B, before the verdict and the rows: a missing snapshot, a malformed pair or a failed
+    # factor table makes an otherwise VALID run INCOMPLETE, so it reports no number and its rows
+    # say so. Any exception here is a method B failure too, never a VALID artifact.
     method_b = []
+    method_b_ok = not METHOD_B
     if METHOD_B and snapped and not void:
-        for a, b in pairs:
-            out = subprocess.run([sys.executable, os.path.join(AG_HOME, 'factors.py'), '--snaps', SNAPS, '--from', 'start',
-                                  '--to', 'end', '--baseline', 'arm_' + a, '--change', 'arm_' + b],
-                                 capture_output=True, text=True)
-            method_b.append((a, b, out.returncode, (out.stdout + out.stderr).rstrip()))
-    if METHOD_B and verdict == 'VALID' and (not snapped or not method_b or any(rc != 0 for _, _, rc, _ in method_b)):
+        try:
+            for pair in pairs:
+                if len(pair) != 2 or not all(pair):
+                    raise ValueError('malformed pair %r in PAIRS' % '-'.join(pair))
+                a, b = pair
+                out = subprocess.run([sys.executable, os.path.join(AG_HOME, 'factors.py'), '--snaps', SNAPS, '--from',
+                                      'start', '--to', 'end', '--baseline', 'arm_' + a, '--change', 'arm_' + b],
+                                     capture_output=True, text=True)
+                method_b.append((a, b, out.returncode, (out.stdout + out.stderr).rstrip()))
+            method_b_ok = bool(method_b) and all(rc == 0 for _, _, rc, _ in method_b)
+        except Exception as e:  # noqa: BLE001 - any failure here is reported, never VALID
+            method_b.append(('?', '?', -1, 'method B raised: %r' % e))
+    verdict = ('DECOMPOSITION' if DECOMPOSE else 'SMOKE' if SMOKE else 'VOID' if void else LEFT_SMALL if left_small else 'VALID')
+    if METHOD_B and verdict == 'VALID' and not method_b_ok:
         verdict = METHOD_B_FAILED
 finally:
     for p in procs.values():
@@ -400,10 +409,17 @@ else:
     if any(n.startswith('tel_') for n in names):
         print('read_tags spans in span-arm dispatches: 0 (each span arm ends itself on one)')
 for a, b, rc, text in method_b:
-    # Method B: per-statement factors for each pair, the first arm as the unchanged baseline.
+    # Method B: per-statement factors for each pair, the first arm as the unchanged baseline. A run
+    # method B could not complete prints only each table's status and its error, never numbers.
     label = ' (SMOKE: checks the scripts only; never reported)' if SMOKE else ''
     print('=== method B: %s minus %s%s%s' % (b, a, label, '' if rc == 0 else ' FAILED, exit %d' % rc))
-    print(text)
+    if verdict == METHOD_B_FAILED:
+        if rc != 0:
+            print('\n'.join(text.splitlines()[-5:]))
+    else:
+        print(text)
+if METHOD_B and not method_b and snapped and not void:
+    print('method B: no factor table ran')
 if not METHOD_B:
     print('method B: AG_HOME is not set, so no per-statement factors')
 if SMALL:

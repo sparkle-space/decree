@@ -83,7 +83,10 @@ until [ "${SMOKE:-0}" = 1 ] || [ "${DECOMPOSE:-0}" = 1 ] || quiet; do
   sleep 30; waited=$((waited + 30))
 done
 echo "start loads (1/5/15 min): $(loads)"
-/usr/bin/env python3 "$GATE_HOME/drive.py"
-echo "DRIVE_EXIT=$?"
+drive_exit=0
+/usr/bin/env python3 "$GATE_HOME/drive.py" || drive_exit=$?
+echo "DRIVE_EXIT=$drive_exit"
 date
 echo "end loads (1/5/15 min): $(loads)"
+# The driver's status is the run's: 3 is a run method B could not complete (not evidence).
+exit "$drive_exit"
