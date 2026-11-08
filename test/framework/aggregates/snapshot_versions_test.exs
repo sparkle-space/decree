@@ -70,7 +70,7 @@ defmodule Decree.Aggregates.SnapshotVersionsTest do
                EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
 
       # A version-1 row the events can't give.
-      outdated = %ExampleAggregate{items: [:from_version_1], last_index: 2}
+      outdated = %ExampleAggregate{items: ["from version 1"], last_index: 2}
       :ok = EventStore.record_snapshot(DefaultApp, %SnapshotData{snapshot | data: outdated})
 
       stop_supervised!(DefaultApp)

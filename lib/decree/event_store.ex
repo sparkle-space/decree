@@ -14,8 +14,9 @@ defmodule Decree.EventStore do
     * append_to_streams/3
     * delete_snapshot/2
     * delete_subscription/3
+    * prune_snapshots/3
     * read_query/3
-    * read_snapshot/2
+    * read_snapshot/3
     * read_tags/3
     * record_snapshot/2
     * stream_forward/2
@@ -344,13 +345,22 @@ defmodule Decree.EventStore do
   end
 
   @doc """
-  Read a snapshot, if available, for a given source.
+  Read a snapshot, if available, for a given source at a snapshot version.
+
+  A source has one row per snapshot version, so code at another version never reads or
+  overwrites this one's. A nil `snapshot_version` reads the store's legacy one-row table.
   """
-  def read_snapshot(application, source_uuid) do
+  def read_snapshot(application, source_uuid, snapshot_version) do
     {adapter, adapter_meta} = Application.event_store_adapter(application)
 
-    span(:read_snapshot, %{application: application, source_uuid: source_uuid}, fn ->
-      adapter.read_snapshot(adapter_meta, source_uuid)
+    meta = %{
+      application: application,
+      source_uuid: source_uuid,
+      snapshot_version: snapshot_version
+    }
+
+    span(:read_snapshot, meta, fn ->
+      adapter.read_snapshot(adapter_meta, source_uuid, snapshot_version)
     end)
   end
 
@@ -366,13 +376,31 @@ defmodule Decree.EventStore do
   end
 
   @doc """
-  Delete a previously recorded snapshot for a given source
+  Delete a previously recorded snapshot for a given source, at every snapshot version.
   """
   def delete_snapshot(application, source_uuid) do
     {adapter, adapter_meta} = Application.event_store_adapter(application)
 
     span(:delete_snapshot, %{application: application, source_uuid: source_uuid}, fn ->
       adapter.delete_snapshot(adapter_meta, source_uuid)
+    end)
+  end
+
+  @doc """
+  Delete the snapshots of a source type whose snapshot version is below the given one.
+  See `Decree.Aggregate.prune_snapshots/2`.
+  """
+  def prune_snapshots(application, source_type, snapshot_version) do
+    {adapter, adapter_meta} = Application.event_store_adapter(application)
+
+    meta = %{
+      application: application,
+      source_type: source_type,
+      snapshot_version: snapshot_version
+    }
+
+    span(:prune_snapshots, meta, fn ->
+      adapter.prune_snapshots(adapter_meta, source_type, snapshot_version)
     end)
   end
 

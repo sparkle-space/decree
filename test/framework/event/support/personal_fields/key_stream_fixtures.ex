@@ -205,13 +205,16 @@ defmodule Decree.PersonalFields.Fixtures.FailingAdapter do
   defdelegate delete_subscription(adapter_meta, stream, name), to: Adapter
 
   @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid), to: Adapter
+  defdelegate read_snapshot(adapter_meta, source_uuid, snapshot_version), to: Adapter
 
   @impl Decree.EventStore.Adapter
   defdelegate record_snapshot(adapter_meta, snapshot), to: Adapter
 
   @impl Decree.EventStore.Adapter
   defdelegate delete_snapshot(adapter_meta, source_uuid), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate prune_snapshots(adapter_meta, source_type, snapshot_version), to: Adapter
 
   defp key(stream_uuid), do: {__MODULE__, stream_uuid}
 end

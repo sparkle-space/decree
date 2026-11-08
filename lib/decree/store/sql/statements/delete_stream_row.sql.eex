@@ -1,3 +1,9 @@
+<%!--
+  The fifth of a hard delete's six statements: see `DeleteStream.hard_delete/3`. Its DELETE
+  conflicts with the KEY SHARE a versioned snapshot write takes on this row, which is what
+  orders such a write before or after the sixth, `delete_snapshot`, which deletes by the
+  `stream_uuid` this returns.
+--%>
 DELETE FROM "<%= schema %>".streams
 WHERE stream_id = $1
-RETURNING stream_id;
+RETURNING stream_id, stream_uuid;

@@ -610,6 +610,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       "1\t6\t0\tNOW" -> true
       "1\t7\t0\tNOW" -> true
       "1\t8\t0\tNOW" -> true
+      "1\t9\t0\tNOW" -> true
       _line -> false
     end)
     |> reject_superseded_append_functions()

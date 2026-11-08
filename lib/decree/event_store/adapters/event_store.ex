@@ -183,10 +183,12 @@ defmodule Decree.EventStore.Adapters.EventStore do
   end
 
   @impl Decree.EventStore.Adapter
-  def read_snapshot(adapter_meta, source_uuid) do
+  def read_snapshot(adapter_meta, source_uuid, snapshot_version) do
     {event_store, name} = extract_adapter_meta(adapter_meta)
 
-    with {:ok, snapshot_data} <- event_store.read_snapshot(source_uuid, name: name) do
+    opts = [name: name, snapshot_version: snapshot_version]
+
+    with {:ok, snapshot_data} <- event_store.read_snapshot(source_uuid, opts) do
       snapshot = Mapper.from_snapshot_data(snapshot_data)
 
       {:ok, snapshot}
@@ -207,6 +209,13 @@ defmodule Decree.EventStore.Adapters.EventStore do
     {event_store, name} = extract_adapter_meta(adapter_meta)
 
     event_store.delete_snapshot(source_uuid, name: name)
+  end
+
+  @impl Decree.EventStore.Adapter
+  def prune_snapshots(adapter_meta, source_type, snapshot_version) do
+    {event_store, name} = extract_adapter_meta(adapter_meta)
+
+    event_store.prune_snapshots(source_type, snapshot_version, name: name)
   end
 
   defp subscription_options(name, start_from, opts) do

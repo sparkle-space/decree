@@ -36,7 +36,7 @@ defmodule Decree.Store.Storage.DeleteStream do
     end
   end
 
-  # Five statements in the caller's transaction, each with a snapshot of its own.
+  # Six statements in the caller's transaction, each with a snapshot of its own.
   #
   # The stream's row comes first and alone, so everything after it sees what an append or a
   # link committed while holding the row. NO KEY UPDATE, as an append takes it, serialises
@@ -57,8 +57,20 @@ defmodule Decree.Store.Storage.DeleteStream do
   # The delete's snapshot then starts after that wait, so a link that committed during it is
   # seen and removed with the event, and every `stream_events` row of an event is touched only
   # while that event's row is held. With the event rows held no link of them is in flight, so
-  # the stream's row, last and on its own because the order of a statement's CTEs is
-  # undocumented, finds no writer's KEY SHARE on it and nothing still referencing it.
+  # the stream's row, after them and on its own because the order of a statement's CTEs is
+  # undocumented, finds no link's KEY SHARE on it and nothing still referencing it. The one
+  # KEY SHARE it can still wait on is a versioned snapshot write's, which the last statement
+  # answers for.
+  #
+  # The stream's snapshot rows go last, in both tables and at every version, by the
+  # `stream_uuid` the deleted row returns, the `source_uuid` a snapshot of it is recorded
+  # under. A versioned snapshot
+  # write takes the stream's row FOR KEY SHARE first (`Snapshot.record_snapshot/3`), and the
+  # row's DELETE conflicts with that. So a write that holds the row is committed before that
+  # DELETE goes on, and this statement's snapshot, which starts after it, sees the row and
+  # deletes it; a write that comes to the row after the DELETE waits for this transaction and
+  # then finds no stream. A legacy write, with no `snapshot_version`, takes no lock: only an
+  # old pod's, during a rollout.
   def hard_delete(conn, stream_id, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
     {expected_version, opts} = Keyword.pop(opts, :expected_version, :any_version)
@@ -69,8 +81,10 @@ defmodule Decree.Store.Storage.DeleteStream do
          :ok <- no_index_facts(conn, stream_id, schema, opts),
          {:ok, %Postgrex.Result{}} <-
            Postgrex.query(conn, Statements.hard_delete_stream(schema), [stream_id], opts),
-         {:ok, %Postgrex.Result{num_rows: 1, rows: [[^stream_id]]}} <-
-           Postgrex.query(conn, Statements.delete_stream_row(schema), [stream_id], opts) do
+         {:ok, %Postgrex.Result{num_rows: 1, rows: [[^stream_id, stream_uuid]]}} <-
+           Postgrex.query(conn, Statements.delete_stream_row(schema), [stream_id], opts),
+         {:ok, %Postgrex.Result{}} <-
+           Postgrex.query(conn, Statements.delete_snapshot(schema), [stream_uuid], opts) do
       Logger.debug("Hard deleted stream #{inspect(stream_id)}")
 
       :ok

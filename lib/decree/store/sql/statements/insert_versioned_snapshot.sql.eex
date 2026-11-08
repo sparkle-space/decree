@@ -1,0 +1,17 @@
+<%!--
+  A versioned snapshot's write, after `lock_snapshot_stream` in the same transaction: see
+  `Decree.Store.Storage.Snapshot.record_snapshot/3`. One row per source and snapshot version,
+  so code at another version keeps its own row.
+--%>
+INSERT INTO "<%= schema %>".versioned_snapshots
+  (
+    source_uuid,
+    snapshot_version,
+    source_version,
+    source_type,
+    data,
+    metadata
+  )
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (source_uuid, snapshot_version)
+DO UPDATE SET source_version = $3, source_type = $4, data = $5, metadata = $6;

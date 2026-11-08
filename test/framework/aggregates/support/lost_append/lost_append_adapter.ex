@@ -86,13 +86,16 @@ defmodule Decree.Aggregates.LostAppendAdapter do
   defdelegate delete_subscription(adapter_meta, stream, name), to: Adapter
 
   @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid), to: Adapter
+  defdelegate read_snapshot(adapter_meta, source_uuid, snapshot_version), to: Adapter
 
   @impl Decree.EventStore.Adapter
   defdelegate record_snapshot(adapter_meta, snapshot), to: Adapter
 
   @impl Decree.EventStore.Adapter
   defdelegate delete_snapshot(adapter_meta, source_uuid), to: Adapter
+
+  @impl Decree.EventStore.Adapter
+  defdelegate prune_snapshots(adapter_meta, source_type, snapshot_version), to: Adapter
 
   defp error(class, code), do: %AppendError{class: class, code: code, reason: :injected}
 

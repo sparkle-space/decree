@@ -1,2 +1,12 @@
-DELETE FROM "<%= schema %>".snapshots
+<%!--
+  Deletes a source's snapshot rows in both tables: the one-row `snapshots` table an older pod
+  still writes, and every version's row in `versioned_snapshots`. It is also the sixth and
+  last of a hard delete's statements, after `delete_stream_row`: see
+  `DeleteStream.hard_delete/3`.
+--%>
+WITH deleted_legacy_snapshot AS (
+  DELETE FROM "<%= schema %>".snapshots
+  WHERE source_uuid = $1
+)
+DELETE FROM "<%= schema %>".versioned_snapshots
 WHERE source_uuid = $1;

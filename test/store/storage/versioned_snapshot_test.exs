@@ -172,7 +172,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
           Task.async(fn -> store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1})) end)
 
         LockSession.wait_until_waiting(observer, eraser.backend, 1)
-        :ok = LockSession.commit(eraser)
+        {:ok, :ok} = LockSession.commit(eraser)
 
         assert Task.await(write) == {:error, :stream_not_found}
         assert count(context, "versioned_snapshots", source_uuid) == 0

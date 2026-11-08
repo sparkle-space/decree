@@ -34,7 +34,7 @@ defmodule Decree.EventStore.SnapshotTestCase do
         assert :ok == event_store.record_snapshot(event_store_meta, snapshot2)
         assert :ok == event_store.record_snapshot(event_store_meta, snapshot3)
 
-        {:ok, snapshot} = event_store.read_snapshot(event_store_meta, snapshot3.source_uuid)
+        {:ok, snapshot} = event_store.read_snapshot(event_store_meta, snapshot3.source_uuid, nil)
 
         assert snapshot_timestamps_within_delta?(snapshot, snapshot3, 60)
       end
@@ -44,7 +44,7 @@ defmodule Decree.EventStore.SnapshotTestCase do
         event_store_meta: event_store_meta
       } do
         {:error, :snapshot_not_found} =
-          event_store.read_snapshot(event_store_meta, "doesnotexist")
+          event_store.read_snapshot(event_store_meta, "doesnotexist", nil)
       end
     end
 
@@ -56,13 +56,13 @@ defmodule Decree.EventStore.SnapshotTestCase do
         snapshot1 = build_snapshot_data(100)
 
         assert :ok == event_store.record_snapshot(event_store_meta, snapshot1)
-        {:ok, snapshot} = event_store.read_snapshot(event_store_meta, snapshot1.source_uuid)
+        {:ok, snapshot} = event_store.read_snapshot(event_store_meta, snapshot1.source_uuid, nil)
 
         assert snapshot_timestamps_within_delta?(snapshot, snapshot1, 60)
         assert :ok == event_store.delete_snapshot(event_store_meta, snapshot1.source_uuid)
 
         assert {:error, :snapshot_not_found} ==
-                 event_store.read_snapshot(event_store_meta, snapshot1.source_uuid)
+                 event_store.read_snapshot(event_store_meta, snapshot1.source_uuid, nil)
       end
     end
 

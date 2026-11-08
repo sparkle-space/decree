@@ -1,6 +1,9 @@
 defmodule Decree.EventStore.SnapshotData do
   @moduledoc """
   Snapshot data
+
+  `snapshot_version` is the version of the snapshot's shape, and with the source names its
+  row: code at two versions keeps two rows. nil is the store's legacy one-row table.
   """
 
   @type t :: %Decree.EventStore.SnapshotData{
@@ -9,7 +12,8 @@ defmodule Decree.EventStore.SnapshotData do
           source_type: String.t(),
           data: binary,
           metadata: binary,
-          created_at: DateTime.t()
+          created_at: DateTime.t(),
+          snapshot_version: non_neg_integer | nil
         }
 
   defstruct [
@@ -18,6 +22,7 @@ defmodule Decree.EventStore.SnapshotData do
     :source_type,
     :data,
     :metadata,
-    :created_at
+    :created_at,
+    snapshot_version: nil
   ]
 end

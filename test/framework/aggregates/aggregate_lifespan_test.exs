@@ -360,7 +360,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       :ok = LifespanRouter.dispatch(command, application: DefaultApp)
 
       assert_receive {:DOWN, ^ref, :process, _pid, :normal}
-      assert {:ok, _snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, _snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
     end
 
     test "should adhere to aggregate lifespan when receiving published events after taking snapshot",
@@ -395,7 +395,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       send(pid, {:events, events})
 
       assert_receive {:DOWN, ^ref, :process, _pid, :normal}
-      assert {:ok, _snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, _snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
     end
 
     test "should use `:infinity` lifespan by default", %{

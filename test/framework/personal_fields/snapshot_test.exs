@@ -24,8 +24,11 @@ defmodule Decree.PersonalFields.SnapshotTest do
     def apply(state, _event), do: state
   end
 
-  setup do
+  setup %{conn: conn, stream: stream} do
     start_supervised!(App)
+
+    # A snapshot is recorded only for a stream that exists: a bare row, with no events.
+    Postgrex.query!(conn, "INSERT INTO streams (stream_uuid) VALUES ($1)", [stream])
 
     :ok
   end
@@ -42,7 +45,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
     Snapshotting.take_snapshot(snapshotting(stream), version, state)
   end
 
-  defp stored_snapshot(stream), do: EventStore.read_snapshot(App, stream)
+  defp stored_snapshot(stream), do: EventStore.read_snapshot(App, stream, 1)
 
   defp populate(stream) do
     alias Decree.Aggregates.AggregateStateBuilder
@@ -66,7 +69,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
       assert {:ok, %SnapshotData{data: %Account{links: [%{provider_uid: %{"$pf": 1}}]}}} =
                stored_snapshot(stream)
 
-      assert [row] = rows(conn, "snapshots", "data")
+      assert [row] = rows(conn, "versioned_snapshots", "data")
       refute row =~ "uid-at-provider"
     end
 
@@ -162,7 +165,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
 
       assert take(stream, account(subject, links)) == {:error, :invalid_personal_state}
       assert stored_snapshot(stream) == {:error, :snapshot_not_found}
-      assert rows(conn, "snapshots", "data") == []
+      assert rows(conn, "versioned_snapshots", "data") == []
       assert Keys.lookups(subject) == 0
 
       links = [%{:provider_uid => nil, "provider_uid" => "string-form"}]
@@ -237,6 +240,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
         source_uuid: stream,
         source_version: 1,
         source_type: to_string(Account),
+        snapshot_version: 1,
         data: account(subject),
         metadata: %{"snapshot_module_version" => 1}
       }
@@ -257,6 +261,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
         source_uuid: stream,
         source_version: 1,
         source_type: to_string(Account),
+        snapshot_version: 1,
         data: account(subject, [%{provider: "p", provider_uid: %{"$pf" => 2}}]),
         metadata: %{"snapshot_module_version" => 1}
       }
@@ -271,6 +276,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
         source_uuid: stream,
         source_version: 1,
         source_type: to_string(Account),
+        snapshot_version: 1,
         data: account(subject, %{provider_uid: "uid"}),
         metadata: %{"snapshot_module_version" => 1}
       }
@@ -320,6 +326,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
           source_uuid: stream,
           source_version: 1,
           source_type: to_string(Account),
+          snapshot_version: 1,
           data: state,
           metadata: %{"snapshot_module_version" => 1}
         })
@@ -332,7 +339,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
       assert {:ok, _snapshotting} = take(stream, state)
 
       assert state == with_email(subject)
-      assert [row] = rows(conn, "snapshots", "data")
+      assert [row] = rows(conn, "versioned_snapshots", "data")
       assert row =~ "$pf"
       refute row =~ "secret.example"
     end
@@ -503,6 +510,7 @@ defmodule Decree.PersonalFields.SnapshotTest do
         source_uuid: stream,
         source_version: 1,
         source_type: to_string(Account),
+        snapshot_version: 1,
         data: account(subject, [%{provider: "p", provider_uid: envelope}]),
         metadata: %{"snapshot_module_version" => 1}
       }

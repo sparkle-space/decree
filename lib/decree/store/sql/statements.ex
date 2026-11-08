@@ -32,7 +32,10 @@ defmodule Decree.Store.Sql.Statements do
         {:subscription_ack, [:schema]},
         {:subscription_ack_by_id, [:schema]},
         {:insert_snapshot, [:schema]},
+        {:insert_versioned_snapshot, [:schema]},
+        {:lock_snapshot_stream, [:schema]},
         {:delete_snapshot, [:schema]},
+        {:prune_snapshots, [:schema]},
         {:query_all_subscriptions, [:schema]},
         {:query_positions,
          [
@@ -48,6 +51,7 @@ defmodule Decree.Store.Sql.Statements do
            :order
          ]},
         {:query_snapshot, [:schema]},
+        {:query_versioned_snapshot, [:schema]},
         {:query_stream_info, [:schema]},
         {:query_stream_events_backward, [:schema]},
         {:query_stream_events_forward, [:schema]},
