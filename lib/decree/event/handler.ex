@@ -106,6 +106,23 @@ defmodule Decree.Event.Handler do
     """
   })
 
+  telemetry_event(%{
+    event: [:decree, :event, :retry, :scheduled],
+    description:
+      "Emitted when an event handler schedules the retry of a failed event or batch " <>
+        "for after a delay, once per scheduled retry",
+    measurements: "%{delay: non_neg_integer(), system_time: integer()}",
+    metadata: """
+    %{application: Decree.Application.t(),
+      context: map(),
+      handler_name: String.t(),
+      handler_module: atom(),
+      handler_state: map() | :redacted,
+      recorded_event: RecordedEvent.t() | nil,
+      event_count: non_neg_integer()}
+    """
+  })
+
   @moduledoc """
   Defines the behaviour an event handler must implement and
   provides a convenience macro that implements the behaviour, allowing you to
@@ -688,10 +705,22 @@ defmodule Decree.Event.Handler do
     state to be passed to subsequent failures. This could be used to count the
     number of failures, stopping after too many.
 
-  - `{:retry, delay, context}` - retry the failed event, after sleeping for
-    the requested delay (in milliseconds). Context is a map or
+  - `{:retry, delay, context}` - retry the failed event after the requested
+    delay (in milliseconds). Context is a map or
     `Decree.Event.FailureContext` struct as described in `{:retry, context}`
     above.
+
+    The handler does not sleep through the delay: it sets a timer and goes
+    back to its mailbox, a delay of `0` included. While it waits it answers
+    system messages (such as `:sys.get_state/1`), and it stops on a `DOWN`
+    from its subscription or a non-normal exit signal, a supervisor's
+    shutdown included, without waiting for the timer. Events delivered
+    meanwhile are held. When the timer fires it retries the failed event (or
+    batch), then handles the rest of that delivery, then the held deliveries,
+    in the order they arrived. A lock loss or a reset during the wait drops
+    the pending retry and every held event unhandled: none was acknowledged,
+    so the subscription delivers them again from the last acknowledged event,
+    and the failed event's next failure starts from a fresh context.
 
   - `:skip` - skip the failed event by acknowledging receipt. In batching mode,
     this will acknowledge and skip _all_ events up to and including the failed
@@ -1162,6 +1191,11 @@ defmodule Decree.Event.Handler do
     :batch_timeout,
     :batch_timer_ref,
     :batch_buffer,
+    # A retry `{:retry, delay, context}` scheduled, while its timer runs: `%{token, timer_ref,
+    # retry, rest, deferred}`, where `retry` runs the failed event or batch again on a handler
+    # state, `rest` is the rest of its delivery (already upcast) and `deferred` the `{:events, _}`
+    # and `:flush_batch_timeout` messages that arrived meanwhile, in arrival order.
+    retry_wait: nil,
     # Set once a decrypted event's `handle/2` answers a state: from then on the state can hold
     # a decrypted value, and `handler_state` stays out of decree's own output.
     sensitive_state: false
@@ -1229,14 +1263,9 @@ defmodule Decree.Event.Handler do
 
     case handler_module.before_reset() do
       :ok ->
-        try do
-          state = state |> reset_subscription() |> subscribe_to_events()
-
-          {:noreply, state}
-        catch
-          {:error, reason} ->
-            {:stop, reason, state}
-        end
+        stopping_on_error(state, fn ->
+          state |> reset_subscription() |> subscribe_to_events()
+        end)
 
       {:stop, reason} ->
         Logger.debug(
@@ -1304,10 +1333,11 @@ defmodule Decree.Event.Handler do
 
   @doc false
   # The subscription lost its advisory lock: another instance may now deliver the
-  # same events. Events buffered for a batch are dropped unhandled; they were not
-  # acknowledged, so they are delivered again from the last acknowledged event to
-  # whichever instance holds the lock. The subscription sends `{:subscribed,
-  # subscription}` once it takes the lock back.
+  # same events. Events buffered for a batch are dropped unhandled, and so are a
+  # pending retry wait's retry, the rest of its delivery and the deliveries held
+  # behind it; none was acknowledged, so they are delivered again from the last
+  # acknowledged event to whichever instance holds the lock. The subscription
+  # sends `{:subscribed, subscription}` once it takes the lock back.
   @impl GenServer
   def handle_info(
         {:subscription_lock_lost, subscription},
@@ -1315,7 +1345,7 @@ defmodule Decree.Event.Handler do
       ) do
     Logger.warning(describe(state) <> " subscription lost its advisory lock, waiting to resume")
 
-    state = cancel_batch_timer(state)
+    state = state |> cancel_batch_timer() |> cancel_retry_wait()
 
     {:noreply, %Handler{state | batch_buffer: []}}
   end
@@ -1327,57 +1357,41 @@ defmodule Decree.Event.Handler do
   end
 
   @doc false
+  # While a retry waits, a delivery is held behind it: it is handled after the retry and the
+  # rest of the retried delivery.
+  @impl GenServer
+  def handle_info({:events, _events} = message, %Handler{retry_wait: %{}} = state) do
+    {:noreply, defer(message, state)}
+  end
+
   @impl GenServer
   def handle_info({:events, events}, state) do
-    %Handler{
-      application: application,
-      handler_callback: callback,
-      batch_timeout: batch_timeout
-    } = state
-
-    Logger.debug(describe(state) <> " received #{length(events)} event(s)")
-
-    # Upcast events once before any processing
-    events = Upcast.upcast_event_stream(events, additional_metadata: %{application: application})
-
-    try do
-      state =
-        case {callback, batch_timeout} do
-          {:event, _} ->
-            # Non-batched: process immediately
-            Enum.reduce(events, state, &handle_event/2)
-
-          {:batch, timeout} when timeout in [:infinity, nil] ->
-            # Batched without timeout: process immediately (Decree.Store handles batching)
-            handle_batch(events, %{flush_reason: :immediate}, state)
-
-          {:batch, _timeout} ->
-            # Batched with timeout: buffer events and flush on size or timeout
-            buffer_and_maybe_flush(events, state)
-        end
-
-      {:noreply, state}
-    catch
-      {:error, reason} ->
-        # Stop after event handling returned an error
-        {:stop, reason, state}
-    end
+    stopping_on_error(state, fn -> dispatch_events(events, state, []) end)
   end
 
   @doc false
+  # A batch is never flushed around a pending retry: the flush is held behind it too.
+  @impl GenServer
+  def handle_info(:flush_batch_timeout = message, %Handler{retry_wait: %{}} = state) do
+    {:noreply, defer(message, state)}
+  end
+
   @impl GenServer
   def handle_info(:flush_batch_timeout, state) do
-    %Handler{batch_buffer: buffer} = state
+    stopping_on_error(state, fn -> flush_on_timeout(state, []) end)
+  end
 
-    Logger.debug(describe(state) <> " flushing batch due to timeout: #{length(buffer)} event(s)")
+  @doc false
+  # The pending retry's timer.
+  @impl GenServer
+  def handle_info({:retry_wait, token}, %Handler{retry_wait: %{token: token}} = state) do
+    stopping_on_error(state, fn -> resume_after_wait(state) end)
+  end
 
-    try do
-      state = flush_batch_buffer(state, :timeout)
-      {:noreply, state}
-    catch
-      {:error, reason} ->
-        {:stop, reason, state}
-    end
+  # The timer of a wait that a reset or a lock loss dropped, when its cancel came too late.
+  @impl GenServer
+  def handle_info({:retry_wait, _token}, state) do
+    {:noreply, state}
   end
 
   @doc false
@@ -1415,13 +1429,15 @@ defmodule Decree.Event.Handler do
   end
 
   # Events buffered for a batch belong to the subscription being reset: they are
-  # dropped unhandled, and the new subscription delivers them again.
+  # dropped unhandled, and the new subscription delivers them again. So are a
+  # pending retry wait's retry, the rest of its delivery and the deliveries held
+  # behind it.
   defp reset_subscription(%Handler{} = state) do
     %Handler{subscription: subscription} = state
 
     subscription = Subscription.reset(subscription)
 
-    state = cancel_batch_timer(state)
+    state = state |> cancel_batch_timer() |> cancel_retry_wait()
 
     %Handler{
       state
@@ -1453,6 +1469,135 @@ defmodule Decree.Event.Handler do
 
         %Handler{state | subscription: subscription, subscribe_timer: subscribe_timer}
     end
+  end
+
+  # A `{:stop, reason}` from `error/3`, or an invalid answer from it, is thrown as
+  # `{:error, reason}` (`handle_event_error/7`): the handler stops with the state it had when
+  # the message arrived. `fun` answers the new state.
+  defp stopping_on_error(%Handler{} = state, fun) do
+    {:noreply, fun.()}
+  catch
+    {:error, reason} -> {:stop, reason, state}
+  end
+
+  # Upcast a delivery once, then hand it to the configured callback. `deferred` is what is held
+  # behind it, carried into a retry wait that this delivery arms.
+  defp dispatch_events(events, %Handler{} = state, deferred) do
+    %Handler{
+      application: application,
+      handler_callback: callback,
+      batch_timeout: batch_timeout
+    } = state
+
+    Logger.debug(describe(state) <> " received #{length(events)} event(s)")
+
+    events = Upcast.upcast_event_stream(events, additional_metadata: %{application: application})
+
+    case {callback, batch_timeout} do
+      {:event, _} ->
+        # Non-batched: process immediately
+        handle_events(events, state, deferred)
+
+      {:batch, timeout} when timeout in [:infinity, nil] ->
+        # Batched without timeout: process immediately (Decree.Store handles batching)
+        catching_retry_wait(state, [], deferred, fn state ->
+          handle_batch(events, %{flush_reason: :immediate}, state)
+        end)
+
+      {:batch, _timeout} ->
+        # Batched with timeout: buffer events and flush on size or timeout
+        catching_retry_wait(state, [], deferred, &buffer_and_maybe_flush(events, &1))
+    end
+  end
+
+  defp flush_on_timeout(%Handler{} = state, deferred) do
+    %Handler{batch_buffer: buffer} = state
+
+    Logger.debug(describe(state) <> " flushing batch due to timeout: #{length(buffer)} event(s)")
+
+    catching_retry_wait(state, [], deferred, &flush_batch_buffer(&1, :timeout))
+  end
+
+  # Handle a non-batched delivery one event at a time. An event whose retry is scheduled for
+  # after a delay stops the loop: the wait is armed with the events after it as `rest`.
+  defp handle_events([], %Handler{} = state, _deferred), do: state
+
+  defp handle_events([event | rest], %Handler{} = state, deferred) do
+    case catching_retry_wait(state, rest, deferred, &handle_event(event, &1)) do
+      %Handler{retry_wait: nil} = state -> handle_events(rest, state, deferred)
+      %Handler{} = waiting -> waiting
+    end
+  end
+
+  # Runs `fun` on `state`. A retry scheduled inside it (`schedule_retry/5`) unwinds to here as a
+  # `{:decree_retry_wait, delay, retry, state}` throw, its state the one the failed event or
+  # batch was handled on, and is armed on that state with `rest` and `deferred` behind it. Only
+  # that tag is caught: an `{:error, reason}` throw reaches `stopping_on_error/2`.
+  defp catching_retry_wait(%Handler{} = state, rest, deferred, fun) do
+    fun.(state)
+  catch
+    {:decree_retry_wait, delay, retry, %Handler{} = retry_state} ->
+      arm_retry_wait(retry_state, delay, retry, rest, deferred)
+  end
+
+  # The handler does not sleep: it sets a timer and goes back to its mailbox, so a `DOWN` from
+  # its subscription, an exit signal and a system message are served while it waits.
+  defp arm_retry_wait(%Handler{} = state, delay, retry, rest, deferred) do
+    token = make_ref()
+    timer_ref = Process.send_after(self(), {:retry_wait, token}, delay)
+
+    retry_wait = %{
+      token: token,
+      timer_ref: timer_ref,
+      retry: retry,
+      rest: rest,
+      deferred: deferred
+    }
+
+    %Handler{state | retry_wait: retry_wait}
+  end
+
+  defp defer(message, %Handler{retry_wait: %{deferred: deferred} = retry_wait} = state) do
+    %Handler{state | retry_wait: %{retry_wait | deferred: deferred ++ [message]}}
+  end
+
+  # The retry runs on the current state, then the rest of its delivery, then the held messages,
+  # each as `handle_info/2` would have handled it. A step that arms a new wait carries what is
+  # not yet handled into it, in order.
+  defp resume_after_wait(%Handler{retry_wait: retry_wait} = state) do
+    %{retry: retry, rest: rest, deferred: deferred} = retry_wait
+
+    state = %Handler{state | retry_wait: nil}
+
+    with %Handler{retry_wait: nil} = state <- catching_retry_wait(state, rest, deferred, retry),
+         %Handler{retry_wait: nil} = state <- handle_events(rest, state, deferred) do
+      handle_deferred(deferred, state)
+    end
+  end
+
+  defp handle_deferred([], %Handler{} = state), do: state
+
+  defp handle_deferred([message | deferred], %Handler{} = state) do
+    case handle_deferred_message(message, state, deferred) do
+      %Handler{retry_wait: nil} = state -> handle_deferred(deferred, state)
+      %Handler{} = waiting -> waiting
+    end
+  end
+
+  defp handle_deferred_message({:events, events}, state, deferred),
+    do: dispatch_events(events, state, deferred)
+
+  defp handle_deferred_message(:flush_batch_timeout, state, deferred),
+    do: flush_on_timeout(state, deferred)
+
+  # A timer that already fired leaves its `{:retry_wait, token}` in the mailbox, which
+  # `handle_info/2` ignores once `retry_wait` no longer holds its token.
+  defp cancel_retry_wait(%Handler{retry_wait: nil} = state), do: state
+
+  defp cancel_retry_wait(%Handler{retry_wait: %{timer_ref: timer_ref}} = state) do
+    _remaining = Process.cancel_timer(timer_ref)
+
+    %Handler{state | retry_wait: nil}
   end
 
   # Buffer events and check flush conditions for batched handlers with timeout.
@@ -1537,7 +1682,10 @@ defmodule Decree.Event.Handler do
     end
   end
 
-  # `:sys.get_status/1` and a crash report print this.
+  # `:sys.get_status/1` and a crash report print this. A pending `retry_wait` is shown as it
+  # stands: it holds no handler state, only refs, closures (printed without what they capture),
+  # and `RecordedEvent`s and `{:events, _}` messages that are never decrypted, so a personal
+  # field in them is ciphertext.
   @doc false
   @impl GenServer
   def format_status(%{state: %Handler{sensitive_state: true} = state} = status) do
@@ -1621,7 +1769,7 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(event, context, state)
         retry_fun = fn context, state -> handle_event(event, context, state) end
-        handle_event_error(error, event, failure_context, state, retry_fun, redacted?)
+        handle_event_error(error, event, failure_context, state, event, retry_fun, redacted?)
 
       {:error, reason, stacktrace} ->
         log_event_error({:error, reason, stacktrace}, event, state)
@@ -1629,7 +1777,16 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(event, context, stacktrace, state)
         retry_fun = fn context, state -> handle_event(event, context, state) end
-        handle_event_error({:error, reason}, event, failure_context, state, retry_fun, redacted?)
+
+        handle_event_error(
+          {:error, reason},
+          event,
+          failure_context,
+          state,
+          event,
+          retry_fun,
+          redacted?
+        )
 
       invalid ->
         shown_value = if redacted?, do: ":redacted", else: inspect(invalid, pretty: true)
@@ -1653,7 +1810,7 @@ defmodule Decree.Event.Handler do
         failure_context = build_failure_context(event, context, state)
 
         next = fn context, state -> handle_event(event, context, state) end
-        handle_event_error(error, event, failure_context, state, next, redacted?)
+        handle_event_error(error, event, failure_context, state, event, next, redacted?)
     end
   end
 
@@ -1718,7 +1875,7 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(nil, context, state)
         retry_fun = fn context, state -> handle_batch(events, context, state) end
-        handle_event_error(error, events, failure_context, state, retry_fun)
+        handle_event_error(error, events, failure_context, state, events, retry_fun)
 
       {:error, reason, stacktrace} ->
         log_batch_error({:error, reason, stacktrace}, events, state)
@@ -1726,7 +1883,7 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(nil, context, stacktrace, state)
         retry_fun = fn context, state -> handle_batch(events, context, state) end
-        handle_event_error({:error, reason}, events, failure_context, state, retry_fun)
+        handle_event_error({:error, reason}, events, failure_context, state, events, retry_fun)
 
       invalid ->
         error =
@@ -1743,7 +1900,7 @@ defmodule Decree.Event.Handler do
 
         failure_context = build_failure_context(nil, context, state)
         retry_fun = fn context, state -> handle_batch(events, context, state) end
-        handle_event_error(error, nil, failure_context, state, retry_fun)
+        handle_event_error(error, nil, failure_context, state, events, retry_fun)
     end
   end
 
@@ -1843,11 +2000,14 @@ defmodule Decree.Event.Handler do
     )
   end
 
+  # `retried` is what `retry_fun` handles again: the failed event, or the batch (also when
+  # `maybe_failed_event` is `nil`, after a batch's invalid return value).
   defp handle_event_error(
          error,
          maybe_failed_event,
          %FailureContext{} = failure_context,
          %Handler{} = state,
+         retried,
          retry_fun,
          redacted? \\ false
        ) do
@@ -1873,20 +2033,10 @@ defmodule Decree.Event.Handler do
 
       {:retry, delay, %FailureContext{context: context}}
       when is_map(context) and is_integer(delay) and delay >= 0 ->
-        # Retry the failed event after waiting for the given delay, in milliseconds
-        Logger.info(describe(state) <> " is retrying failed event after #{inspect(delay)}ms")
-
-        :timer.sleep(delay)
-
-        retry_fun.(context, state)
+        schedule_retry(delay, context, retried, state, retry_fun)
 
       {:retry, delay, context} when is_map(context) and is_integer(delay) and delay >= 0 ->
-        # Retry the failed event after waiting for the given delay, in milliseconds
-        Logger.info(describe(state) <> " is retrying failed event after #{inspect(delay)}ms")
-
-        :timer.sleep(delay)
-
-        retry_fun.(context, state)
+        schedule_retry(delay, context, retried, state, retry_fun)
 
       :skip ->
         # Skip the failed event by confirming receipt
@@ -1911,6 +2061,21 @@ defmodule Decree.Event.Handler do
         # Stop event handler with original error
         throw(if redacted?, do: {:error, shown_reason(elem(error, 1), true)}, else: error)
     end
+  end
+
+  # Retry the failed event or batch after `delay` milliseconds, a delay of 0 included, without
+  # sleeping: the throw unwinds the handling of the delivery to `catching_retry_wait/4`, outside
+  # `delegate_event_to_handler/4`'s `try`, which arms a timer and returns the handler to its
+  # mailbox. `state` is the state the failure was handled on (for a batch flush, with its buffer
+  # already cleared); the retry itself runs on the state current when the timer fires.
+  defp schedule_retry(delay, context, retried, %Handler{} = state, retry_fun) do
+    Logger.info(describe(state) <> " is retrying failed event after #{inspect(delay)}ms")
+
+    telemetry_retry_scheduled(delay, context, retried, state)
+
+    retry = fn state -> retry_fun.(context, state) end
+
+    throw({:decree_retry_wait, delay, retry, state})
   end
 
   # Never the module's own `error/3`, which could skip the event and lose its effect: a key
@@ -2129,6 +2294,34 @@ defmodule Decree.Event.Handler do
       context: context,
       recorded_event: recorded_event
     }
+  end
+
+  defp telemetry_retry_scheduled(delay, context, retried, %Handler{} = state) do
+    %Handler{
+      application: application,
+      handler_name: handler_name,
+      handler_module: handler_module
+    } = state
+
+    {recorded_event, event_count} =
+      case retried do
+        %RecordedEvent{} = event -> {event, 1}
+        events when is_list(events) -> {nil, length(events)}
+      end
+
+    :telemetry.execute(
+      [:decree, :event, :retry, :scheduled],
+      %{delay: delay, system_time: System.system_time()},
+      %{
+        application: application,
+        handler_name: handler_name,
+        handler_module: handler_module,
+        handler_state: shown_handler_state(state),
+        context: context,
+        recorded_event: recorded_event,
+        event_count: event_count
+      }
+    )
   end
 
   defp shown_handler_state(%Handler{sensitive_state: true}), do: :redacted
