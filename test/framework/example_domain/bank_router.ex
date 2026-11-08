@@ -18,8 +18,8 @@ defmodule Decree.ExampleDomain.BankRouter do
 
   middleware CommandAuditMiddleware
 
-  # Bank account
-  identify BankAccount, by: :account_number
+  # Bank account. Commanded's example domain names an account by its number ("ACC123").
+  identify BankAccount, by: :account_number, opaque: true
   dispatch OpenAccount, to: OpenAccountHandler, aggregate: BankAccount
   dispatch DepositMoney, to: DepositMoneyHandler, aggregate: BankAccount
   dispatch WithdrawMoney, to: WithdrawMoneyHandler, aggregate: BankAccount

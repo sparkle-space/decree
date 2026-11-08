@@ -34,6 +34,7 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
       %{account_number: account_number} = context
 
       command = %DepositMoney{
+        command_id: UUID.uuid4(),
         account_number: account_number,
         transfer_uuid: UUID.uuid4(),
         amount: 100
@@ -104,6 +105,7 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
       end)
 
       command = %DepositMoney{
+        command_id: UUID.uuid4(),
         account_number: account_number,
         transfer_uuid: UUID.uuid4(),
         amount: 100
@@ -136,7 +138,11 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
       {:ok, ^account_number} =
         Decree.Aggregates.Supervisor.open_aggregate(MockedApp, BankAccount, account_number)
 
-      command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       context = %ExecutionContext{
         command: command,

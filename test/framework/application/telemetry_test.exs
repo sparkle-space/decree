@@ -32,7 +32,7 @@ defmodule Decree.Application.TelemetryTest do
   end
 
   test "emit `[:decree, :application, :dispatch, :start | :stop]` event" do
-    command = %IncrementCount{aggregate_uuid: UUID.uuid4()}
+    command = %IncrementCount{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4()}
 
     assert :ok = TestRouter.dispatch(command, application: DefaultApp)
 
@@ -45,7 +45,7 @@ defmodule Decree.Application.TelemetryTest do
   end
 
   test "emit `[:decree, :application, :dispatch, :start | :stop]` event on error" do
-    command = %RaiseError{aggregate_uuid: UUID.uuid4()}
+    command = %RaiseError{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4()}
     error = %RuntimeError{message: "failed"}
 
     assert {:error, ^error} = TestRouter.dispatch(command, application: DefaultApp)
@@ -60,7 +60,7 @@ defmodule Decree.Application.TelemetryTest do
   end
 
   test "emit `[:decree, :application, :dispatch, :start | :stop]` event on unregistered command" do
-    command = %Fail{aggregate_uuid: UUID.uuid4()}
+    command = %Fail{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4()}
     error = :unregistered_command
 
     assert {:error, ^error} = TestRouter.dispatch(command, application: DefaultApp)

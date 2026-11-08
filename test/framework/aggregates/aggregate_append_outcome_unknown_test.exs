@@ -28,14 +28,14 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
     LostAppendAdapter.flag(uuid, :unavailable)
 
     assert {:error, %AppendError{class: :unavailable}} =
-             LostAppendApp.dispatch(%Open{uuid: uuid})
+             LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid})
 
     assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :append_outcome_unknown}}
     Wait.until(fn -> assert whereis(uuid) == :undefined end)
 
     # Refused on the pre-append state (`:not_open`); accepted once the `Opened`
     # event written by the lost append is applied.
-    assert :ok = LostAppendApp.dispatch(%Close{uuid: uuid})
+    assert :ok = LostAppendApp.dispatch(%Close{command_id: UUID.uuid4(), uuid: uuid})
 
     assert is_pid(whereis(uuid))
     refute whereis(uuid) == pid
@@ -78,13 +78,13 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
       LostAppendAdapter.flag(uuid, unquote(class))
 
       assert {:error, %AppendError{class: unquote(class)}} =
-               LostAppendApp.dispatch(%Open{uuid: uuid})
+               LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid})
 
       # The same process answers a call after the failed command, so it did not stop.
       assert 0 == Aggregate.aggregate_version(LostAppendApp, LostAppendAggregate, uuid)
       assert whereis(uuid) == pid
 
-      assert :ok = LostAppendApp.dispatch(%Open{uuid: uuid})
+      assert :ok = LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid})
       assert whereis(uuid) == pid
     end
   end
@@ -95,10 +95,16 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
     :ok = :sys.suspend(pid)
 
     try do
-      open = Task.async(fn -> LostAppendApp.dispatch(%Open{uuid: uuid}) end)
+      open =
+        Task.async(fn -> LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid}) end)
+
       wait_for_queued_commands(pid, 1)
 
-      close = Task.async(fn -> LostAppendApp.dispatch(%Close{uuid: uuid}, close_opts) end)
+      close =
+        Task.async(fn ->
+          LostAppendApp.dispatch(%Close{command_id: UUID.uuid4(), uuid: uuid}, close_opts)
+        end)
+
       wait_for_queued_commands(pid, 2)
 
       {open, close}

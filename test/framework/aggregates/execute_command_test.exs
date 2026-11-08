@@ -21,7 +21,12 @@ defmodule Decree.Aggregates.ExecuteCommandTest do
 
     {:ok, ^account_number} = open_aggregate(BankAccount, account_number)
 
-    command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+    command = %OpenAccount{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      initial_balance: 1_000
+    }
+
     context = %ExecutionContext{command: command, handler: BankAccount, function: :open_account}
 
     {:ok, 1, events, _aggregate_state} =
@@ -48,7 +53,12 @@ defmodule Decree.Aggregates.ExecuteCommandTest do
 
     {:ok, ^account_number} = open_aggregate(BankAccount, account_number)
 
-    command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+    command = %OpenAccount{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      initial_balance: 1_000
+    }
+
     context = %ExecutionContext{command: command, handler: OpenAccountHandler, function: :handle}
 
     {:ok, 1, events, _aggregate_state} =
@@ -75,7 +85,12 @@ defmodule Decree.Aggregates.ExecuteCommandTest do
 
     {:ok, ^account_number} = open_aggregate(BankAccount, account_number)
 
-    command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+    command = %OpenAccount{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      initial_balance: 1_000
+    }
+
     context = %ExecutionContext{command: command, handler: OpenAccountHandler, function: :handle}
 
     {:ok, 1, _events, _aggregate_state} =
@@ -84,7 +99,11 @@ defmodule Decree.Aggregates.ExecuteCommandTest do
     state_before = Aggregate.aggregate_state(BankApp, BankAccount, account_number)
 
     assert_aggregate_exit(BankApp, BankAccount, account_number, fn ->
-      command = %OpenAccount{account_number: account_number, initial_balance: 1}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: account_number,
+        initial_balance: 1
+      }
 
       context = %ExecutionContext{
         command: command,

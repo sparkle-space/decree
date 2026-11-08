@@ -1,7 +1,7 @@
 defmodule Decree.Commands.CustomIdentityRoutingTest do
   use Decree.PostgresCase
 
-  alias Decree.{DefaultApp, EventStore}
+  alias Decree.{DefaultApp, EventStore, UUID}
   alias Decree.ExampleDomain.BankAccount
   alias Decree.ExampleDomain.BankAccount.Commands.OpenAccount
   alias Decree.ExampleDomain.OpenAccountHandler
@@ -22,7 +22,8 @@ defmodule Decree.Commands.CustomIdentityRoutingTest do
     dispatch OpenAccount,
       to: OpenAccountHandler,
       aggregate: BankAccount,
-      identity: :account_number
+      identity: :account_number,
+      opaque: true
   end
 
   setup do
@@ -31,17 +32,21 @@ defmodule Decree.Commands.CustomIdentityRoutingTest do
     :ok
   end
 
-  describe "identify aggregate using `String.Chars` protocol" do
-    test "should dispatch command to aggregate instance" do
+  # Upstream converted an identity through `String.Chars`. decree checks the value as the
+  # command carries it: a struct is not a binary, so even this opaque route refuses it before
+  # any conversion, and no stream is named after what it would have converted to.
+  describe "an identity that is a struct" do
+    test "is refused, though it converts to a string" do
       open_account = %OpenAccount{
+        command_id: UUID.uuid4(),
         account_number: %AccountNumber{branch: "B1", account_number: "ACC123"},
         initial_balance: 1_000
       }
 
-      assert :ok = CustomIdentityRouter.dispatch(open_account, application: DefaultApp)
+      assert {:error, :invalid_aggregate_identity} =
+               CustomIdentityRouter.dispatch(open_account, application: DefaultApp)
 
-      events = EventStore.stream_forward(DefaultApp, "B1:ACC123") |> Enum.to_list()
-      assert length(events) == 1
+      assert {:error, :stream_not_found} = EventStore.stream_forward(DefaultApp, "B1:ACC123")
     end
   end
 
@@ -53,11 +58,12 @@ defmodule Decree.Commands.CustomIdentityRoutingTest do
 
     test "should error" do
       open_account = %OpenAccount{
+        command_id: UUID.uuid4(),
         account_number: %InvalidIdentity{},
         initial_balance: 1_000
       }
 
-      assert {:error, {:unsupported_aggregate_identity_type, %InvalidIdentity{}}} =
+      assert {:error, :invalid_aggregate_identity} =
                CustomIdentityRouter.dispatch(open_account, application: DefaultApp)
     end
   end

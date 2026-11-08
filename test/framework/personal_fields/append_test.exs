@@ -87,7 +87,9 @@ defmodule Decree.PersonalFields.AppendTest do
       event = %Plain{user_id: subject, note: "a note"}
 
       :ok =
-        App.dispatch(%Emit{account_id: stream, events: [event]}, metadata: %{"who" => "alice"})
+        App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream, events: [event]},
+          metadata: %{"who" => "alice"}
+        )
 
       %{rows: [[data, metadata]]} = Postgrex.query!(conn, "SELECT data, metadata FROM events", [])
 
@@ -265,18 +267,24 @@ defmodule Decree.PersonalFields.AppendTest do
         %{conn: conn, subject: subject} = context
         stream = UUID.uuid4()
 
-        :ok = App.dispatch(%Emit{account_id: stream, events: [%Plain{user_id: subject}]})
+        :ok =
+          App.dispatch(%Emit{
+            command_id: UUID.uuid4(),
+            account_id: stream,
+            events: [%Plain{user_id: subject}]
+          })
 
         Keys.set(subject, unquote(mode))
 
         assert {:error, :key_unknown} =
                  App.dispatch(%Emit{
+                   command_id: UUID.uuid4(),
                    account_id: stream,
                    events: [%Registered{user_id: subject, email: email()}]
                  })
 
         assert %{rows: [[1]]} = Postgrex.query!(conn, "SELECT count(*)::int FROM events", [])
-        assert :ok = App.dispatch(%Emit{account_id: stream})
+        assert :ok = App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: stream})
       end
     end
 
@@ -369,6 +377,7 @@ defmodule Decree.PersonalFields.AppendTest do
 
       assert {:error, :key_unknown} =
                App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
                  account_id: stream,
                  events: [%Tagged{user_id: subject, email: email()}]
                })
@@ -382,6 +391,7 @@ defmodule Decree.PersonalFields.AppendTest do
 
       :ok =
         App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
           account_id: stream,
           events: [%Tagged{user_id: subject, email: email()}]
         })
@@ -434,6 +444,7 @@ defmodule Decree.PersonalFields.AppendTest do
         stream = UUID.uuid4()
 
         command = %Emit{
+          command_id: UUID.uuid4(),
           account_id: stream,
           events: [%Tagged{user_id: subject, email: email(), mode: unquote(mode)}]
         }

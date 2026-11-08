@@ -33,6 +33,7 @@ defmodule Decree.Commands.CompositeRouterTest do
       assert :ok =
                ExampleCompositeRouter.dispatch(
                  %OpenAccount{
+                   command_id: UUID.uuid4(),
                    account_number: "ACC123",
                    initial_balance: 1_000
                  },
@@ -42,6 +43,7 @@ defmodule Decree.Commands.CompositeRouterTest do
       assert :ok =
                ExampleCompositeRouter.dispatch(
                  %TransferMoney{
+                   command_id: UUID.uuid4(),
                    transfer_uuid: UUID.uuid4(),
                    debit_account: "ACC123",
                    credit_account: "ACC456",
@@ -52,7 +54,11 @@ defmodule Decree.Commands.CompositeRouterTest do
     end
 
     test "should dispatch command to registered handler with options" do
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: "ACC123",
+        initial_balance: 1_000
+      }
 
       assert {:ok, %ExecutionResult{}} =
                ExampleCompositeRouter.dispatch(command,
@@ -113,6 +119,7 @@ defmodule Decree.Commands.CompositeRouterTest do
       assert :ok =
                CompositeCompositeRouter.dispatch(
                  %OpenAccount{
+                   command_id: UUID.uuid4(),
                    account_number: "ACC123",
                    initial_balance: 1_000
                  },
@@ -122,6 +129,7 @@ defmodule Decree.Commands.CompositeRouterTest do
       assert :ok =
                CompositeCompositeRouter.dispatch(
                  %TransferMoney{
+                   command_id: UUID.uuid4(),
                    transfer_uuid: UUID.uuid4(),
                    debit_account: "ACC123",
                    credit_account: "ACC456",

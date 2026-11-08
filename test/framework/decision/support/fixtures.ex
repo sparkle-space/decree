@@ -569,7 +569,8 @@ defmodule Decree.DecisionFixtures.StrayRouter do
   def prefix, do: "claim-"
 
   dispatch StrayCommand, to: StrayAggregate, identity: :id, identity_prefix: &__MODULE__.prefix/0
-  dispatch BareStrayCommand, to: StrayAggregate, identity: :id
+  # Opaque, so a bare identity can carry a decision's prefix past the canonical check.
+  dispatch BareStrayCommand, to: StrayAggregate, identity: :id, opaque: true
 end
 
 defmodule Decree.DecisionFixtures.App do

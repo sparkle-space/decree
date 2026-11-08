@@ -45,7 +45,12 @@ defmodule Decree.Aggregates.AggregateUnknownEventTypeTest do
 
     account_number = UUID.uuid4()
 
-    :ok = BankApp.dispatch(%OpenAccount{account_number: account_number, initial_balance: 1_000})
+    :ok =
+      BankApp.dispatch(%OpenAccount{
+        command_id: UUID.uuid4(),
+        account_number: account_number,
+        initial_balance: 1_000
+      })
 
     [account_number: account_number]
   end
@@ -187,7 +192,12 @@ defmodule Decree.Aggregates.AggregateUnknownEventTypeTest do
   end
 
   defp deposit(account_number) do
-    %DepositMoney{account_number: account_number, transfer_uuid: UUID.uuid4(), amount: 100}
+    %DepositMoney{
+      account_number: account_number,
+      command_id: UUID.uuid4(),
+      transfer_uuid: UUID.uuid4(),
+      amount: 100
+    }
   end
 
   defp resident(account_number),

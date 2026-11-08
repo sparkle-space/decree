@@ -390,7 +390,11 @@ defmodule Decree.Application do
 
   ## Example
 
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: command_id,
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       :ok = BankApp.dispatch(command, timeout: 30_000)
 

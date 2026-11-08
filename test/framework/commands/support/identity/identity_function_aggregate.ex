@@ -5,7 +5,7 @@ defmodule Decree.Commands.IdentityFunctionAggregate do
 
   defmodule IdentityFunctionCommand do
     @derive Jason.Encoder
-    defstruct [:uuid]
+    defstruct [:uuid, :command_id]
   end
 
   defmodule IdentityFunctionEvent do

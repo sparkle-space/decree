@@ -35,6 +35,9 @@ defmodule Decree.Middleware.Pipeline do
        be a string (e.g. "prefix-") or a zero arity function
        (e.g. `&MyRouter.identity_prefix/0`).
 
+    - `identity_opaque` - `true` when the route declared `opaque: true`, so its identity
+       may be any non-empty binary rather than a canonical UUID. `false` by default.
+
     - `metadata` - the metadata map to be persisted along with the events.
 
     - `response` - sets the response to send back to the caller.
@@ -51,6 +54,7 @@ defmodule Decree.Middleware.Pipeline do
     :identity_prefix,
     :metadata,
     :response,
+    identity_opaque: false,
     assigns: %{},
     halted: false
   ]

@@ -3,18 +3,25 @@ defmodule Decree.Middleware.ApplicationMiddlewareTest do
 
   alias Decree.Middleware.Tenant.Commands.RegisterTenant
   alias Decree.Middleware.TenantApp
+  alias Decree.UUID
 
   setup do
-    for tenant_id <- 1..3 do
+    tenant_ids = for _tenant <- 1..3, do: UUID.uuid4()
+
+    for tenant_id <- tenant_ids do
       start_supervised!({TenantApp, name: TenantApp.tenant_application_name(tenant_id)})
     end
 
-    :ok
+    [tenant_ids: tenant_ids]
   end
 
-  test "dispatch command to dynamic application set in middleware" do
-    for tenant_id <- 1..3 do
-      command = %RegisterTenant{tenant_id: tenant_id, name: "Tenant #{tenant_id}"}
+  test "dispatch command to dynamic application set in middleware", %{tenant_ids: tenant_ids} do
+    for tenant_id <- tenant_ids do
+      command = %RegisterTenant{
+        command_id: UUID.uuid4(),
+        tenant_id: tenant_id,
+        name: "Tenant #{tenant_id}"
+      }
 
       assert :ok = TenantApp.dispatch(command)
 
@@ -25,7 +32,7 @@ defmodule Decree.Middleware.ApplicationMiddlewareTest do
   end
 
   test "raise `RuntimeError` when application not started" do
-    command = %RegisterTenant{tenant_id: 4, name: "Tenant 4"}
+    command = %RegisterTenant{command_id: UUID.uuid4(), tenant_id: UUID.uuid4(), name: "Tenant 4"}
 
     assert_raise RuntimeError, fn ->
       :ok = TenantApp.dispatch(command)

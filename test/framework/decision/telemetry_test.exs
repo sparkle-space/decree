@@ -56,10 +56,20 @@ defmodule Decree.Decision.TelemetryTest do
       refute Map.has_key?(metadata, :events)
     end
 
-    test "counts no attempt for a refusal before the first" do
-      assert {:error, :missing_command_id} = App.dispatch(scripted(command_id: nil))
+    # A refusal in the middleware runs no decision, so it has no span; step 0's own refusals
+    # are a backstop behind it on a routed dispatch.
+    test "starts no span for a `command_id` the middleware refuses" do
+      assert {:error, :command_id_required} = App.dispatch(scripted(command_id: nil))
 
-      assert_received {:telemetry, @stop, _, %{attempts: 0, error: :missing_command_id}}
+      refute_received {:telemetry, @start, _, _}
+      refute_received {:telemetry, @stop, _, _}
+      refute_received {:telemetry, @read, _, _}
+    end
+
+    test "counts no attempt for a refusal before the first" do
+      assert {:error, :invalid_scope_tags} = App.dispatch(scripted(scope_tags: fn _ -> [""] end))
+
+      assert_received {:telemetry, @stop, _, %{attempts: 0, error: :invalid_scope_tags}}
       refute_received {:telemetry, @read, _, _}
     end
 

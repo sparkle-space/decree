@@ -2,7 +2,7 @@ defmodule Decree.Middleware.Tenant do
   defmodule Commands do
     defmodule RegisterTenant do
       @enforce_keys [:tenant_id, :name]
-      defstruct [:tenant_id, :name]
+      defstruct [:tenant_id, :command_id, :name]
     end
   end
 

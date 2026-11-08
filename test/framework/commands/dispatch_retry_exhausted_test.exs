@@ -43,7 +43,8 @@ defmodule Decree.Commands.DispatchRetryExhaustedTest do
       try do
         stopping =
           Task.async(fn ->
-            ExhaustedRetryRouter.dispatch(%Command{uuid: uuid, action: :event, lifespan: :stop},
+            ExhaustedRetryRouter.dispatch(
+              %Command{command_id: UUID.uuid4(), uuid: uuid, action: :event, lifespan: :stop},
               application: DefaultApp
             )
           end)
@@ -52,7 +53,8 @@ defmodule Decree.Commands.DispatchRetryExhaustedTest do
 
         queued =
           Task.async(fn ->
-            ExhaustedRetryRouter.dispatch(%Command{uuid: uuid, action: :noop},
+            ExhaustedRetryRouter.dispatch(
+              %Command{command_id: UUID.uuid4(), uuid: uuid, action: :noop},
               application: DefaultApp,
               retry_attempts: 0
             )

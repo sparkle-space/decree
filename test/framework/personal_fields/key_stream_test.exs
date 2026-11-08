@@ -1101,6 +1101,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
     defp dispatch_registered!(stream, subject) do
       :ok =
         @app.dispatch(%Emit{
+          command_id: UUID.uuid4(),
           account_id: stream,
           events: [%Registered{user_id: subject, email: email()}]
         })
@@ -1178,6 +1179,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       assert LedgerKeys.lookup(subject) == :unknown
 
       assert @app.dispatch(%Emit{
+               command_id: UUID.uuid4(),
                account_id: UUID.uuid4(),
                events: [%Registered{user_id: subject, email: email()}]
              }) == {:error, :key_unknown}
@@ -1237,6 +1239,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
                  {:error, :key_unknown}
 
         assert @app.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
                  account_id: UUID.uuid4(),
                  events: [%Registered{user_id: subject, email: email()}]
                }) == {:error, :key_unknown}

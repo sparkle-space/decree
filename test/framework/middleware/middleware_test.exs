@@ -76,17 +76,20 @@ defmodule Decree.Middleware.MiddlewareTest do
     aggregate_uuid = UUID.uuid4()
 
     :ok =
-      Router.dispatch(%IncrementCount{aggregate_uuid: aggregate_uuid, by: 1},
+      Router.dispatch(
+        %IncrementCount{command_id: UUID.uuid4(), aggregate_uuid: aggregate_uuid, by: 1},
         application: DefaultApp
       )
 
     :ok =
-      Router.dispatch(%IncrementCount{aggregate_uuid: aggregate_uuid, by: 2},
+      Router.dispatch(
+        %IncrementCount{command_id: UUID.uuid4(), aggregate_uuid: aggregate_uuid, by: 2},
         application: DefaultApp
       )
 
     :ok =
-      Router.dispatch(%IncrementCount{aggregate_uuid: aggregate_uuid, by: 3},
+      Router.dispatch(
+        %IncrementCount{command_id: UUID.uuid4(), aggregate_uuid: aggregate_uuid, by: 3},
         application: DefaultApp
       )
 
@@ -106,7 +109,9 @@ defmodule Decree.Middleware.MiddlewareTest do
   test "should execute middleware failure callback when aggregate process returns an error tagged tuple" do
     # force command handling to return an error
     {:error, :failed} =
-      Router.dispatch(%Fail{aggregate_uuid: UUID.uuid4()}, application: DefaultApp)
+      Router.dispatch(%Fail{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4()},
+        application: DefaultApp
+      )
 
     {dispatched, succeeded, failed} = CommandAuditMiddleware.count_commands()
 
@@ -116,7 +121,7 @@ defmodule Decree.Middleware.MiddlewareTest do
   end
 
   test "should execute middleware failure callback when aggregate process errors" do
-    command = %RaiseError{aggregate_uuid: UUID.uuid4()}
+    command = %RaiseError{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4()}
 
     # Force command handling to error
     assert {:error, %RuntimeError{message: "failed"}} =
@@ -130,7 +135,7 @@ defmodule Decree.Middleware.MiddlewareTest do
   end
 
   test "should execute middleware failure callback when aggregate process dies" do
-    command = %Timeout{aggregate_uuid: UUID.uuid4()}
+    command = %Timeout{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4()}
 
     # Force command handling to timeout so the aggregate process is terminated
     :ok =
@@ -147,7 +152,7 @@ defmodule Decree.Middleware.MiddlewareTest do
   end
 
   test "should let a middleware update the metadata" do
-    command = %IncrementCount{aggregate_uuid: UUID.uuid4(), by: 1}
+    command = %IncrementCount{command_id: UUID.uuid4(), aggregate_uuid: UUID.uuid4(), by: 1}
 
     assert {:ok, %ExecutionResult{metadata: metadata}} =
              Router.dispatch(

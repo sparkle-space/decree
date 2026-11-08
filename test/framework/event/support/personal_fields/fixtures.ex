@@ -309,45 +309,45 @@ defmodule Decree.PersonalFields.Fixtures.Commands do
 
   # Tells the test it is executing, and waits for `:release` before answering its events.
   defmodule Hold do
-    defstruct [:account_id, events: []]
+    defstruct [:account_id, :command_id, events: []]
   end
 
   defmodule ExitNow do
-    defstruct [:account_id, :reason]
+    defstruct [:account_id, :command_id, :reason]
   end
 
   defmodule RaiseNow do
-    defstruct [:account_id]
+    defstruct [:account_id, :command_id]
   end
 
   # `execute/2` matches the state's email against a value it can't equal.
   defmodule MatchState do
-    defstruct [:account_id]
+    defstruct [:account_id, :command_id]
   end
 
   # No clause of `check/1` takes the state, so the frame's arguments hold it.
   defmodule ClauseOnState do
-    defstruct [:account_id]
+    defstruct [:account_id, :command_id]
   end
 
   # A database-shaped exception whose message holds the state's email.
   defmodule DetailOnState do
-    defstruct [:account_id]
+    defstruct [:account_id, :command_id]
   end
 
   # `execute/2` fails as `mode` says, with the state's email in hand.
   defmodule FailExecute do
-    defstruct [:account_id, :mode]
+    defstruct [:account_id, :command_id, :mode]
   end
 
   # `before_execute` fails as `mode` says, with the state's email in hand.
   defmodule FailBefore do
-    defstruct [:account_id, :mode]
+    defstruct [:account_id, :command_id, :mode]
   end
 
   # For `PlainLedger`, which uses no personal fields.
   defmodule PlainFail do
-    defstruct [:account_id, :mode, :note]
+    defstruct [:account_id, :command_id, :mode, :note]
   end
 
   # `Emit` for `PlainLedger`.

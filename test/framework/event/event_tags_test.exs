@@ -33,6 +33,7 @@ defmodule Decree.Event.EventTagsTest do
     Unimplemented
   }
 
+  alias Decree.Event.Append
   alias Decree.Event.Tagging.{App, Ledger, Recorder}
   alias Decree.EventStore
   alias Decree.EventStore.EventData
@@ -179,29 +180,38 @@ defmodule Decree.Event.EventTagsTest do
     end
 
     test "a no-event command builds no tags", %{user_id: user_id} = context do
-      assert :ok = App.dispatch(%Emit{user_id: user_id, events: []})
+      assert :ok = App.dispatch(%Emit{command_id: UUID.uuid4(), user_id: user_id, events: []})
 
       assert Recorder.all(:counted) == []
       assert stored(context) == []
 
       # The same implementation, reached.
-      :ok = App.dispatch(%Emit{user_id: user_id, events: [%Counted{note: "once"}]})
+      :ok =
+        App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Counted{note: "once"}]
+        })
 
       assert Recorder.all(:counted) == ["once"]
     end
   end
 
   describe "the `command:` tag" do
-    test "is absent for a nil `command_id`, with no derived id", context do
+    # A dispatch refuses a nil `command_id` (`Decree.Middleware.CommandId`), and derives none
+    # from the dispatch's own ids, so no event is appended with or without a tag.
+    test "has no derived id: a nil `command_id` is refused", context do
       %{user_id: user_id} = context
 
-      :ok =
-        App.dispatch(%Emit{user_id: user_id, events: [%Unimplemented{}]},
-          command_uuid: UUID.uuid4(),
-          causation_id: UUID.uuid4()
-        )
+      assert {:error, :command_id_required} =
+               App.dispatch(
+                 %Emit{command_id: nil, user_id: user_id, events: [%Unimplemented{}]},
+                 command_uuid: UUID.uuid4(),
+                 causation_id: UUID.uuid4()
+               )
 
-      assert stored_tags(context) == [Enum.sort([@emit_kind, "user:" <> user_id])]
+      assert stored_tags(context) == []
+      assert Append.command_tag(%Emit{command_id: nil}) == nil
     end
   end
 
@@ -209,13 +219,17 @@ defmodule Decree.Event.EventTagsTest do
     test "is never the dispatch's own correlation id", context do
       %{user_id: user_id} = context
       router_correlation = UUID.uuid4()
+      command_id = UUID.uuid4()
 
       :ok =
-        App.dispatch(%Emit{user_id: user_id, events: [%Unimplemented{}]},
+        App.dispatch(
+          %Emit{command_id: command_id, user_id: user_id, events: [%Unimplemented{}]},
           correlation_id: router_correlation
         )
 
-      assert stored_tags(context) == [Enum.sort([@emit_kind, "user:" <> user_id])]
+      assert stored_tags(context) == [
+               Enum.sort(["command:" <> command_id, @emit_kind, "user:" <> user_id])
+             ]
 
       assert [recorded] = App |> EventStore.stream_forward(user_id) |> Enum.to_list()
       assert recorded.correlation_id == router_correlation
@@ -224,21 +238,33 @@ defmodule Decree.Event.EventTagsTest do
     test "comes from the command's field when both are given", context do
       %{user_id: user_id} = context
       command_key = UUID.uuid4()
+      command_id = UUID.uuid4()
 
       :ok =
         App.dispatch(
-          %Emit{user_id: user_id, correlation_id: command_key, events: [%Unimplemented{}]},
+          %Emit{
+            command_id: command_id,
+            user_id: user_id,
+            correlation_id: command_key,
+            events: [%Unimplemented{}]
+          },
           correlation_id: UUID.uuid4()
         )
 
       assert stored_tags(context) == [
-               Enum.sort([@emit_kind, "correlation:" <> command_key, "user:" <> user_id])
+               Enum.sort([
+                 "command:" <> command_id,
+                 @emit_kind,
+                 "correlation:" <> command_key,
+                 "user:" <> user_id
+               ])
              ]
     end
 
     test "takes a key that is no UUID", %{user_id: user_id} = context do
       :ok =
         App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
           user_id: user_id,
           correlation_id: "stripe:evt_123",
           events: [%Unimplemented{}]
@@ -251,7 +277,12 @@ defmodule Decree.Event.EventTagsTest do
 
   describe "the stream tag" do
     test "is the identity field's stem", %{user_id: user_id} = context do
-      :ok = App.dispatch(%Emit{user_id: user_id, events: [%Unimplemented{}]})
+      :ok =
+        App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Unimplemented{}]
+        })
 
       assert [tags] = stored_tags(context)
       assert ("user:" <> user_id) in tags
@@ -259,7 +290,11 @@ defmodule Decree.Event.EventTagsTest do
 
     test "is the kind the route names", %{user_id: user_id} = context do
       :ok =
-        App.dispatch(%EmitAsRequester{requester_user_id: user_id, events: [%Unimplemented{}]})
+        App.dispatch(%EmitAsRequester{
+          command_id: UUID.uuid4(),
+          requester_user_id: user_id,
+          events: [%Unimplemented{}]
+        })
 
       assert [tags] = stored_tags(context)
       assert ("user:" <> user_id) in tags
@@ -269,28 +304,55 @@ defmodule Decree.Event.EventTagsTest do
     test "keeps a field name with no `_id` suffix whole", context do
       content_ref = UUID.uuid4()
 
-      :ok = App.dispatch(%EmitByRef{content_ref: content_ref, events: [%Unimplemented{}]})
+      :ok =
+        App.dispatch(%EmitByRef{
+          command_id: UUID.uuid4(),
+          content_ref: content_ref,
+          events: [%Unimplemented{}]
+        })
 
       assert [tags] = stored_tags(context)
       assert ("content_ref:" <> content_ref) in tags
     end
 
-    test "is absent for an identity that is no UUID", context do
-      :ok = App.dispatch(%EmitByRef{content_ref: "cus_123", events: [%Unimplemented{}]})
+    test "is absent for an opaque identity that is no UUID", context do
+      command_id = UUID.uuid4()
 
-      assert stored_tags(context) == [["command_kind:#{inspect(EmitByRef)}"]]
+      :ok =
+        App.dispatch(%EmitByRef{
+          command_id: command_id,
+          content_ref: "cus_123",
+          events: [%Unimplemented{}]
+        })
+
+      assert stored_tags(context) == [
+               ["command:" <> command_id, "command_kind:#{inspect(EmitByRef)}"]
+             ]
     end
 
-    test "is absent for an uppercase UUID", context do
+    test "is absent for an opaque uppercase UUID", context do
       content_ref = String.upcase(UUID.uuid4())
+      command_id = UUID.uuid4()
 
-      :ok = App.dispatch(%EmitByRef{content_ref: content_ref, events: [%Unimplemented{}]})
+      :ok =
+        App.dispatch(%EmitByRef{
+          command_id: command_id,
+          content_ref: content_ref,
+          events: [%Unimplemented{}]
+        })
 
-      assert stored_tags(context) == [["command_kind:#{inspect(EmitByRef)}"]]
+      assert stored_tags(context) == [
+               ["command:" <> command_id, "command_kind:#{inspect(EmitByRef)}"]
+             ]
     end
 
     test "is the bare id under a prefixed `identify`", %{user_id: user_id} = context do
-      :ok = App.dispatch(%EmitPrefixed{user_id: user_id, events: [%Unimplemented{}]})
+      :ok =
+        App.dispatch(%EmitPrefixed{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Unimplemented{}]
+        })
 
       assert [tags] = stored_tags(context)
       assert ("user:" <> user_id) in tags
@@ -299,70 +361,119 @@ defmodule Decree.Event.EventTagsTest do
     end
 
     test "reads an identity `identify` resolves", %{user_id: user_id} = context do
-      :ok = App.dispatch(%EmitIdentified{user_id: user_id, events: [%Unimplemented{}]})
+      :ok =
+        App.dispatch(%EmitIdentified{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Unimplemented{}]
+        })
 
       assert [tags] = stored_tags(context)
       assert ("member:" <> user_id) in tags
     end
 
     test "is absent for a function identity with no `stream_tag:`", context do
-      :ok = App.dispatch(%EmitByFunction{key: UUID.uuid4(), events: [%Unimplemented{}]})
+      command_id = UUID.uuid4()
 
-      assert stored_tags(context) == [["command_kind:#{inspect(EmitByFunction)}"]]
+      :ok =
+        App.dispatch(%EmitByFunction{
+          command_id: command_id,
+          key: UUID.uuid4(),
+          events: [%Unimplemented{}]
+        })
+
+      assert stored_tags(context) == [
+               ["command:" <> command_id, "command_kind:#{inspect(EmitByFunction)}"]
+             ]
     end
 
     test "is the function's answer under a declared kind", context do
       key = UUID.uuid4()
+      command_id = UUID.uuid4()
 
-      :ok = App.dispatch(%EmitByFunctionTagged{key: key, events: [%Unimplemented{}]})
+      :ok =
+        App.dispatch(%EmitByFunctionTagged{
+          command_id: command_id,
+          key: key,
+          events: [%Unimplemented{}]
+        })
 
       assert stored_tags(context) == [
-               Enum.sort(["command_kind:#{inspect(EmitByFunctionTagged)}", "user:" <> key])
+               Enum.sort([
+                 "command:" <> command_id,
+                 "command_kind:#{inspect(EmitByFunctionTagged)}",
+                 "user:" <> key
+               ])
              ]
     end
 
-    test "is absent for a function's answer that is no UUID", context do
-      :ok = App.dispatch(%EmitByFunctionTagged{key: "cus_123", events: [%Unimplemented{}]})
+    test "is absent for an opaque function's answer that is no UUID", context do
+      command_id = UUID.uuid4()
 
-      assert stored_tags(context) == [["command_kind:#{inspect(EmitByFunctionTagged)}"]]
+      :ok =
+        App.dispatch(%EmitByFunctionTagged{
+          command_id: command_id,
+          key: "cus_123",
+          events: [%Unimplemented{}]
+        })
+
+      assert stored_tags(context) == [
+               ["command:" <> command_id, "command_kind:#{inspect(EmitByFunctionTagged)}"]
+             ]
     end
   end
 
   describe "the stream tag describes the identity the stream was routed by" do
-    test "for a `String.Chars` value rendering a canonical UUID", context do
+    # Upstream rendered an identity through `String.Chars`. decree checks the value the
+    # command carries, so a struct is refused, though it renders a canonical UUID.
+    test "is not a `String.Chars` value rendering a canonical UUID: that is refused", context do
       %{user_id: user_id} = context
 
-      :ok =
-        App.dispatch(%Emit{user_id: %EntityRef{uuid: user_id}, events: [%Unimplemented{}]})
+      assert {:error, :invalid_aggregate_identity} =
+               App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
+                 user_id: %EntityRef{uuid: user_id},
+                 events: [%Unimplemented{}]
+               })
 
-      assert [_event] = App |> EventStore.stream_forward(user_id) |> Enum.to_list()
-      assert stored_tags(context) == [Enum.sort([@emit_kind, "user:" <> user_id])]
+      assert {:error, :stream_not_found} = EventStore.stream_forward(App, user_id)
+      assert stored_tags(context) == []
     end
 
     test "for a function answering differently, across a retry", context do
       [routed, _second, _third] = keys = [UUID.uuid4(), UUID.uuid4(), UUID.uuid4()]
 
-      assert :ok = App.dispatch(%RaceByFunction{keys: keys, events: [%Unimplemented{}]})
+      command_id = UUID.uuid4()
+
+      assert :ok =
+               App.dispatch(%RaceByFunction{
+                 command_id: command_id,
+                 keys: keys,
+                 events: [%Unimplemented{}]
+               })
 
       assert [first, second] = attempts()
       assert first.version == 0
       assert second.version == 1
 
       tag = "user:" <> routed
-      assert tags_of(first) == [[race_by_function_kind(), tag]]
-      assert tags_of(second) == [[race_by_function_kind(), tag]]
+      command_tag = "command:" <> command_id
+      assert tags_of(first) == [[command_tag, race_by_function_kind(), tag]]
+      assert tags_of(second) == [[command_tag, race_by_function_kind(), tag]]
 
       # The concurrent append and the command's own, which is the only one tagged.
       assert [_concurrent, _own] = App |> EventStore.stream_forward(routed) |> Enum.to_list()
-      assert stored_tags(context) == [Enum.sort([race_by_function_kind(), tag])]
+      assert stored_tags(context) == [Enum.sort([command_tag, race_by_function_kind(), tag])]
     end
 
     test "for a command a middleware rewrote before the extraction", context do
       %{user_id: rewritten} = context
       original = UUID.uuid4()
+      command_id = UUID.uuid4()
 
       :ok =
         App.dispatch(%EmitRewritten{
+          command_id: command_id,
           user_id: original,
           rewrite_to: rewritten,
           events: [%Unimplemented{}]
@@ -371,14 +482,23 @@ defmodule Decree.Event.EventTagsTest do
       assert [_event] = App |> EventStore.stream_forward(rewritten) |> Enum.to_list()
 
       assert stored_tags(context) == [
-               Enum.sort(["command_kind:#{inspect(EmitRewritten)}", "user:" <> rewritten])
+               Enum.sort([
+                 "command:" <> command_id,
+                 "command_kind:#{inspect(EmitRewritten)}",
+                 "user:" <> rewritten
+               ])
              ]
     end
 
     test "with the identity function called once, by the dispatching process" do
       keys = [UUID.uuid4(), UUID.uuid4(), UUID.uuid4()]
 
-      assert :ok = App.dispatch(%RaceByFunction{keys: keys, events: [%Unimplemented{}]})
+      assert :ok =
+               App.dispatch(%RaceByFunction{
+                 command_id: UUID.uuid4(),
+                 keys: keys,
+                 events: [%Unimplemented{}]
+               })
 
       assert [_first, _second] = attempts()
       assert Recorder.all(:identity_call) == [self()]
@@ -423,20 +543,32 @@ defmodule Decree.Event.EventTagsTest do
     test "is the dispatch's answer, and nothing is appended", context do
       %{user_id: user_id} = context
 
-      :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+      :ok =
+        App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Tagged{note: "kept"}]
+        })
+
       assert [_tags] = stored(context)
 
       events = [%Tagged{note: "first of two"}, %Refused{reason: "no"}]
 
       assert {:error, {:refused, "no"}} =
-               App.dispatch(%Emit{user_id: user_id, events: events})
+               App.dispatch(%Emit{command_id: UUID.uuid4(), user_id: user_id, events: events})
 
       assert [_tags] = stored(context)
       assert length(attempts()) == 1
       assert_state_holds_only_the_kept_event(user_id)
 
       # The aggregate is alive and its version is right: the next command appends.
-      assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+      assert :ok =
+               App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
+                 user_id: user_id,
+                 events: [%Tagged{note: "next"}]
+               })
+
       assert [_kept, _next] = stored(context)
     end
   end
@@ -449,12 +581,21 @@ defmodule Decree.Event.EventTagsTest do
       test "is answered as it stands for #{name}, with no retry", context do
         %{user_id: user_id} = context
 
-        :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+        :ok =
+          App.dispatch(%Emit{
+            command_id: UUID.uuid4(),
+            user_id: user_id,
+            events: [%Tagged{note: "kept"}]
+          })
 
         event = %Answering{reason: :wrong_expected_version}
 
         assert {:error, :wrong_expected_version} =
-                 App.dispatch(%unquote(command){user_id: user_id, events: [event]})
+                 App.dispatch(%unquote(command){
+                   command_id: UUID.uuid4(),
+                   user_id: user_id,
+                   events: [event]
+                 })
 
         assert_answered_once(context)
       end
@@ -462,7 +603,12 @@ defmodule Decree.Event.EventTagsTest do
       test "is answered as it stands for #{name} of several events", context do
         %{user_id: user_id} = context
 
-        :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+        :ok =
+          App.dispatch(%Emit{
+            command_id: UUID.uuid4(),
+            user_id: user_id,
+            events: [%Tagged{note: "kept"}]
+          })
 
         events = [
           %Counted{note: "tagged once"},
@@ -471,7 +617,11 @@ defmodule Decree.Event.EventTagsTest do
         ]
 
         assert {:error, :wrong_expected_version} =
-                 App.dispatch(%unquote(command){user_id: user_id, events: events})
+                 App.dispatch(%unquote(command){
+                   command_id: UUID.uuid4(),
+                   user_id: user_id,
+                   events: events
+                 })
 
         assert Recorder.all(:counted) == ["tagged once"]
         assert_answered_once(context)
@@ -484,7 +634,13 @@ defmodule Decree.Event.EventTagsTest do
       assert [_kept] = stored(context)
       assert_state_holds_only_the_kept_event(user_id)
 
-      assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+      assert :ok =
+               App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
+                 user_id: user_id,
+                 events: [%Tagged{note: "next"}]
+               })
+
       assert [_kept, _next] = stored(context)
     end
   end
@@ -493,7 +649,12 @@ defmodule Decree.Event.EventTagsTest do
     test "an `:unavailable` append error stops the aggregate", context do
       %{user_id: user_id} = context
 
-      :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+      :ok =
+        App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Tagged{note: "kept"}]
+        })
 
       pid = Registration.whereis_name(App, {App, Ledger, user_id})
       ref = Process.monitor(pid)
@@ -501,12 +662,19 @@ defmodule Decree.Event.EventTagsTest do
       error = %AppendError{class: :unavailable, reason: :from_an_implementation}
       event = %Answering{reason: error}
 
-      assert {:error, ^error} = App.dispatch(%Attempt{user_id: user_id, events: [event]})
+      assert {:error, ^error} =
+               App.dispatch(%Attempt{command_id: UUID.uuid4(), user_id: user_id, events: [event]})
 
       assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :append_outcome_unknown}}
       assert Recorder.all(:before_execute) == [:called]
 
-      assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+      assert :ok =
+               App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
+                 user_id: user_id,
+                 events: [%Tagged{note: "next"}]
+               })
+
       assert [_kept, _next] = stored(context)
     end
 
@@ -516,7 +684,9 @@ defmodule Decree.Event.EventTagsTest do
       event = %Answering{reason: :remote_node_down}
 
       assert {:error, :too_many_attempts} =
-               App.dispatch(%Attempt{user_id: user_id, events: [event]}, retry_attempts: 1)
+               App.dispatch(%Attempt{command_id: UUID.uuid4(), user_id: user_id, events: [event]},
+                 retry_attempts: 1
+               )
 
       assert Recorder.all(:before_execute) == [:called, :called]
       assert stored(context) == []
@@ -527,10 +697,19 @@ defmodule Decree.Event.EventTagsTest do
     test "is answered as an error, and the state is unchanged", context do
       %{user_id: user_id} = context
 
-      :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+      :ok =
+        App.dispatch(%Emit{
+          command_id: UUID.uuid4(),
+          user_id: user_id,
+          events: [%Tagged{note: "kept"}]
+        })
 
       assert {:error, %RuntimeError{message: "a raising implementation"}} =
-               App.dispatch(%Emit{user_id: user_id, events: [%Raising{}]})
+               App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
+                 user_id: user_id,
+                 events: [%Raising{}]
+               })
 
       assert [_tags] = stored(context)
 
@@ -539,7 +718,13 @@ defmodule Decree.Event.EventTagsTest do
       assert %Ledger{seen: [%Tagged{note: "kept"}]} =
                Aggregate.aggregate_state(App, Ledger, user_id)
 
-      assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+      assert :ok =
+               App.dispatch(%Emit{
+                 command_id: UUID.uuid4(),
+                 user_id: user_id,
+                 events: [%Tagged{note: "next"}]
+               })
+
       assert [_kept, _next] = stored(context)
     end
   end
@@ -554,19 +739,30 @@ defmodule Decree.Event.EventTagsTest do
       test "answers without a retry: #{name}", context do
         %{user_id: user_id} = context
 
-        :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "kept"}]})
+        :ok =
+          App.dispatch(%Emit{
+            command_id: UUID.uuid4(),
+            user_id: user_id,
+            events: [%Tagged{note: "kept"}]
+          })
 
         event = %Tagged{tags: [unquote(tag)]}
 
         assert {:error, unquote(answer)} =
-                 App.dispatch(%Emit{user_id: user_id, events: [event]})
+                 App.dispatch(%Emit{command_id: UUID.uuid4(), user_id: user_id, events: [event]})
 
         # The kept event's append, and one for this command.
         assert length(attempts()) == 2
         assert [_tags] = stored(context)
         assert_state_holds_only_the_kept_event(user_id)
 
-        assert :ok = App.dispatch(%Emit{user_id: user_id, events: [%Tagged{note: "next"}]})
+        assert :ok =
+                 App.dispatch(%Emit{
+                   command_id: UUID.uuid4(),
+                   user_id: user_id,
+                   events: [%Tagged{note: "next"}]
+                 })
+
         assert [_kept, _next] = stored(context)
       end
     end

@@ -66,10 +66,20 @@ defmodule Decree.Aggregate.MultiTest do
   test "should execute command using `Decree.Aggregate.Multi` and return events" do
     account_number = UUID.uuid4()
 
-    command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+    command = %OpenAccount{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      initial_balance: 1_000
+    }
+
     assert :ok = MultiBankRouter.dispatch(command, application: DefaultApp)
 
-    command = %WithdrawMoney{account_number: account_number, amount: 250}
+    command = %WithdrawMoney{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      amount: 250
+    }
+
     assert :ok = MultiBankRouter.dispatch(command, application: DefaultApp)
 
     recorded_events = EventStore.stream_forward(DefaultApp, account_number, 0) |> Enum.to_list()
@@ -83,10 +93,19 @@ defmodule Decree.Aggregate.MultiTest do
   test "should execute command using `Decree.Aggregate.Multi` and return any error" do
     account_number = UUID.uuid4()
 
-    command = %OpenAccount{account_number: account_number, initial_balance: 1_000}
+    command = %OpenAccount{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      initial_balance: 1_000
+    }
+
     assert :ok = MultiBankRouter.dispatch(command, application: DefaultApp)
 
-    command = %WithdrawMoney{account_number: account_number, amount: 1_100}
+    command = %WithdrawMoney{
+      command_id: UUID.uuid4(),
+      account_number: account_number,
+      amount: 1_100
+    }
 
     assert {:error, :insufficient_funds_available} =
              MultiBankRouter.dispatch(command, application: DefaultApp)

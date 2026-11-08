@@ -40,7 +40,13 @@ defmodule Decree.Decision.MiddlewareParityTest do
     scope = scope()
 
     {aggregate_answer, aggregate} =
-      run(struct!(ParityAggregateCommand, [id: id.(), scope: scope] ++ fields), opts)
+      run(
+        struct!(
+          ParityAggregateCommand,
+          [command_id: UUID.uuid4(), id: id.(), scope: scope] ++ fields
+        ),
+        opts
+      )
 
     {decision_answer, decision} =
       run(
@@ -188,19 +194,23 @@ defmodule Decree.Decision.MiddlewareParityTest do
     test "answers `:invalid_aggregate_identity` as an aggregate route does" do
       for id <- [nil, ""] do
         assert {:error, :invalid_aggregate_identity} =
-                 App.dispatch(%ParityAggregateCommand{id: id, scope: "s"})
+                 App.dispatch(%ParityAggregateCommand{
+                   command_id: UUID.uuid4(),
+                   id: id,
+                   scope: "s"
+                 })
 
         assert {:error, :invalid_aggregate_identity} =
                  App.dispatch(%ParityCommand{command_id: UUID.uuid4(), id: id, scope: "s"})
       end
     end
 
-    test "answers an identity that has no string alike" do
+    test "answers an identity that is not a binary as an aggregate route does" do
       for command <- [
-            %ParityAggregateCommand{id: %{}, scope: "s"},
+            %ParityAggregateCommand{command_id: UUID.uuid4(), id: %{}, scope: "s"},
             %ParityCommand{command_id: UUID.uuid4(), id: %{}, scope: "s"}
           ] do
-        assert {:error, {:unsupported_aggregate_identity_type, %{}}} = App.dispatch(command)
+        assert {:error, :invalid_aggregate_identity} = App.dispatch(command)
       end
     end
   end

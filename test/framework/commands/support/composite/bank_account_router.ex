@@ -12,7 +12,7 @@ defmodule Decree.Commands.Composite.BankAccountRouter do
 
   alias Decree.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount, WithdrawMoney}
 
-  identify BankAccount, by: :account_number
+  identify BankAccount, by: :account_number, opaque: true
 
   dispatch OpenAccount, to: OpenAccountHandler, aggregate: BankAccount
   dispatch DepositMoney, to: DepositMoneyHandler, aggregate: BankAccount

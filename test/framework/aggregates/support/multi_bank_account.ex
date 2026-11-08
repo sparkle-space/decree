@@ -6,15 +6,15 @@ defmodule Decree.Aggregate.Multi.BankAccount do
 
   defmodule Commands do
     defmodule OpenAccount do
-      defstruct [:account_number, :initial_balance]
+      defstruct [:account_number, :command_id, :initial_balance]
     end
 
     defmodule DepositMoney do
-      defstruct [:account_number, :amount]
+      defstruct [:account_number, :command_id, :amount]
     end
 
     defmodule WithdrawMoney do
-      defstruct [:account_number, :transfer_uuid, :amount]
+      defstruct [:account_number, :command_id, :transfer_uuid, :amount]
     end
   end
 

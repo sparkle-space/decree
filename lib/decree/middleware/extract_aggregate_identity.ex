@@ -3,10 +3,16 @@ defmodule Decree.Middleware.ExtractAggregateIdentity do
   An internal `Decree.Middleware` that extracts the target aggregate's
   identity from the command.
 
-  It runs after every middleware a router registers, so it reads the command they leave.
-  It resolves the identity once per dispatch, and assigns it twice: `:aggregate_uuid` is
-  the stream name, with any `identify` prefix, and `:aggregate_identity` is the same
-  string before the prefix.
+  It runs after every middleware a router registers, and after `Decree.Middleware.CommandId`,
+  so it reads the command they leave. It resolves the identity once per dispatch, and assigns
+  it twice: `:aggregate_uuid` is the stream name, with any `identify` prefix, and
+  `:aggregate_identity` is the same string before the prefix.
+
+  The identity is checked as the command's field, or the route's identity function, gave it,
+  before the prefix: it must be a lowercase canonical UUID (`Decree.UUID.canonical?/1`), or,
+  on a route declared `opaque: true`, a non-empty binary. Anything else, a missing field and
+  nil included, answers `{:error, :invalid_aggregate_identity}` and halts. Nothing converts,
+  trims or downcases it, so the stream is named by exactly what the requester sent.
   """
 
   @behaviour Decree.Middleware
@@ -15,18 +21,12 @@ defmodule Decree.Middleware.ExtractAggregateIdentity do
   import Pipeline
 
   def before_dispatch(%Pipeline{} = pipeline) do
-    with aggregate_uuid when aggregate_uuid not in [nil, ""] <- extract_aggregate_uuid(pipeline),
-         identity when is_binary(identity) <- identity_to_string(aggregate_uuid),
+    with {:ok, identity} <- identity(pipeline),
          aggregate_uuid when is_binary(aggregate_uuid) <- prefix(identity, pipeline) do
       pipeline
       |> assign(:aggregate_identity, identity)
       |> assign(:aggregate_uuid, aggregate_uuid)
     else
-      none when none in [nil, ""] ->
-        pipeline
-        |> respond({:error, :invalid_aggregate_identity})
-        |> halt()
-
       {:error, _error} = response ->
         pipeline
         |> respond(response)
@@ -50,17 +50,21 @@ defmodule Decree.Middleware.ExtractAggregateIdentity do
     identity.(command)
   end
 
-  defp extract_aggregate_uuid(%Pipeline{}), do: {:error, :invalid_aggregate_identity}
+  defp extract_aggregate_uuid(%Pipeline{}), do: nil
 
-  # Attempt to convert the aggregate identity to a string via the `String.Chars` protocol.
-  defp identity_to_string(aggregate_uuid) do
-    try do
-      to_string(aggregate_uuid)
-    rescue
-      Protocol.UndefinedError ->
-        {:error, {:unsupported_aggregate_identity_type, aggregate_uuid}}
+  # The raw value, before any prefix: canonical, or a non-empty binary on an opaque route.
+  defp identity(%Pipeline{identity_opaque: opaque} = pipeline) do
+    identity = extract_aggregate_uuid(pipeline)
+
+    if valid_identity?(identity, opaque) do
+      {:ok, identity}
+    else
+      {:error, :invalid_aggregate_identity}
     end
   end
+
+  defp valid_identity?(identity, true), do: is_binary(identity) and identity != ""
+  defp valid_identity?(identity, _opaque), do: Decree.UUID.canonical?(identity)
 
   # No aggregate identity prefix.
   defp prefix(aggregate_uuid, %Pipeline{identity_prefix: identity_prefix})

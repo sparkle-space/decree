@@ -47,18 +47,21 @@ defmodule Decree.Commands.RoutingCommandsTest do
       dispatch OpenAccount,
         aggregate: BankAccount,
         identity: :account_number,
+        opaque: true,
         to: OpenAccountHandler
 
       dispatch DepositMoney,
         to: DepositMoneyHandler,
         aggregate: BankAccount,
-        identity: :account_number
+        identity: :account_number,
+        opaque: true
     end
 
     test "should dispatch command to registered handler, regardless of the router dispatch option order" do
       assert :ok =
                CommandHandlerRouter.dispatch(
                  %OpenAccount{
+                   command_id: UUID.uuid4(),
                    account_number: "ACC123",
                    initial_balance: 1_000
                  },
@@ -75,6 +78,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
       assert {:error, :invalid_aggregate_identity} =
                CommandHandlerRouter.dispatch(
                  %OpenAccount{
+                   command_id: UUID.uuid4(),
                    account_number: nil,
                    initial_balance: 1_000
                  },
@@ -85,7 +89,11 @@ defmodule Decree.Commands.RoutingCommandsTest do
 
   describe "routing to aggregate" do
     test "should dispatch command to registered handler" do
-      assert :ok = AggregateRouter.dispatch(%Command{uuid: UUID.uuid4()}, @dispatch_opts)
+      assert :ok =
+               AggregateRouter.dispatch(
+                 %Command{command_id: UUID.uuid4(), uuid: UUID.uuid4()},
+                 @dispatch_opts
+               )
     end
 
     test "should fail to dispatch unregistered command" do
@@ -94,7 +102,11 @@ defmodule Decree.Commands.RoutingCommandsTest do
     end
 
     test "should allow dispatching to a function other than execute/2" do
-      assert :ok = AggregateRouter.dispatch(%Command2{uuid: UUID.uuid4()}, @dispatch_opts)
+      assert :ok =
+               AggregateRouter.dispatch(
+                 %Command2{command_id: UUID.uuid4(), uuid: UUID.uuid4()},
+                 @dispatch_opts
+               )
     end
   end
 
@@ -102,14 +114,19 @@ defmodule Decree.Commands.RoutingCommandsTest do
     test "should dispatch command to registered handler" do
       assert :ok =
                IdentityAggregateRouter.dispatch(
-                 %IdentityCommand{uuid: UUID.uuid4()},
+                 %IdentityCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4()},
                  @dispatch_opts
                )
     end
 
     test "should append events to stream using identity prefix" do
       uuid = UUID.uuid4()
-      assert :ok = IdentityAggregateRouter.dispatch(%IdentityCommand{uuid: uuid}, @dispatch_opts)
+
+      assert :ok =
+               IdentityAggregateRouter.dispatch(
+                 %IdentityCommand{command_id: UUID.uuid4(), uuid: uuid},
+                 @dispatch_opts
+               )
 
       recorded_events =
         EventStore.stream_forward(DefaultApp, "prefix-" <> uuid, 0) |> Enum.to_list()
@@ -122,7 +139,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
     test "should dispatch command to registered handler" do
       assert :ok =
                IdentityAggregatePrefixFunRouter.dispatch(
-                 %IdentityCommand{uuid: UUID.uuid4()},
+                 %IdentityCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4()},
                  @dispatch_opts
                )
     end
@@ -132,7 +149,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
 
       assert :ok =
                IdentityAggregatePrefixFunRouter.dispatch(
-                 %IdentityCommand{uuid: uuid},
+                 %IdentityCommand{command_id: UUID.uuid4(), uuid: uuid},
                  @dispatch_opts
                )
 
@@ -147,7 +164,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
     test "should dispatch command to registered handler" do
       assert :ok =
                IdentityFunctionRouter.dispatch(
-                 %IdentityFunctionCommand{uuid: UUID.uuid4()},
+                 %IdentityFunctionCommand{command_id: UUID.uuid4(), uuid: UUID.uuid4()},
                  @dispatch_opts
                )
     end
@@ -157,7 +174,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
 
       assert :ok =
                IdentityFunctionRouter.dispatch(
-                 %IdentityFunctionCommand{uuid: uuid},
+                 %IdentityFunctionCommand{command_id: UUID.uuid4(), uuid: uuid},
                  @dispatch_opts
                )
 
@@ -227,7 +244,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
     assert_raise RuntimeError,
                  """
                  unexpected dispatch parameter "id"
-                 available params are: to, function, before_execute, aggregate, identity, identity_prefix, stream_tag, rule, timeout, lifespan, consistency
+                 available params are: to, function, before_execute, aggregate, identity, identity_prefix, stream_tag, rule, opaque, timeout, lifespan, consistency
                  """,
                  fn ->
                    Code.eval_string("""
@@ -264,13 +281,15 @@ defmodule Decree.Commands.RoutingCommandsTest do
     dispatch [OpenAccount, CloseAccount],
       to: OpenAccountHandler,
       aggregate: BankAccount,
-      identity: :account_number
+      identity: :account_number,
+      opaque: true
   end
 
   test "should allow multiple module registrations for multiple commands in a single dispatch" do
     assert :ok ==
              MultiCommandRouter.dispatch(
                %OpenAccount{
+                 command_id: UUID.uuid4(),
                  account_number: "ACC123",
                  initial_balance: 1_000
                },
@@ -278,7 +297,10 @@ defmodule Decree.Commands.RoutingCommandsTest do
              )
 
     assert :ok ==
-             MultiCommandRouter.dispatch(%CloseAccount{account_number: "ACC123"}, @dispatch_opts)
+             MultiCommandRouter.dispatch(
+               %CloseAccount{command_id: UUID.uuid4(), account_number: "ACC123"},
+               @dispatch_opts
+             )
   end
 
   defmodule MultiCommandHandlerRouter do
@@ -287,23 +309,27 @@ defmodule Decree.Commands.RoutingCommandsTest do
     dispatch [OpenAccount, CloseAccount],
       to: OpenAccountHandler,
       aggregate: BankAccount,
-      identity: :account_number
+      identity: :account_number,
+      opaque: true
 
     dispatch [DepositMoney],
       to: DepositMoneyHandler,
       aggregate: BankAccount,
-      identity: :account_number
+      identity: :account_number,
+      opaque: true
 
     dispatch [WithdrawMoney],
       to: WithdrawMoneyHandler,
       aggregate: BankAccount,
-      identity: :account_number
+      identity: :account_number,
+      opaque: true
   end
 
   test "should allow multiple module registrations for different command handlers" do
     assert :ok ==
              MultiCommandHandlerRouter.dispatch(
                %OpenAccount{
+                 command_id: UUID.uuid4(),
                  account_number: "ACC123",
                  initial_balance: 1_000
                },
@@ -312,10 +338,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
 
     assert :ok ==
              MultiCommandHandlerRouter.dispatch(
-               %DepositMoney{
-                 account_number: "ACC123",
-                 amount: 100
-               },
+               %DepositMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 100},
                @dispatch_opts
              )
   end
@@ -325,14 +348,18 @@ defmodule Decree.Commands.RoutingCommandsTest do
 
     assert :ok ==
              MultiCommandHandlerRouter.dispatch(
-               %OpenAccount{account_number: "ACC123", initial_balance: 1_000},
+               %OpenAccount{
+                 command_id: UUID.uuid4(),
+                 account_number: "ACC123",
+                 initial_balance: 1_000
+               },
                application: DefaultApp,
                metadata: metadata
              )
 
     assert :ok ==
              MultiCommandHandlerRouter.dispatch(
-               %DepositMoney{account_number: "ACC123", amount: 100},
+               %DepositMoney{command_id: UUID.uuid4(), account_number: "ACC123", amount: 100},
                application: DefaultApp,
                metadata: metadata
              )
@@ -350,7 +377,7 @@ defmodule Decree.Commands.RoutingCommandsTest do
 
     assert_raise ArgumentError, "metadata must be an map", fn ->
       MultiCommandHandlerRouter.dispatch(
-        %OpenAccount{account_number: "ACC123", initial_balance: 1_000},
+        %OpenAccount{command_id: UUID.uuid4(), account_number: "ACC123", initial_balance: 1_000},
         application: DefaultApp,
         metadata: metadata
       )

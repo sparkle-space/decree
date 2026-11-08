@@ -5,7 +5,7 @@ defmodule Decree.Aggregates.LifespanAggregate do
 
   defmodule Command do
     @derive Jason.Encoder
-    defstruct [:uuid, :reply_to, :action, :lifespan]
+    defstruct [:uuid, :command_id, :reply_to, :action, :lifespan]
   end
 
   defmodule Event do

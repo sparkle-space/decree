@@ -31,7 +31,11 @@ defmodule Decree.Commands.CompositeRouter do
   You can dispatch a command via the application which will then be routed to
   the associated child router:
 
-      command = %OpenAccount{account_number: "ACC123", initial_balance: 1_000}
+      command = %OpenAccount{
+        command_id: command_id,
+        account_number: account_number,
+        initial_balance: 1_000
+      }
 
       :ok = BankApp.dispatch(command)
 

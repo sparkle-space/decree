@@ -51,7 +51,8 @@ defmodule Decree.Projections.PersonalFieldsTest do
     assert acked(conn, inspect(Handler)) == 0
     assert Repo.all(Projection) == []
 
-    assert {:error, :key_unknown} = App.dispatch(%Emit{account_id: folded})
+    assert {:error, :key_unknown} =
+             App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: folded})
 
     Keys.set(subject, :key)
 
@@ -70,6 +71,6 @@ defmodule Decree.Projections.PersonalFieldsTest do
     refute_received {:module_error, _error}
     assert rows(conn, "events", "data, metadata") == stored
 
-    assert :ok = App.dispatch(%Emit{account_id: folded})
+    assert :ok = App.dispatch(%Emit{command_id: UUID.uuid4(), account_id: folded})
   end
 end
