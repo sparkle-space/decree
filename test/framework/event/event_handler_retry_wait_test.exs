@@ -228,6 +228,7 @@ defmodule Decree.Event.EventHandlerRetryWaitTest do
       %{handler: handler, ref: ref} = ctx
 
       stub(MockEventStore, :unsubscribe, fn _event_store_meta, _subscription -> :ok end)
+      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
 
       id = deliver(handler, fail_times: 1, delay: @short_delay)
       assert_receive {:attempt, ^id, 1}, @prompt
