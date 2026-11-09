@@ -260,6 +260,9 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
 
           assert_receive :after_command
           assert_receive :after_command
+
+          # A loaded CI host stalling past the lifespan before the refute below.
+          Process.sleep(150)
         end)
 
       # after dispatching and receiving, figure out how much time is left in the lifespan
