@@ -11,7 +11,7 @@ end
 defmodule Decree.Store.MigratedEventStoreTest do
   use ExUnit.Case
 
-  alias Decree.Store.RecordedEvent
+  alias Decree.Store.{RecordedEvent, StorageInitializer}
   alias Decree.Store.Snapshots.SnapshotData
 
   @moduletag :migration
@@ -19,9 +19,9 @@ defmodule Decree.Store.MigratedEventStoreTest do
   setup_all do
     config = TestEventStore.config()
 
-    on_exit(&Decree.Store.StorageInitializer.recreate_test_event_store_database!/0)
+    on_exit(&StorageInitializer.recreate_test_event_store_database!/0)
 
-    recreate_database(config)
+    StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore_seed.dump")
     migrate_eventstore(config)
 
     start_supervised!(TestEventStore)
@@ -123,14 +123,6 @@ defmodule Decree.Store.MigratedEventStoreTest do
     end
 
     :ok = TestEventStore.ack(subscription, received_event)
-  end
-
-  defp recreate_database(config) do
-    Decree.Store.Storage.Database.drop(config)
-    :ok = Decree.Store.Storage.Database.create(config)
-
-    {_, 0} =
-      Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore_seed.dump")
   end
 
   defp migrate_eventstore(config) do

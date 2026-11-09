@@ -1,7 +1,7 @@
 defmodule Decree.Store.SnapshotRolloutTest do
   use ExUnit.Case
 
-  alias Decree.Store.{Config, EventData, UUID}
+  alias Decree.Store.{Config, EventData, StorageInitializer, UUID}
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Storage.{Database, Snapshot}
   alias Decree.Store.Streams.Stream
@@ -26,7 +26,7 @@ defmodule Decree.Store.SnapshotRolloutTest do
   setup_all do
     config = TestEventStore.config()
 
-    on_exit(&Decree.Store.StorageInitializer.recreate_test_event_store_database!/0)
+    on_exit(&StorageInitializer.recreate_test_event_store_database!/0)
 
     [config: config]
   end
@@ -37,7 +37,7 @@ defmodule Decree.Store.SnapshotRolloutTest do
         schema = unquote(schema)
         config = Keyword.put(config, :schema, schema)
 
-        restore_pre_migration_event_store(config)
+        StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
         if schema != "public", do: move_public_schema_to(config)
         Migrate.exec(config, quiet: true, is_mix: false)
 
@@ -113,7 +113,7 @@ defmodule Decree.Store.SnapshotRolloutTest do
         schema = unquote(schema)
         config = Keyword.put(config, :schema, schema)
 
-        Database.drop(config)
+        StorageInitializer.drop_database!(config)
         Create.exec(config, quiet: true)
         :ok = Init.exec(config, quiet: true)
 
@@ -264,13 +264,6 @@ defmodule Decree.Store.SnapshotRolloutTest do
       )
 
     stream_uuid
-  end
-
-  defp restore_pre_migration_event_store(config) do
-    Database.drop(config)
-    :ok = Database.create(config)
-
-    {_, 0} = Database.restore(config, "test/store/fixture/eventstore.dump")
   end
 
   # As `Decree.Store.MigrateEventStoreTest` moves it: the restored `public` becomes the

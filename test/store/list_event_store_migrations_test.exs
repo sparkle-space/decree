@@ -3,19 +3,21 @@ defmodule Decree.Store.ListEventStoreMigrationsTest do
 
   import ExUnit.CaptureIO
 
+  alias Decree.Store.StorageInitializer
+
   @moduletag :migration
 
   setup_all do
     config = TestEventStore.config()
 
-    on_exit(&Decree.Store.StorageInitializer.recreate_test_event_store_database!/0)
+    on_exit(&StorageInitializer.recreate_test_event_store_database!/0)
 
     [config: config]
   end
 
   describe "event store with pending migrations" do
     test "should list completed and pending migrations", %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
 
       expected = """
 
@@ -42,7 +44,7 @@ defmodule Decree.Store.ListEventStoreMigrationsTest do
     end
 
     test "exits with status 1 when running via mix", %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
 
       assert {:shutdown, 1} ==
                catch_exit(
@@ -82,21 +84,13 @@ defmodule Decree.Store.ListEventStoreMigrationsTest do
   end
 
   defp create_new_database(config) do
-    :ok = Decree.Store.Storage.Database.drop(config)
-    :ok = Decree.Store.Storage.Database.create(config)
+    StorageInitializer.recreate_database!(config)
 
     {:ok, conn} = Postgrex.start_link(config)
 
     Decree.Store.Storage.Initializer.run!(conn, config)
 
     :ok = GenServer.stop(conn)
-  end
-
-  defp restore_pre_migration_event_store(config) do
-    Decree.Store.Storage.Database.drop(config)
-    :ok = Decree.Store.Storage.Database.create(config)
-
-    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore.dump")
   end
 
   defp list_migrations(config, opts) do
