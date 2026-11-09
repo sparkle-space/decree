@@ -11,7 +11,7 @@ defmodule Decree.Store.StorageInitializerTest do
       |> Config.default_postgrex_opts()
       |> Keyword.update!(:database, fn database -> database <> "_temp" end)
 
-    on_exit(fn -> force_drop(config) end)
+    on_exit(fn -> StorageInitializer.drop_database!(config) end)
 
     [config: config]
   end
@@ -27,15 +27,5 @@ defmodule Decree.Store.StorageInitializerTest do
 
     assert StorageInitializer.recreate_database!(config) == :ok
     assert Database.create(config) == {:error, :already_up}
-  end
-
-  defp force_drop(config) do
-    database = Keyword.fetch!(config, :database)
-    maintenance = Keyword.get(config, :default_database, "postgres")
-
-    :ok =
-      config
-      |> Keyword.put(:database, maintenance)
-      |> Database.execute(~s[DROP DATABASE IF EXISTS "#{database}" WITH (FORCE)])
   end
 end

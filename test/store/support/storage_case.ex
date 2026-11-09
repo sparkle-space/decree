@@ -41,10 +41,7 @@ defmodule Decree.Store.StorageCase do
   # Restore a dump of pre-migration database schema to run the test suite using
   # a migrated database.
   defp restore_migration_database_dump(config) do
-    Decree.Store.Storage.Database.drop(config)
-    :ok = Decree.Store.Storage.Database.create(config)
-
-    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore.dump")
+    Decree.Store.StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
   end
 
   defp migrate_eventstore(config) do

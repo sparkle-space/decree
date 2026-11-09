@@ -14,6 +14,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
     EventData,
     ReadResult,
     RecordedEvent,
+    StorageInitializer,
     UUID
   }
 
@@ -36,14 +37,14 @@ defmodule Decree.Store.MigrateEventStoreTest do
   setup_all do
     config = TestEventStore.config()
 
-    on_exit(&Decree.Store.StorageInitializer.recreate_test_event_store_database!/0)
+    on_exit(&StorageInitializer.recreate_test_event_store_database!/0)
 
     [config: config]
   end
 
   describe "migrate event store" do
     test "should prevent migrations from running concurrently", %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
 
       log =
         [
@@ -71,7 +72,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
 
   describe "migrated event store schema" do
     test "should be identical to new event store schema", %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       migrate_eventstore(config, quiet: true, is_mix: false)
 
       # Dump migrated database
@@ -90,7 +91,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
     test "should be identical under a named schema", %{config: config} do
       config = Keyword.put(config, :schema, "renamed_store")
 
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       move_public_schema_to(config)
       migrate_eventstore(config, quiet: true, is_mix: false)
 
@@ -112,7 +113,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
           causation_id_type: "text"
         )
 
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       move_public_schema_to(config)
 
       execute_each(config, [
@@ -177,7 +178,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
     end
 
     test "the migration records 1.10.0", %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       migrate_eventstore(config, quiet: true, is_mix: false)
 
       assert List.last(schema_versions(config)) == [1, 10, 0]
@@ -193,7 +194,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
     end
 
     test "the migration creates versioned_snapshots and leaves snapshots", %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       before = snapshots_columns(config)
 
       migrate_eventstore(config, quiet: true, is_mix: false)
@@ -212,7 +213,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
   # The rolling-deploy case: the migration has run and an old pod still appends.
   describe "append_events_v1 on a migrated store" do
     setup %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       migrate_eventstore(config, quiet: true, is_mix: false)
 
       {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
@@ -301,7 +302,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
   # pods still call v1, v2, v3 or v4, on the same positions.
   describe "append_events_v5 beside the older versions on a migrated store" do
     setup %{config: config} do
-      restore_pre_migration_event_store(config)
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       migrate_eventstore(config, quiet: true, is_mix: false)
 
       {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
@@ -972,8 +973,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   defp create_new_database(config) do
-    :ok = Decree.Store.Storage.Database.drop(config)
-    :ok = Decree.Store.Storage.Database.create(config)
+    StorageInitializer.recreate_database!(config)
 
     {:ok, conn} = Postgrex.start_link(config)
 
@@ -983,17 +983,10 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   defp create_new_named_database(config) do
-    :ok = Database.drop(config)
+    StorageInitializer.drop_database!(config)
 
     Create.exec(config, quiet: true)
     :ok = Init.exec(config, quiet: true)
-  end
-
-  defp restore_pre_migration_event_store(config) do
-    Decree.Store.Storage.Database.drop(config)
-    :ok = Decree.Store.Storage.Database.create(config)
-
-    {_, 0} = Decree.Store.Storage.Database.restore(config, "test/store/fixture/eventstore.dump")
   end
 
   defp migrate_eventstore(config, opts) do
