@@ -15,6 +15,11 @@ defmodule Decree.Store.StorageInitializer do
     end
   end
 
+  def recreate_database!(config) do
+    Decree.Store.Storage.Database.drop(config)
+    :ok = Decree.Store.Storage.Database.create(config)
+  end
+
   # The `:migration` tests drop and recreate TestEventStore's database, which also
   # holds SchemaEventStore's "example" schema. Recreate it as the `test` alias does
   # (create, then initialise each event store on it), so that the tests run after
