@@ -3,7 +3,10 @@ defmodule Decree.Application.Supervisor do
 
   use Supervisor
 
+  alias Decree.Aggregates.ExecutionContext
   alias Decree.Application.Config
+  alias Decree.Event.Append
+  alias Decree.UUID
 
   require Logger
 
@@ -95,31 +98,47 @@ defmodule Decree.Application.Supervisor do
   end
 
   # A rule route's half and the store's half of one declaration, checked by a child started right
-  # after the store's, which has parsed its config and registered it by then. An application with
-  # no rule route gets no such child, and asks its store nothing. See "Two declarations" in
-  # `Decree.Decision.Rule`.
+  # after the store's, which has parsed its config and registered it by then. A routed aggregate
+  # that declares a command window appends under a condition on every command, so it is a target
+  # too, read from the routes and the definitions here at start: the router names no aggregate's
+  # definition. An application with neither gets no such child, and asks its store nothing. See
+  # "Two declarations" in `Decree.Decision.Rule` and "Command window" in `Decree.Aggregate`.
   defp conditional_targets_child_spec(application, config) do
-    case application.__conditional_targets__() do
-      [] ->
+    case {application.__conditional_targets__(), windowed_routes(application)} do
+      {[], []} ->
         []
 
-      routed ->
+      {routed, windowed} ->
         event_store = Keyword.fetch!(config, :event_store)
 
         [
           %{
             id: {__MODULE__, :conditional_targets},
-            start: {__MODULE__, :check_conditional_targets, [application, routed, event_store]},
+            start:
+              {__MODULE__, :check_conditional_targets,
+               [application, routed, windowed, event_store]},
             restart: :temporary
           }
         ]
     end
   end
 
+  # Each route to an aggregate that declares a command window, as `{command, route}`.
+  defp windowed_routes(application) do
+    for command <- application.__registered_commands__(),
+        route = application.__route__(command),
+        aggregate = route[:aggregate],
+        Decree.Aggregate.command_window_ms(aggregate) != nil,
+        do: {command, route}
+  end
+
   @doc false
-  # Raises at start for a rule route's aggregate the running store does not declare, and
-  # otherwise starts nothing.
-  def check_conditional_targets(application, routed, {adapter, adapter_meta}) do
+  # Raises at start for a rule route's aggregate or a windowed aggregate the running store does
+  # not declare, and for a windowed route whose identity gives no stream tag, and otherwise
+  # starts nothing.
+  def check_conditional_targets(application, routed, windowed, {adapter, adapter_meta}) do
+    Enum.each(windowed, &check_window_identity!(application, &1))
+
     declared = adapter.conditional_targets(adapter_meta)
 
     with [aggregate | _] <- routed -- declared do
@@ -128,7 +147,16 @@ defmodule Decree.Application.Supervisor do
               "store does not declare: add it to `conditional_appends: [targets: [...]]`"
     end
 
-    for target <- declared -- routed do
+    windowed_aggregates = windowed |> Enum.map(fn {_command, route} -> route[:aggregate] end)
+
+    with [aggregate | _] <- Enum.uniq(windowed_aggregates) -- declared do
+      raise ArgumentError,
+            "#{inspect(application)} routes commands to #{inspect(aggregate)}, which declares " <>
+              "a command window, and its event store does not declare it: add it to " <>
+              "`conditional_appends: [targets: [...]]`"
+    end
+
+    for target <- declared -- routed, Decree.Aggregate.command_window_ms(target) == nil do
       Logger.warning(fn ->
         "#{inspect(application)}'s event store declares the conditional target " <>
           "#{inspect(target)}, and no route in it names a rule for that aggregate"
@@ -136,6 +164,37 @@ defmodule Decree.Application.Supervisor do
     end
 
     :ignore
+  end
+
+  # A window's scope is the stream's entity tag. With none, the same kind's id on another stream
+  # would read as this stream's duplicate, so such a route does not start.
+  defp check_window_identity!(application, {command, route}) do
+    named =
+      "#{inspect(application)} routes #{inspect(command)} to #{inspect(route[:aggregate])}, " <>
+        "which declares a command window,"
+
+    cond do
+      route[:identity_opaque] ->
+        raise ArgumentError,
+              "#{named} by an opaque identity, which gives its stream no entity tag"
+
+      stream_tag(route) == nil ->
+        raise ArgumentError,
+              "#{named} by an identity that gives its stream no entity tag: name its kind " <>
+                "with `stream_tag:`"
+
+      true ->
+        :ok
+    end
+  end
+
+  # The route's tag as an append computes it, for any canonical identity.
+  defp stream_tag(route) do
+    Append.stream_tag(%ExecutionContext{
+      identity: route[:identity],
+      stream_tag: route[:stream_tag],
+      aggregate_identity: UUID.uuid4()
+    })
   end
 
   defp app_child_spec(name, config) do

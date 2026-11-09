@@ -815,6 +815,18 @@ defmodule Decree.Commands.Router do
         end
       end
 
+      @doc false
+      def __route__(command_module)
+
+      for {command_module, command_opts} <- @registered_commands do
+        @route_command command_module
+        @route Router.route(command_opts, @registered_identities)
+
+        def __route__(@route_command), do: @route
+      end
+
+      def __route__(_command_module), do: nil
+
       # Catch unregistered commands, log and return an error.
       defp do_dispatch(command, opts) do
         event_prefix = [:decree, :application, :dispatch]
@@ -955,6 +967,36 @@ defmodule Decree.Commands.Router do
     end
 
     :ok
+  end
+
+  # A command's route as its dispatch resolves it, `identify` included, for what reads a route
+  # outside a dispatch: the application's start check and `Decree.Aggregate.check_command_window/2`.
+  # Atoms and the route's own identity function only, so no aggregate module is called here.
+  @doc false
+  def route(command_opts, registered_identities) do
+    identified_by = command_opts[:decision] || command_opts[:aggregate]
+    opaque = Keyword.get(command_opts, :opaque, false)
+
+    {identity, identity_prefix, identity_opaque} =
+      case Map.get(registered_identities, identified_by) do
+        nil ->
+          {command_opts[:identity], command_opts[:identity_prefix], opaque}
+
+        config ->
+          {Keyword.get(config, :by, command_opts[:identity]),
+           Keyword.get(config, :prefix, command_opts[:identity_prefix]),
+           Keyword.get(config, :opaque, opaque)}
+      end
+
+    [
+      aggregate: command_opts[:aggregate],
+      decision: command_opts[:decision],
+      identity: identity,
+      identity_prefix: identity_prefix,
+      identity_opaque: identity_opaque,
+      stream_tag: command_opts[:stream_tag],
+      rule: command_opts[:rule]
+    ]
   end
 
   # What a condition on this router's rule routes names as its target.

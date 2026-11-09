@@ -51,8 +51,9 @@ defmodule Decree.Aggregates.ExecutionContext do
     - `rule` - the route's `Decree.Decision.Rule`, or `nil`. What its read answers never
       reaches this struct: `command` stays the plain command.
 
-    - `rule_retries` - the number of retries permitted if a rule's condition fails, set from
-      `retry_attempts` and spent apart from it, so neither loop spends the other's budget.
+    - `rule_retries` - the number of retries permitted if a rule's condition, or a windowed
+      aggregate's, fails, set from `retry_attempts` and spent apart from it, so neither loop
+      spends the other's budget.
 
     - `attempt` - the number of this attempt at the command in this dispatch, which a rule's
       telemetry reports.

@@ -91,7 +91,9 @@ defmodule Decree.Decision.Rule do
   Fold, `admit/2`, classification, the command window and scope checks do not run: those are a
   decision's. A rule's reads have no command item, and an aggregate keeps its own "already
   exists" guard, so a `command_id` reused across two streams behaves as it does on any
-  aggregate route. A rule reads through a decision's path, with its compiled bounds, so a query
+  aggregate route. On an aggregate that declares a command window, the command item joins the
+  rule's items in the same read and condition, and the window classifies: see "Command window"
+  in `Decree.Aggregate`. A `[]` from `c:query/2` there still reads the window. A rule reads through a decision's path, with its compiled bounds, so a query
   naming something deletable answers `{:error, :query_names_deletable}`.
 
   ## What rides
@@ -222,8 +224,9 @@ defmodule Decree.Decision.Rule do
       answers the store's `{:error, :undeclared_conditional_target}`, with nothing written,
       even when its streams start with a declared prefix.
 
-  An application with no rule route checks nothing and asks its store nothing, so a target
-  its store declares draws no warning there.
+  An application with no rule route and no windowed aggregate checks nothing and asks its store
+  nothing, so a target its store declares draws no warning there. A windowed aggregate is a
+  target too: see "Command window" in `Decree.Aggregate`.
 
   ## What declaring leaves alone
 
@@ -256,7 +259,8 @@ defmodule Decree.Decision.Rule do
       its own, on this route as on a plain one.
     - `attempt` counts every run of the command in this dispatch, for either reason.
 
-  A route with no rule fires none of them. The reads' `[:decree, :event_store, :read_query]`
+  A route with no rule fires none of them, unless its aggregate declares a command window, whose
+  read and retries fire `:read` and `:retry` with the aggregate's module as `decision`. The reads' `[:decree, :event_store, :read_query]`
   span never fires its exception event, and its stop names a failure's kind in `error`: see
   "Leaks".
   """
@@ -361,6 +365,17 @@ defmodule Decree.Decision.Rule do
         })
       end
     end
+  end
+
+  # The bounds of a windowed aggregate's read on a route with no rule: a rule's defaults, as
+  # `use Decree.Decision.Rule` with no options gives them, with nothing of a rule's own.
+  @doc false
+  def __window__(aggregate_module) do
+    Map.merge(__bounds__!(aggregate_module, []), %{
+      create: false,
+      followup_query?: false,
+      index_families: %{}
+    })
   end
 
   @doc false

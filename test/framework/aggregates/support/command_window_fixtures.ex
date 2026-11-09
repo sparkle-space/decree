@@ -94,13 +94,8 @@ end
 
 defmodule Decree.CommandWindowFixtures.Account do
   @moduledoc false
+  use Decree.Aggregate, command_window: [ms: 300_000]
   use Decree.CommandWindowFixtures.Scripted
-
-  # The fence's stand-in for `use Decree.Aggregate, command_window: [ms: 300_000]`, which the
-  # code commit puts here.
-  @doc false
-  def __decree_aggregate__(:snapshot), do: nil
-  def __decree_aggregate__(:command_window), do: [ms: 300_000]
 end
 
 defmodule Decree.CommandWindowFixtures.PlainAccount do
