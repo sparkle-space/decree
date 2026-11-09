@@ -5,7 +5,7 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
   alias Decree.Aggregates.LostAppendAggregate.{Close, Open}
   alias Decree.Store.AppendError
   alias Decree.{Registration, UUID}
-  alias Decree.Helpers.{CommandAuditMiddleware, Wait}
+  alias Decree.Helpers.{CommandAuditMiddleware, ProcessHelper, Wait}
 
   setup do
     start_supervised!(CommandAuditMiddleware)
@@ -92,34 +92,15 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
   # Dispatches `Open` (whose append is lost) and then `Close` while the aggregate
   # is suspended, so both calls sit in its mailbox, in that order, before it runs.
   defp queue_behind_lost_append(pid, uuid, close_opts) do
-    :ok = :sys.suspend(pid)
-
-    try do
-      open =
-        Task.async(fn -> LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid}) end)
-
-      wait_for_queued_commands(pid, 1)
-
-      close =
-        Task.async(fn ->
+    [open, close] =
+      ProcessHelper.queue_commands(pid, [
+        fn -> LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid}) end,
+        fn ->
           LostAppendApp.dispatch(%Close{command_id: UUID.uuid4(), uuid: uuid}, close_opts)
-        end)
+        end
+      ])
 
-      wait_for_queued_commands(pid, 2)
-
-      {open, close}
-    after
-      :sys.resume(pid)
-    end
-  end
-
-  defp wait_for_queued_commands(pid, count) do
-    Wait.until(fn ->
-      {:messages, messages} = Process.info(pid, :messages)
-
-      assert Enum.count(messages, &match?({:"$gen_call", _from, {:execute_command, _}}, &1)) ==
-               count
-    end)
+    {open, close}
   end
 
   defp open_aggregate(uuid) do

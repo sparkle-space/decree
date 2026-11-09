@@ -6,6 +6,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
   alias Decree.{DefaultApp, EventStore}
   alias Decree.EventStore.RecordedEvent
   alias Decree.{Registration, UUID}
+  alias Decree.Helpers.ProcessHelper
 
   describe "aggregate lifespan" do
     setup do
@@ -238,40 +239,51 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
       assert_receive {:DOWN, ^ref, :process, _pid, :normal}
     end
 
+    # Mailbox ordering replaces wall-clock timing: both commands are queued while the
+    # aggregate is suspended, so the second is already waiting when the first returns
+    # its 100 ms lifespan, and that timeout cannot fire. The second's `:infinity` holds
+    # the aggregate open, so a third command with a finite lifespan reaches the same pid.
+    # Each command's lifespan replaces the last one's, finite or `:infinity`.
     test "should not shutdown if another command executed", %{
       aggregate_uuid: aggregate_uuid,
+      pid: pid,
       ref: ref,
       reply_to: reply_to
     } do
-      lifespan = 100
+      dispatch = fn lifespan ->
+        fn ->
+          command = %Command{
+            command_id: UUID.uuid4(),
+            uuid: aggregate_uuid,
+            action: :noop,
+            reply_to: reply_to,
+            lifespan: lifespan
+          }
 
-      command = %Command{
-        command_id: UUID.uuid4(),
-        uuid: aggregate_uuid,
-        action: :noop,
-        reply_to: reply_to,
-        lifespan: lifespan
-      }
+          LifespanRouter.dispatch(command, application: DefaultApp)
+        end
+      end
 
-      {elapsed_usec, _} =
-        :timer.tc(fn ->
-          :ok = LifespanRouter.dispatch(command, application: DefaultApp)
-          :ok = LifespanRouter.dispatch(command, application: DefaultApp)
+      [first, second] = ProcessHelper.queue_commands(pid, [dispatch.(100), dispatch.(:infinity)])
 
-          assert_receive :after_command
-          assert_receive :after_command
+      :ok = Task.await(first)
+      :ok = Task.await(second)
 
-          # A loaded CI host stalling past the lifespan before the refute below.
-          Process.sleep(150)
-        end)
+      assert_receive :after_command
+      assert_receive :after_command
 
-      # after dispatching and receiving, figure out how much time is left in the lifespan
-      elapsed = ceil(elapsed_usec / 1000)
-      remaining_lifespan = lifespan - elapsed
+      # The fence's stalled host: past the first command's lifespan.
+      Process.sleep(150)
 
-      # the aggregate should not shutdown until after the remaining lifespan has elapsed
-      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, remaining_lifespan
-      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
+      name = {DefaultApp, LifespanAggregate, aggregate_uuid}
+      assert Registration.whereis_name(DefaultApp, name) == pid
+
+      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, 200
+
+      :ok = dispatch.(100).()
+
+      assert_receive :after_command
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
     end
 
     test "should reopen the aggregate to execute command if it is stopped by the previous command",
