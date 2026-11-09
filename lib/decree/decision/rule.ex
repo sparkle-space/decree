@@ -255,8 +255,9 @@ defmodule Decree.Decision.Rule do
 
     - `:read` fires once per attempt that read anything and passed the index check, and
       `fold_time` is what step 3 took after it.
-    - `:retry` fires only for `:append_condition_failed`. A lost expected version has no event of
-      its own, on this route as on a plain one.
+    - `:retry` fires for `:append_condition_failed`, and on an aggregate that declares a command
+      window also for `:new_command_match`, a command match only the rule's second read has. A
+      lost expected version has no event of its own, on this route as on a plain one.
     - `attempt` counts every run of the command in this dispatch, for either reason.
 
   A route with no rule fires none of them, unless its aggregate declares a command window, whose

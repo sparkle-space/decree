@@ -65,7 +65,12 @@ defmodule Decree.Aggregate do
     1. The route's `before_execute`, as on any route.
     2. `authorize/2` on the state, only when the stream is not empty. Its refusal is the
        answer as it stands, with nothing read: an actor who may not ask never learns that a
-       `command_id` is live. An empty stream has nothing to own yet.
+       `command_id` is live. An empty stream has nothing to own yet: a create's own guards stay
+       in `execute/2`. The emptiness is this process's state, so a process that has not yet
+       received an event another pod appended to its stream reads the window before
+       `authorize/2`, and can answer a duplicate or a reused id ahead of a refusal. It appends
+       nothing either way, and an append on that stale state loses its expected version and
+       runs `authorize/2` on the rebuild.
     3. One read of the command item (`command:<command_id>`) and the tag index item, with the
        route's rule's items in the same read when the route has a rule, and the classification
        of a decision's step 7 with this window, on an empty stream too: a reuse on another
@@ -96,6 +101,12 @@ defmodule Decree.Aggregate do
   with a rule counts the command item against the rule's `max_items`; a route with none takes a
   rule's default bounds (16 items, 48 probes, 1,000 matched events, 100 new events per batch).
 
+  A host moving an aggregate onto this window from one timed by its own pods' clocks runs both
+  through a rolling deploy. For a new pod to refuse every resend an old pod would, `ms` must be
+  at least the old window plus twice the largest offset between a pod's clock and the
+  database's, plus the time from an old pod's stamp to its commit. The host knows the old
+  window, so the host's test holds that floor.
+
   An application checks a windowed aggregate as it starts: every one it routes must be a target
   of its event store's `conditional_appends: [targets: [...]]`, and every route to one must
   give its stream an entity tag, so an opaque identity, or a function identity with no
@@ -108,7 +119,8 @@ defmodule Decree.Aggregate do
   the store's lock.
 
   `[:decree, :decision, :read]` fires once per attempt that read and passed the index check, and
-  `[:decree, :decision, :retry]` for a failed condition, as on a rule route. Their `decision` is
+  `[:decree, :decision, :retry]` for a failed condition or a command match only a rule's second
+  read has (`:new_command_match`), as on a rule route. Their `decision` is
   the route's rule, or the aggregate's module on a route with none. See
   `Decree.Decision.Rule`.
   """
