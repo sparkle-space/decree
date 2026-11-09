@@ -68,9 +68,10 @@ defmodule Decree.Aggregate do
        `command_id` is live. An empty stream has nothing to own yet: a create's own guards stay
        in `execute/2`. The emptiness is this process's state, so a process that has not yet
        received an event another pod appended to its stream reads the window before
-       `authorize/2`, and can answer a duplicate or a reused id ahead of a refusal. It appends
-       nothing either way, and an append on that stale state loses its expected version and
-       runs `authorize/2` on the rebuild.
+       `authorize/2`, and can answer a duplicate or a reused id ahead of a refusal, appending
+       nothing. An append on that stale state loses its expected version and appends nothing:
+       after a rebuild that succeeds, and while attempts remain, the next attempt runs
+       `authorize/2`; otherwise the dispatch answers the rebuild's or the retry's error.
     3. One read of the command item (`command:<command_id>`) and the tag index item, with the
        route's rule's items in the same read when the route has a rule, and the classification
        of a decision's step 7 with this window, on an empty stream too: a reuse on another
@@ -102,10 +103,10 @@ defmodule Decree.Aggregate do
   rule's default bounds (16 items, 48 probes, 1,000 matched events, 100 new events per batch).
 
   A host moving an aggregate onto this window from one timed by its own pods' clocks runs both
-  through a rolling deploy. For a new pod to refuse every resend an old pod would, `ms` must be
-  at least the old window plus twice the largest offset between a pod's clock and the
-  database's, plus the time from an old pod's stamp to its commit. The host knows the old
-  window, so the host's test holds that floor.
+  through a rolling deploy. A new pod refuses every resend an old pod would when `ms` is at
+  least the old window plus twice the largest offset between a pod's clock and the database's:
+  the old pod stamps before its commit, so the time between only shortens the age the database
+  measures. The host knows the old window, so the host's test holds that floor.
 
   An application checks a windowed aggregate as it starts: every one it routes must be a target
   of its event store's `conditional_appends: [targets: [...]]`, and every route to one must
