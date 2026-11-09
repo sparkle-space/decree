@@ -241,9 +241,10 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
 
     # Mailbox ordering replaces wall-clock timing: both commands are queued while the
     # aggregate is suspended, so the second is already waiting when the first returns
-    # its 100 ms lifespan, and that timeout cannot fire. The second's `:infinity` holds
-    # the aggregate open, so a third command with a finite lifespan reaches the same pid.
-    # Each command's lifespan replaces the last one's, finite or `:infinity`.
+    # its 100 ms lifespan, and that timeout cannot fire. Each finite lifespan replaces
+    # the last one's: the second's 60 s replaces the first's 100 ms, and the third's
+    # 100 ms replaces the 60 s. The 60 s is far past any stall, so the refute and the
+    # same-pid assert cannot race it; no elapsed time is measured.
     test "should not shutdown if another command executed", %{
       aggregate_uuid: aggregate_uuid,
       pid: pid,
@@ -264,7 +265,7 @@ defmodule Decree.Aggregates.AggregateLifespanTest do
         end
       end
 
-      [first, second] = ProcessHelper.queue_commands(pid, [dispatch.(100), dispatch.(:infinity)])
+      [first, second] = ProcessHelper.queue_commands(pid, [dispatch.(100), dispatch.(60_000)])
 
       :ok = Task.await(first)
       :ok = Task.await(second)
