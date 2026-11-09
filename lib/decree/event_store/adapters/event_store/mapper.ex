@@ -58,7 +58,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       source_type: source_type,
       data: data,
       metadata: metadata,
-      created_at: created_at
+      created_at: created_at,
+      snapshot_version: snapshot_version
     } = snapshot
 
     %Decree.Store.Snapshots.SnapshotData{
@@ -67,7 +68,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       source_type: source_type,
       data: data,
       metadata: metadata,
-      created_at: created_at
+      created_at: created_at,
+      snapshot_version: snapshot_version
     }
   end
 
@@ -78,7 +80,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       source_type: source_type,
       data: data,
       metadata: metadata,
-      created_at: created_at
+      created_at: created_at,
+      snapshot_version: snapshot_version
     } = snapshot
 
     %Decree.EventStore.SnapshotData{
@@ -87,7 +90,8 @@ defmodule Decree.EventStore.Adapters.EventStore.Mapper do
       source_type: source_type,
       data: data,
       metadata: metadata,
-      created_at: created_at
+      created_at: created_at,
+      snapshot_version: snapshot_version
     }
   end
 end

@@ -60,6 +60,24 @@ defmodule Decree.EventStore.TelemetryTest do
       assert %{application: DefaultApp, source_uuid: ^uuid} = meta
     end
 
+    test "emit `[:decree, :event_store, :read_snapshot, :start | :stop]` event at a version" do
+      uuid = UUID.uuid4()
+      assert {:error, :snapshot_not_found} = EventStore.read_snapshot(DefaultApp, uuid, 1)
+
+      assert_receive {[:decree, :event_store, :read_snapshot, :start], 1, _meas, _meta}
+      assert_receive {[:decree, :event_store, :read_snapshot, :stop], 2, _meas, meta}
+      assert %{application: DefaultApp, source_uuid: ^uuid, snapshot_version: 1} = meta
+    end
+
+    test "emit `[:decree, :event_store, :prune_snapshots, :start | :stop]` event" do
+      type = "Elixir.Decree.Aggregates.ExampleAggregate"
+      assert {:ok, 0} = EventStore.prune_snapshots(DefaultApp, type, 2)
+
+      assert_receive {[:decree, :event_store, :prune_snapshots, :start], 1, _meas, _meta}
+      assert_receive {[:decree, :event_store, :prune_snapshots, :stop], 2, _meas, meta}
+      assert %{application: DefaultApp, source_type: ^type, snapshot_version: 2} = meta
+    end
+
     test "emit `[:decree, :event_store, :delete_snapshot, :start | :stop]` event" do
       uuid = UUID.uuid4()
       assert :ok = EventStore.delete_snapshot(DefaultApp, uuid)
@@ -178,6 +196,7 @@ defmodule Decree.EventStore.TelemetryTest do
       :append_to_stream,
       :delete_snapshot,
       :delete_subscription,
+      :prune_snapshots,
       :record_snapshot,
       :read_snapshot,
       :stream_forward,

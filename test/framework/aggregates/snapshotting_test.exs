@@ -29,7 +29,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
       aggregate_uuid = UUID.uuid4()
       append_items(aggregate_uuid, 1)
 
-      assert EventStore.read_snapshot(DefaultApp, aggregate_uuid) == {:error, :snapshot_not_found}
+      assert EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1) ==
+               {:error, :snapshot_not_found}
     end
 
     test "should ignore existing snapshot" do
@@ -63,7 +64,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
       aggregate_uuid = UUID.uuid4()
       append_items(aggregate_uuid, 1)
 
-      assert EventStore.read_snapshot(DefaultApp, aggregate_uuid) == {:error, :snapshot_not_found}
+      assert EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1) ==
+               {:error, :snapshot_not_found}
     end
   end
 
@@ -78,7 +80,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
       aggregate_uuid = UUID.uuid4()
       append_items(aggregate_uuid, 9)
 
-      assert EventStore.read_snapshot(DefaultApp, aggregate_uuid) == {:error, :snapshot_not_found}
+      assert EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1) ==
+               {:error, :snapshot_not_found}
     end
 
     test "should shapshot when exactly snapshot interval" do
@@ -87,7 +90,7 @@ defmodule Decree.Aggregates.SnapshottingTest do
 
       assert_aggregate_version(ExampleAggregate, aggregate_uuid, 10)
 
-      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
 
       # The Postgres store stamps `created_at`.
       assert %{snapshot | created_at: nil} == %SnapshotData{
@@ -98,7 +101,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
                  items: Enum.to_list(1..10),
                  last_index: 10
                },
-               metadata: %{"snapshot_module_version" => 1}
+               metadata: %{"snapshot_module_version" => 1},
+               snapshot_version: 1
              }
     end
 
@@ -108,7 +112,7 @@ defmodule Decree.Aggregates.SnapshottingTest do
 
       assert_aggregate_version(ExampleAggregate, aggregate_uuid, 11)
 
-      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
 
       # The Postgres store stamps `created_at`.
       assert %{snapshot | created_at: nil} == %SnapshotData{
@@ -119,7 +123,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
                  items: Enum.to_list(1..11),
                  last_index: 11
                },
-               metadata: %{"snapshot_module_version" => 1}
+               metadata: %{"snapshot_module_version" => 1},
+               snapshot_version: 1
              }
     end
 
@@ -128,17 +133,17 @@ defmodule Decree.Aggregates.SnapshottingTest do
 
       append_items(aggregate_uuid, 10)
       assert_aggregate_version(ExampleAggregate, aggregate_uuid, 10)
-      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
       assert snapshot.source_version == 10
 
       append_items(aggregate_uuid, 1)
       assert_aggregate_version(ExampleAggregate, aggregate_uuid, 11)
-      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
       assert snapshot.source_version == 10
 
       append_items(aggregate_uuid, 10)
       assert_aggregate_version(ExampleAggregate, aggregate_uuid, 21)
-      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid)
+      assert {:ok, snapshot} = EventStore.read_snapshot(DefaultApp, aggregate_uuid, 1)
 
       # The Postgres store stamps `created_at`.
       assert %{snapshot | created_at: nil} == %SnapshotData{
@@ -149,7 +154,8 @@ defmodule Decree.Aggregates.SnapshottingTest do
                  items: Enum.to_list(1..21),
                  last_index: 21
                },
-               metadata: %{"snapshot_module_version" => 1}
+               metadata: %{"snapshot_module_version" => 1},
+               snapshot_version: 1
              }
     end
   end
@@ -227,15 +233,19 @@ defmodule Decree.Aggregates.SnapshottingTest do
       aggregate_uuid = UUID.uuid4()
       append_items(aggregate_uuid, 2)
 
-      # record an outdated snapshot
-      snapshot_aggregate(
-        aggregate_uuid,
-        1,
-        %ExampleAggregate{
-          items: []
-        },
-        %{"snapshot_module_version" => 1}
-      )
+      # record an outdated snapshot: version 1's own row, and a row at version 2 whose
+      # metadata says version 1
+      for snapshot_version <- [1, 2] do
+        snapshot_aggregate(
+          aggregate_uuid,
+          1,
+          %ExampleAggregate{
+            items: []
+          },
+          %{"snapshot_module_version" => 1},
+          snapshot_version
+        )
+      end
 
       restart_aggregate(ExampleAggregate, aggregate_uuid)
 
@@ -322,13 +332,27 @@ defmodule Decree.Aggregates.SnapshottingTest do
       Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, execution_context)
   end
 
-  defp snapshot_aggregate(aggregate_uuid, aggregate_version, aggregate_state, metadata \\ %{})
+  # Records the row of `snapshot_version`, by default version 1, the one these aggregates read.
+  defp snapshot_aggregate(
+         aggregate_uuid,
+         aggregate_version,
+         aggregate_state,
+         metadata \\ %{},
+         snapshot_version \\ 1
+       )
 
-  defp snapshot_aggregate(aggregate_uuid, aggregate_version, aggregate_state, metadata) do
+  defp snapshot_aggregate(
+         aggregate_uuid,
+         aggregate_version,
+         aggregate_state,
+         metadata,
+         snapshot_version
+       ) do
     snapshot = %SnapshotData{
       source_uuid: aggregate_uuid,
       source_version: aggregate_version,
       source_type: Atom.to_string(aggregate_state.__struct__),
+      snapshot_version: snapshot_version,
       data: aggregate_state,
       metadata: metadata
     }

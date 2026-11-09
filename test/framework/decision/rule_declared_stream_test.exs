@@ -75,7 +75,7 @@ defmodule Decree.Decision.RuleDeclaredStreamTest do
       Decree.Aggregates.Aggregate.aggregate_state(:snapshot_stream, User, stream)
 
       assert {:ok, %{data: %User{registered?: true}}} =
-               EventStore.read_snapshot(:snapshot_stream, stream)
+               EventStore.read_snapshot(:snapshot_stream, stream, 1)
     end
 
     test "a hard delete goes in, and is a release" do

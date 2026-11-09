@@ -160,30 +160,46 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   describe "version bookkeeping" do
-    test "the store knows migration 1.9.0" do
-      assert "1.9.0" in Migrations.available_migrations()
-      assert List.last(Migrations.available_migrations()) == "1.9.0"
+    test "the store knows migration 1.10.0" do
+      assert "1.10.0" in Migrations.available_migrations()
+      assert List.last(Migrations.available_migrations()) == "1.10.0"
     end
 
-    test "a new event store records 1.9.0 and has nothing pending", %{config: config} do
+    test "a new event store records 1.10.0 and has nothing pending", %{config: config} do
       create_new_database(config)
 
-      assert schema_versions(config) == [[1, 9, 0]]
+      assert schema_versions(config) == [[1, 10, 0]]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
 
-      assert schema_versions(config) == [[1, 9, 0]]
+      assert schema_versions(config) == [[1, 10, 0]]
     end
 
-    test "the migration records 1.9.0", %{config: config} do
+    test "the migration records 1.10.0", %{config: config} do
       restore_pre_migration_event_store(config)
       migrate_eventstore(config, quiet: true, is_mix: false)
 
-      assert List.last(schema_versions(config)) == [1, 9, 0]
+      assert List.last(schema_versions(config)) == [1, 10, 0]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
+    end
+
+    test "Init creates versioned_snapshots beside snapshots", %{config: config} do
+      create_new_database(config)
+
+      assert snapshot_tables(config) == ["snapshots", "versioned_snapshots"]
+    end
+
+    test "the migration creates versioned_snapshots and leaves snapshots", %{config: config} do
+      restore_pre_migration_event_store(config)
+      before = snapshots_columns(config)
+
+      migrate_eventstore(config, quiet: true, is_mix: false)
+
+      assert snapshot_tables(config) == ["snapshots", "versioned_snapshots"]
+      assert snapshots_columns(config) == before
     end
 
     test "Init creates only the latest append function", %{config: config} do
@@ -594,6 +610,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       "1\t6\t0\tNOW" -> true
       "1\t7\t0\tNOW" -> true
       "1\t8\t0\tNOW" -> true
+      "1\t9\t0\tNOW" -> true
       _line -> false
     end)
     |> reject_superseded_append_functions()
@@ -708,6 +725,30 @@ defmodule Decree.Store.MigrateEventStoreTest do
       [config[:schema]]
     )
     |> List.flatten()
+  end
+
+  defp snapshot_tables(config) do
+    query_rows(
+      config,
+      "SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename LIKE '%snapshots'" <>
+        " ORDER BY tablename",
+      [config[:schema]]
+    )
+    |> List.flatten()
+  end
+
+  defp snapshots_columns(config) do
+    query_rows(
+      config,
+      """
+      SELECT attname, format_type(atttypid, atttypmod), attnotnull
+      FROM pg_attribute
+      WHERE attrelid = format('%I.snapshots', $1::text)::regclass AND attnum > 0
+        AND NOT attisdropped
+      ORDER BY attnum
+      """,
+      [config[:schema]]
+    )
   end
 
   defp schema_versions(config) do

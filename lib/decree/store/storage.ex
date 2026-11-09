@@ -131,7 +131,12 @@ defmodule Decree.Store.Storage do
   defdelegate record_snapshot(conn, snapshot, opts), to: Snapshot
 
   @doc """
-  Delete an existing snapshot for a given source.
+  Delete an existing snapshot for a given source: its legacy row and every version's.
   """
   defdelegate delete_snapshot(conn, source_uuid, opts), to: Snapshot
+
+  @doc """
+  Delete the versioned snapshots of a source type below a snapshot version.
+  """
+  defdelegate prune_snapshots(conn, source_type, snapshot_version, opts), to: Snapshot
 end

@@ -706,11 +706,12 @@ defmodule Decree.PersonalFields.RehydrationTest do
 
       snapshotting = Snapshotting.new(App, stream, snapshot_every: 1, snapshot_version: 1)
 
-      assert {:ok, _snapshotting} =
-               Snapshotting.take_snapshot(snapshotting, 1, %StateOnly{id: subject, email: email()})
-
+      # A snapshot is recorded only for a stream that exists.
       store_raw!(stream, %Plain{})
       store_raw!(stream, %StateFails{mode: "match"})
+
+      assert {:ok, _snapshotting} =
+               Snapshotting.take_snapshot(snapshotting, 1, %StateOnly{id: subject, email: email()})
 
       aggregate = %Aggregate{
         application: App,

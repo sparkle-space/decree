@@ -23,11 +23,20 @@ defmodule Decree.Snapshotting do
     }
   end
 
+  @doc """
+  Read the snapshot of this version: the source's row at `snapshot_module_version`. A row of
+  another version is another row, and never read here.
+  """
   def read_snapshot(%Snapshotting{} = snapshotting) do
-    %Snapshotting{application: application, source_uuid: source_uuid} = snapshotting
+    %Snapshotting{
+      application: application,
+      source_uuid: source_uuid,
+      snapshot_module_version: snapshot_module_version
+    } = snapshotting
 
     with :ok <- validate_configured(snapshotting),
-         {:ok, snapshot} <- EventStore.read_snapshot(application, source_uuid),
+         {:ok, snapshot} <-
+           EventStore.read_snapshot(application, source_uuid, snapshot_module_version),
          :ok <- validate_snapshot(snapshotting, snapshot) do
       {:ok, snapshot}
     end
@@ -35,6 +44,9 @@ defmodule Decree.Snapshotting do
 
   @doc """
   Take a snapshot of the source state.
+
+  Recorded as the source's row at `snapshot_module_version`, replacing only that version's
+  row. The store answers `{:error, :stream_not_found}` for a source with no stream.
 
   The state an aggregate lists with `Decree.PersonalFields.Aggregate` is encrypted on a copy.
   Anything that stops that records no snapshot, and there is no plaintext fallback.
@@ -53,6 +65,7 @@ defmodule Decree.Snapshotting do
         source_uuid: source_uuid,
         source_version: source_version,
         source_type: TypeProvider.to_string(source_state),
+        snapshot_version: snapshot_module_version,
         data: protected_state,
         metadata: %{"snapshot_module_version" => snapshot_module_version}
       }

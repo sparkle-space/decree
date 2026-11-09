@@ -146,6 +146,8 @@ defmodule Decree.Application.Supervisor do
     snapshotting = Keyword.get(config, :snapshotting, %{})
     hibernate_after = Keyword.get(config, :hibernate_after, :infinity)
 
+    warn_declared_snapshots(name, snapshotting)
+
     [
       {Task.Supervisor, name: task_dispatcher_name, hibernate_after: hibernate_after},
       {Decree.Aggregates.Supervisor,
@@ -159,6 +161,24 @@ defmodule Decree.Application.Supervisor do
        application: name, name: subscriptions_name, hibernate_after: hibernate_after}
     ]
   end
+
+  # A module that declares `snapshot:` on its definition takes its options from there, so its
+  # entry here is ignored: said once per module, at start.
+  defp warn_declared_snapshots(name, snapshotting) when is_map(snapshotting) do
+    for {aggregate_module, _options} <- snapshotting,
+        is_atom(aggregate_module),
+        Decree.Aggregate.declared(aggregate_module) != nil do
+      Logger.warning(fn ->
+        "#{inspect(aggregate_module)} declares `snapshot:` on its definition and is also in " <>
+          "the `snapshotting:` config of #{inspect(name)}: the definition wins, and the " <>
+          "config entry is ignored"
+      end)
+    end
+
+    :ok
+  end
+
+  defp warn_declared_snapshots(_name, _snapshotting), do: :ok
 
   defp event_store_child_spec(name, config) do
     {adapter, adapter_config} =

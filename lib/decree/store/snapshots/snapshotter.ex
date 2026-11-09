@@ -31,11 +31,21 @@ defmodule Decree.Store.Snapshots.Snapshotter do
   end
 
   @doc """
-  Delete a previously recorded snapshot for a given source.
+  Delete a previously recorded snapshot for a given source: its legacy row and every
+  version's.
 
   Returns `:ok` on success.
   """
   def delete_snapshot(conn, source_uuid, opts \\ []) do
     Snapshot.delete_snapshot(conn, source_uuid, opts)
+  end
+
+  @doc """
+  Delete the versioned snapshots of a source type whose version is below `snapshot_version`.
+
+  Returns `{:ok, count}` on success.
+  """
+  def prune_snapshots(conn, source_type, snapshot_version, opts \\ []) do
+    Snapshot.prune_snapshots(conn, source_type, snapshot_version, opts)
   end
 end

@@ -40,6 +40,7 @@ defmodule Decree.Store.Sql.Init do
       create_subscriptions_table(),
       create_subscription_index(),
       create_snapshots_table(column_data_type),
+      create_versioned_snapshots_table(column_data_type),
       create_schema_migrations_table(),
       record_event_store_schema_version()
     ]
@@ -624,6 +625,30 @@ defmodule Decree.Store.Sql.Init do
     """
   end
 
+  # One row per source and snapshot version, so code at two versions keeps two rows. The
+  # same text as store migration 1.10.0 (priv/decree/store/migrations/v1.10.0.sql), which
+  # adds it beside `snapshots` and leaves that table to an older pod.
+  #
+  # A row belongs to its stream: the foreign key's cascade deletes it with the stream's row,
+  # whichever pod's hard delete that is, and its check takes the stream's row FOR KEY SHARE
+  # at insert, so no row outlives its stream. After `streams`, which it references.
+  defp create_versioned_snapshots_table(column_data_type) do
+    """
+    CREATE TABLE versioned_snapshots
+    (
+        source_uuid text NOT NULL,
+        snapshot_version bigint NOT NULL,
+        source_version bigint NOT NULL,
+        source_type text NOT NULL,
+        data #{column_data_type} NOT NULL,
+        metadata #{column_data_type} NULL,
+        created_at timestamp with time zone DEFAULT NOW() NOT NULL,
+        PRIMARY KEY (source_uuid, snapshot_version),
+        CONSTRAINT fk_versioned_snapshots_stream FOREIGN KEY (source_uuid) REFERENCES streams (stream_uuid) ON DELETE CASCADE
+    );
+    """
+  end
+
   # record execution of upgrade scripts
   defp create_schema_migrations_table do
     """
@@ -642,7 +667,7 @@ defmodule Decree.Store.Sql.Init do
   defp record_event_store_schema_version do
     """
     INSERT INTO schema_migrations (major_version, minor_version, patch_version)
-    VALUES (1, 9, 0);
+    VALUES (1, 10, 0);
     """
   end
 end

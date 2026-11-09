@@ -466,7 +466,11 @@ defmodule Decree.PersonalFields.ReadTest do
 
       assert :ok = Aggregate.take_snapshot(App, Account, stream)
 
-      rows = rows(conn, "events", "data, metadata") ++ rows(conn, "snapshots", "data, metadata")
+      rows =
+        rows(conn, "events", "data, metadata") ++
+          rows(conn, "snapshots", "data, metadata") ++
+          rows(conn, "versioned_snapshots", "data, metadata")
+
       scan = Enum.join(rows, "\n")
 
       assert length(rows) >= 2
@@ -487,9 +491,9 @@ defmodule Decree.PersonalFields.ReadTest do
 
       dispatch!(stream, %Linked{user_id: subject, provider_uid: "uid-at-provider"})
 
-      Wait.until(fn -> assert [_row] = rows(conn, "snapshots", "data") end)
+      Wait.until(fn -> assert [_row] = rows(conn, "versioned_snapshots", "data") end)
 
-      assert [row] = rows(conn, "snapshots", "data")
+      assert [row] = rows(conn, "versioned_snapshots", "data")
       assert row =~ "$pf"
       refute row =~ "uid-at-provider"
     end

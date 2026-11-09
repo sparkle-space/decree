@@ -1,0 +1,14 @@
+<%!-- The production pin's insert_snapshot.sql.eex, decree f46d1d039 (unchanged at ccfc0f8):
+    what a pod from before store migration 1.10.0 sends. Copied as it was there,
+    below this comment; never edit it. --%>
+INSERT INTO "<%= schema %>".snapshots
+  (
+    source_uuid,
+    source_version,
+    source_type,
+    data,
+    metadata
+  )
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (source_uuid)
+DO UPDATE SET source_version = $2, source_type = $3, data = $4, metadata = $5;

@@ -310,7 +310,7 @@ defmodule Decree.Decision.RuleRidesTest do
         ruled_stream(command)
       )
 
-      assert {:ok, snapshot} = EventStore.read_snapshot(:snapshots_rule, ruled_stream(command))
+      assert {:ok, snapshot} = EventStore.read_snapshot(:snapshots_rule, ruled_stream(command), 1)
       assert %RuledAggregate{notes: [1]} = snapshot.data
       refute holds_marker?(snapshot)
     end

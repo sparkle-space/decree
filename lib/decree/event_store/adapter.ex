@@ -195,14 +195,30 @@ defmodule Decree.EventStore.Adapter do
               {:ok, SnapshotData.t()} | {:error, :snapshot_not_found}
 
   @doc """
+  Read a snapshot, if available, for a given source at a snapshot version, or from the
+  store's legacy one-row table when the version is nil.
+  """
+  @callback read_snapshot(adapter_meta, source_uuid, snapshot_version :: non_neg_integer | nil) ::
+              {:ok, SnapshotData.t()} | {:error, :snapshot_not_found}
+
+  @doc """
   Record a snapshot of the data and metadata for a given source
   """
   @callback record_snapshot(adapter_meta, SnapshotData.t()) ::
               :ok | {:error, error}
 
   @doc """
-  Delete a previously recorded snapshot for a given source
+  Delete a previously recorded snapshot for a given source, at every snapshot version
   """
   @callback delete_snapshot(adapter_meta, source_uuid) ::
               :ok | {:error, error}
+
+  @doc """
+  Delete the snapshots of a source type whose snapshot version is below the given one
+  """
+  @callback prune_snapshots(
+              adapter_meta,
+              source_type :: String.t(),
+              snapshot_version :: non_neg_integer
+            ) :: {:ok, non_neg_integer} | {:error, error}
 end

@@ -66,22 +66,27 @@ defmodule Decree.Aggregates.Aggregate do
 
   ## Snapshotting
 
-  You can configure state snapshots for an aggregate in config. By default
-  snapshots are *not* taken for an aggregate. The following options are
-  available to enable snapshots:
+  By default snapshots are *not* taken for an aggregate. An aggregate declares them on its
+  definition:
 
-    - `snapshot_every` - snapshot aggregate state every so many events. Use
-      `nil` to disable snapshotting, or exclude the configuration entirely.
+      defmodule MyApp.ExampleAggregate do
+        use Decree.Aggregate, snapshot: [every: 10, version: 1]
 
-    - `snapshot_version` - a non-negative integer indicating the version of
-      the aggregate state snapshot. Incrementing this version forces any
-      earlier recorded snapshots to be ignored when rebuilding aggregate
-      state.
+        # ...
+      end
 
-  ### Example
+    - `every` - snapshot the aggregate state every so many events, a positive integer.
 
-  In `config/config.exs` enable snapshots for `MyApp.ExampleAggregate` after
-  every ten events:
+    - `version` - a non-negative integer, 1 when left out: the version of the snapshot's
+      shape. Increment it when the state struct changes in a way an older snapshot can't be
+      read into.
+
+  `Decree.Aggregate` checks both when the module compiles.
+
+  ### The `snapshotting:` config, a fallback
+
+  An aggregate that declares no `snapshot:` still takes its options from the application's
+  `snapshotting:` config, as before. A later release removes this fallback.
 
       config :my_app, MyApp.Application,
         snapshotting: %{
@@ -90,6 +95,21 @@ defmodule Decree.Aggregates.Aggregate do
             snapshot_version: 1
           ]
         }
+
+  The definition wins: a module that declares `snapshot:` and is also in the config logs a
+  warning when the application starts, and its config entry is ignored.
+  `Decree.Aggregate.snapshot_options/2` answers the options in force.
+
+  ### One row per version
+
+  The store keeps one snapshot row per stream and version. Code at version 1 and code at
+  version 2 each read and write their own row, so during a rollout neither overwrites the
+  other's, and a rollback finds its own row as it left it. A version bump therefore folds
+  each aggregate from its events, for the new version only, until a row exists for it:
+  `Decree.Aggregate.warm_snapshot/3` records that row without starting the aggregate, and
+  `Decree.Aggregate.prune_snapshots/2` deletes the older versions' rows once no running code
+  reads them. A hard delete of a stream deletes its rows at every version, in any pod: a
+  row's foreign key to its stream cascades the delete.
 
   ## Personal fields
 
@@ -149,7 +169,6 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Aggregates.Aggregate
   alias Decree.Aggregates.AggregateStateBuilder
   alias Decree.Aggregates.ExecutionContext
-  alias Decree.Application.Config
   alias Decree.Decision.Dispatch
   alias Decree.Event.Append
   alias Decree.Event.Upcast
@@ -208,8 +227,12 @@ defmodule Decree.Aggregates.Aggregate do
       do: raise(ArgumentError, message: "aggregate identity must be a string")
 
     application = Keyword.fetch!(config, :application)
-    snapshotting = Keyword.get(config, :snapshotting, %{})
-    snapshot_options = Map.get(snapshotting, aggregate_module, [])
+
+    snapshot_options =
+      Decree.Aggregate.resolve_snapshot_options(
+        aggregate_module,
+        Keyword.get(config, :snapshotting)
+      )
 
     state = %Aggregate{
       application: application,
@@ -308,11 +331,7 @@ defmodule Decree.Aggregates.Aggregate do
       when reason in [:normal, :noproc] ->
         task =
           Task.async(fn ->
-            snapshot_options =
-              application
-              |> Config.get(:snapshotting)
-              |> Kernel.||(%{})
-              |> Map.get(aggregate_module, [])
+            snapshot_options = Decree.Aggregate.snapshot_options(application, aggregate_module)
 
             %Aggregate{
               application: application,
