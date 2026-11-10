@@ -293,6 +293,44 @@ defmodule Decree.PersonalFields.Fixtures.Events do
     end
   end
 
+  # Its email no longer holds personal data, and its stored values are envelopes.
+  defmodule EmailRetired do
+    @derive [
+      Jason.Encoder,
+      {Decree.Event.PersonalFields,
+       personal_retired: [:email], personal_metadata_retired: [:email]}
+    ]
+    defstruct [:user_id, :email, :note]
+  end
+
+  # A declared field beside a retired one.
+  defmodule MixedRetired do
+    @derive [
+      Jason.Encoder,
+      {Decree.Event.PersonalFields,
+       personal: [ip_address: :user_id],
+       personal_retired: [:email],
+       personal_metadata_retired: [:email]}
+    ]
+    defstruct [:user_id, :email, :ip_address]
+  end
+
+  defmodule RetiredRenamed do
+    @derive [Jason.Encoder, {Decree.Event.PersonalFields, personal_retired: [:email]}]
+    defstruct [:user_id, :email]
+  end
+
+  defmodule RetiredBeforeRename do
+    @derive [Jason.Encoder, {Decree.Event.PersonalFields, personal_retired: [:email]}]
+    defstruct [:user_id, :email]
+
+    defimpl Upcaster do
+      def upcast(%RetiredBeforeRename{user_id: user_id, email: email}, _metadata) do
+        %RetiredRenamed{user_id: user_id, email: email}
+      end
+    end
+  end
+
   # A handler does something with the value: see `Decree.PersonalFields.Fixtures.Leaky`.
   defmodule Leak do
     @derive [Jason.Encoder, {Decree.Event.PersonalFields, personal: [email: :user_id]}]
@@ -374,12 +412,14 @@ defmodule Decree.PersonalFields.Fixtures.Account do
   }
 
   alias Decree.PersonalFields.Fixtures.Events.{
+    EmailRetired,
     Linked,
     PassedThrough,
     PlainPoison,
     Poison,
     Registered,
     Renamed,
+    RetiredRenamed,
     StateFails,
     TwoSubjects,
     Unfolded
@@ -387,7 +427,16 @@ defmodule Decree.PersonalFields.Fixtures.Account do
 
   alias Decree.PersonalFields.Fixtures.{Keys, LeakyFailures}
 
-  @personal_fold [Registered, Linked, Poison, TwoSubjects, PassedThrough, Renamed]
+  @personal_fold [
+    Registered,
+    Linked,
+    Poison,
+    TwoSubjects,
+    PassedThrough,
+    Renamed,
+    EmailRetired,
+    RetiredRenamed
+  ]
   @personal_state [links: :provider_uid, email: :self]
   @personal_state_subject :user_id
 
@@ -477,6 +526,14 @@ defmodule Decree.PersonalFields.Fixtures.Account do
 
   def apply(%__MODULE__{} = state, %Unfolded{email: email}) do
     seen(%__MODULE__{state | unfolded: email})
+  end
+
+  def apply(%__MODULE__{} = state, %EmailRetired{email: email}) do
+    seen(%__MODULE__{state | email: email})
+  end
+
+  def apply(%__MODULE__{} = state, %RetiredRenamed{email: email}) do
+    seen(%__MODULE__{state | email: email})
   end
 
   def apply(%__MODULE__{} = state, _event), do: seen(state)
@@ -656,6 +713,30 @@ defmodule Decree.PersonalFields.Fixtures.Handler do
 
     :skip
   end
+
+  defp report(event, metadata) do
+    Keys.notify({:handled, event, metadata})
+
+    :ok
+  end
+end
+
+defmodule Decree.PersonalFields.Fixtures.RetiredHandler do
+  @moduledoc false
+
+  # Names the events with retired slots, and reports what it receives.
+
+  use Decree.Event.Handler,
+    application: Decree.PersonalFields.Fixtures.App,
+    name: __MODULE__
+
+  alias Decree.PersonalFields.Fixtures.Events.{EmailRetired, MixedRetired, RetiredRenamed}
+  alias Decree.PersonalFields.Fixtures.Keys
+
+  def handle(%EmailRetired{} = event, metadata), do: report(event, metadata)
+  def handle(%MixedRetired{} = event, metadata), do: report(event, metadata)
+  def handle(%RetiredRenamed{} = event, metadata), do: report(event, metadata)
+  def handle(_event, _metadata), do: :ok
 
   defp report(event, metadata) do
     Keys.notify({:handled, event, metadata})
