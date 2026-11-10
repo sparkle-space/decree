@@ -120,13 +120,14 @@ defmodule Decree.Verify.Eventless do
   variable module, `apply/2,3`, an anonymous call it cannot resolve, `Keyword.fetch!/2` or
   `Keyword.get/2,3` on options it cannot resolve, a local call with no `def` in the module
   and no import that could supply it (or one an `internal?` import outside the index
-  could), a call to an indexed module that defines no such function in source, an
-  `internal?` receiver outside the index, a receiver whose first segment is an alias the
-  module's table (file-wide plus its own) maps to two or more different modules (the walk
-  models no lexical scope, so it cannot tell which one the call sees; the same target
-  aliased twice is no conflict), a module attribute with no literal value, a
-  runtime field or `Access` read, `quote`/`unquote`/`super`, and the unresolved variables
-  above.
+  could), a local call to a macro the module defines (a local macro) or an indexed import
+  defines as a public `defmacro` (an imported macro), a call to an indexed module that
+  defines no such function in source, an `internal?` receiver outside the index, a receiver
+  whose first segment is an alias the module's table (file-wide plus its own) maps to two
+  or more different modules (the walk models no lexical scope, so it cannot tell which one
+  the call sees; the same target aliased twice is no conflict), a module attribute with no
+  literal value, a runtime field or `Access` read, `quote`/`unquote`/`super`, and the
+  unresolved variables above.
 
   ## Stated residuals
 
@@ -991,7 +992,7 @@ defmodule Decree.Verify.Eventless do
   defp local_call(name, args, ctx) do
     arity = length(args)
 
-    imported = imported_definer(ctx, name, arity)
+    imported = imported_definer(ctx, name, arity, [:def])
 
     cond do
       clauses_for(ctx.rec, name, arity, [:def, :defp]) != [] ->
@@ -999,6 +1000,9 @@ defmodule Decree.Verify.Eventless do
 
       defines_macro?(ctx.rec, name, arity) ->
         [unclassified(ctx, "the local macro #{name}/#{arity}")]
+
+      (macro_import = imported_definer(ctx, name, arity, [:defmacro])) != nil ->
+        [unclassified(ctx, "the imported macro #{inspect(macro_import.module)}.#{name}/#{arity}")]
 
       imported != nil ->
         follow(imported, name, args, ctx, [:def])
@@ -1029,10 +1033,10 @@ defmodule Decree.Verify.Eventless do
   defp internal_import(ctx),
     do: Enum.find(ctx.rec.imports, &match?({:internal, _}, resolve_receiver(&1, ctx)))
 
-  defp imported_definer(ctx, name, arity) do
+  defp imported_definer(ctx, name, arity, kinds) do
     Enum.find_value(ctx.rec.imports, fn target ->
       case resolve_receiver(target, ctx) do
-        {:indexed, rec} -> if clauses_for(rec, name, arity, [:def]) != [], do: rec
+        {:indexed, rec} -> if clauses_for(rec, name, arity, kinds) != [], do: rec
         _other -> nil
       end
     end)
