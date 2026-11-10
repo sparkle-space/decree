@@ -12,14 +12,19 @@ defmodule Decree.PersonalFields do
   ## What each path does
 
     - **Append.** `Decree.Event.Append.prepare/4` looks up each subject of each event, drops
-      erased values, takes the tags from the plaintext that will be stored, then encrypts. An
-      aggregate's append runs it, and a decision's, once per member with that member's stream.
+      erased values, takes the tags from the plaintext that will be stored, then encrypts. A
+      retired slot takes no lookup and is stored as given, and an envelope in one fails the
+      append with `{:error, :personal_field_is_envelope}`. A metadata key the application
+      lists in `personal_metadata_keys:` passes only when the event declares it under
+      `personal_metadata:`; retiring it is not enough. An aggregate's append runs `prepare/4`,
+      and a decision's, once per member with that member's stream.
       `Decree.EventStore.append_to_stream/5` and `Decree.Store` do not: an application's own
       direct append of a declared event stores what it is given, so a build check of its own
       must fence that.
 
     - **Delivery.** `Decree.Event.Handler` decrypts an event for a handler whose `handle/2`
-      names it in a clause head, and for no other. The `RecordedEvent` is never rewritten.
+      names it in a clause head, and for no other, retired slots included. The
+      `RecordedEvent` is never rewritten.
 
     - **Rehydration.** An aggregate lists the events its state reads with
       `Decree.PersonalFields.Aggregate`, and those are decrypted in its fold.
@@ -38,7 +43,10 @@ defmodule Decree.PersonalFields do
       `decrypt_recorded_event/2`.
 
     - **Upcasters** run first, and see ciphertext. One may pass an envelope on, or move it to
-      another struct. It can't read it, or move it to another field.
+      another struct. It can't read it, or move it to another field. The declaration read is
+      the upcast struct's: a slot it neither declares nor retires reaches a reader as stored.
+
+  Every read path walks an event's retired slots after its declared ones, the same way.
 
   ## Three answers
 
@@ -50,7 +58,8 @@ defmodule Decree.PersonalFields do
   `Decree.Aggregates.Aggregate` and `Decree.Decision`.
 
   A nil stays nil. A bare value in a declared field passes through, and emits
-  `[:decree, :personal_field, :plaintext_read]` unless its subject is `{:when_present, _}`.
+  `[:decree, :personal_field, :plaintext_read]` unless its subject is `{:when_present, _}`. A
+  bare value in a retired slot passes through with no lookup and emits nothing.
 
   ## Telemetry
 
@@ -75,6 +84,10 @@ defmodule Decree.PersonalFields do
 
   # The event type of a snapshot, in place of a stored one.
   @snapshot "snapshot"
+
+  # The subject a retired slot reads under. An atom would be a field name, so it is a shape no
+  # declared subject can take.
+  @retired {:retired}
 
   @doc """
   Decrypts a recorded event for a reader that needs plaintext.
@@ -125,8 +138,13 @@ defmodule Decree.PersonalFields do
 
     with :ok <- check_fence(event_data.metadata, declaration, fence) do
       case declaration do
-        nil -> {:ok, event_data, nil}
-        %Declaration{} -> resolve_declared(application, event_data, declaration)
+        nil ->
+          {:ok, event_data, nil}
+
+        %Declaration{} ->
+          with :ok <- check_retired(event_data, declaration) do
+            resolve_declared(application, event_data, declaration)
+          end
       end
     end
   end
@@ -142,6 +160,21 @@ defmodule Decree.PersonalFields do
 
     if Enum.any?(fence -- declared, &present?(metadata, &1)) do
       {:error, :undeclared_personal_metadata}
+    else
+      :ok
+    end
+  end
+
+  # A retired slot is stored as given, with no lookup, and never takes an envelope.
+  defp check_retired(%EventData{data: event, metadata: metadata}, declaration) do
+    %Declaration{retired_fields: fields, retired_metadata: names} = declaration
+
+    values =
+      Enum.map(fields, &Map.get(event, &1)) ++
+        for name <- names, form <- key_forms(metadata, name), do: value(metadata, form)
+
+    if Enum.any?(values, &Envelope.envelope?/1) do
+      {:error, :personal_field_is_envelope}
     else
       :ok
     end
@@ -535,8 +568,10 @@ defmodule Decree.PersonalFields do
 
   defp decrypt_fields(application, %RecordedEvent{} = event, declaration, answers) do
     %RecordedEvent{data: data, stream_id: stream_id, event_type: event_type} = event
+    %Declaration{fields: fields, retired_fields: retired} = declaration
+    slots = fields ++ Enum.map(retired, &{&1, @retired})
 
-    Enum.reduce_while(declaration.fields, {:ok, data, answers}, fn {name, subject}, acc ->
+    Enum.reduce_while(slots, {:ok, data, answers}, fn {name, subject}, acc ->
       {:ok, data, answers} = acc
       location = {stream_id, event_type, Atom.to_string(name)}
 
@@ -552,9 +587,10 @@ defmodule Decree.PersonalFields do
   defp decrypt_metadata(application, %RecordedEvent{} = event, declaration, answers) do
     %RecordedEvent{metadata: metadata, stream_id: stream_id, event_type: event_type} = event
     metadata = metadata || %{}
+    %Declaration{metadata: entries, retired_metadata: retired} = declaration
 
     slots =
-      for {name, subject} <- declaration.metadata,
+      for {name, subject} <- entries ++ Enum.map(retired, &{&1, @retired}),
           form <- key_forms(metadata, name),
           do: {name, subject, form}
 
@@ -572,7 +608,7 @@ defmodule Decree.PersonalFields do
   end
 
   # The subject of a stored value is the envelope's, never the declaration's: `subject` here
-  # only says whether a bare value is allowed for.
+  # only says whether a bare value is allowed for. A retired slot's always is.
   defp read(_application, nil, _subject, _location, _answers), do: :nil_value
 
   defp read(application, value, subject, location, answers) do
@@ -622,6 +658,7 @@ defmodule Decree.PersonalFields do
   end
 
   defp plaintext_read(_application, {:when_present, _field}, _location), do: :ok
+  defp plaintext_read(_application, @retired, _location), do: :ok
 
   defp plaintext_read(application, _subject, {_stream, event_type, field}) do
     :telemetry.execute([:decree, :personal_field, :plaintext_read], %{}, %{

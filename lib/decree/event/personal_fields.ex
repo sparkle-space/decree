@@ -31,10 +31,25 @@ defprotocol Decree.Event.PersonalFields do
     - `{:when_present, :x}` - the subject is `event.x`, and with a nil `event.x` the value is
       stored in the clear.
 
-  The derive refuses, with a `CompileError`, any other form, a declared field or subject field
-  that is not in the struct, a subject field that is itself declared personal, an option it
-  does not know, and a declaration with neither list non-empty. A typo must never leave a field
-  in the clear.
+  A field or metadata entry that no longer holds personal data, but whose stored values are
+  envelopes, is retired rather than dropped from the declaration:
+
+      @derive [
+        Jason.Encoder,
+        {Decree.Event.PersonalFields,
+         personal_retired: [:email], personal_metadata_retired: [:email]}
+      ]
+
+  `personal_retired:` lists fields of the struct and `personal_metadata_retired:` metadata
+  entries, by name and with no subject. A retired slot is decrypt-only: a stored envelope is read
+  under its own subject as a declared one is, and a new value is stored as given, never
+  encrypted. An event may declare only retired names.
+
+  The derive refuses, with a `CompileError`, any other form, a declared or retired field or a
+  subject field that is not in the struct, a subject field that is itself declared personal or
+  retired, a name both declared and retired in the same list pair, a retired list that is not a
+  list of names or repeats one, an option it does not know, and a declaration with every list
+  empty. A typo must never leave a field in the clear.
 
   `Decree.PersonalFields` says what is done with a declaration.
   """
