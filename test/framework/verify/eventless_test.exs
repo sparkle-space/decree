@@ -812,6 +812,84 @@ defmodule Decree.Verify.EventlessTest do
       assert shape =~ "events_for/1"
     end
 
+    test "an imported macro shadowing `Kernel.then/2` is unclassified" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Kernel, except: [then: 2]
+            import Fixture.Shared.Macros
+
+            def execute(_s, _c), do: then(:value, fn _ -> [%{ev: 1}] end)
+          end
+          """,
+          [
+            {"lib/fixture/shared/macros.ex",
+             """
+             defmodule Fixture.Shared.Macros do
+               defmacro then(_v, _f), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [
+               {:unclassified, "unclassified: the imported macro Fixture.Shared.Macros.then/2",
+                @aggregate_file, 5}
+             ] = findings(result)
+    end
+
+    test "an imported macro shadowing `Kernel.tap/2` is unclassified" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Kernel, except: [tap: 2]
+            import Fixture.Shared.Macros
+
+            def execute(_s, _c), do: tap(:value, fn _ -> [%{ev: 1}] end)
+          end
+          """,
+          [
+            {"lib/fixture/shared/macros.ex",
+             """
+             defmodule Fixture.Shared.Macros do
+               defmacro tap(_v, _f), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [
+               {:unclassified, "unclassified: the imported macro Fixture.Shared.Macros.tap/2",
+                @aggregate_file, 5}
+             ] = findings(result)
+    end
+
+    test "an imported macro with a non-Kernel name is unclassified" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Fixture.Shared.Macros
+
+            def execute(_s, _c), do: answer()
+          end
+          """,
+          [
+            {"lib/fixture/shared/macros.ex",
+             """
+             defmodule Fixture.Shared.Macros do
+               defmacro answer(), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:unclassified, shape, @aggregate_file, 4}] = findings(result)
+      assert shape =~ "answer/0"
+    end
+
     test "lint/2 refuses to run without an `internal?:` predicate" do
       assert_raise ArgumentError, ~r/internal\?/, fn ->
         Eventless.lint([entry(@thing)], root: tmp_root(), paths: ["lib"])
