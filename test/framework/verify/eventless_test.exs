@@ -1454,6 +1454,63 @@ defmodule Decree.Verify.EventlessTest do
              ] = findings(result)
     end
 
+    test "an `import` in a `quote`'s `bind_quoted:` belongs to the module" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            defmacro __using__(_opts) do
+              quote bind_quoted: [
+                      a: is_atom(import(Kernel, except: [then: 2])),
+                      b: is_atom(import(Fixture.Shared.Helper, only: [then: 2]))
+                    ] do
+                {a, b}
+              end
+            end
+
+            def execute(_s, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+          end
+          """,
+          [
+            {"lib/fixture/shared/helper.ex",
+             """
+             defmodule Fixture.Shared.Helper do
+               def then(_value, _fun), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", "lib/fixture/shared/helper.ex", 2}] = findings(result)
+    end
+
+    test "an `import` in an `unquote` inside a `quote` body belongs to the module" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            defmacro __using__(_opts) do
+              quote do
+                unquote(import(Fixture.Shared.Empty))
+              end
+            end
+
+            def execute(_s, cmd), do: empty(cmd)
+          end
+          """,
+          [
+            {@empty_file,
+             """
+             defmodule Fixture.Shared.Empty do
+               def empty(_command), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", @empty_file, 2}] = findings(result)
+    end
+
     test "an `import` inside a `quote` belongs to the caller" do
       result =
         lint_aggregate(
