@@ -123,7 +123,7 @@ defmodule Decree.PersonalFields.Declaration do
   defp names!(options, option, refuse) do
     names = Keyword.get(options, option, [])
 
-    unless is_list(names) and Enum.all?(names, &is_atom/1) do
+    unless is_list(names) and not List.improper?(names) and Enum.all?(names, &is_atom/1) do
       refuse.("`#{inspect(option)}` must be a list of names, got: #{inspect(names)}")
     end
 
