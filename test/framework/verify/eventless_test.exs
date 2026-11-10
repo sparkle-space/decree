@@ -994,5 +994,116 @@ defmodule Decree.Verify.EventlessTest do
       assert {:ok, %{modules: 1, entries: 3}} =
                lint_aggregate(source, [], [entry(@thing, :decide, :aggregate)])
     end
+
+    test "an `Elixir.`-prefixed alias and its plain spelling name one module, so no conflict" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            alias Fixture.Shared.Eventless, as: Helper
+
+            def execute(_state, _command), do: Helper.none()
+
+            def other do
+              alias Elixir.Fixture.Shared.Eventless, as: Helper
+              Helper.none()
+            end
+          end
+          """,
+          [
+            {"lib/fixture/shared/eventless.ex",
+             """
+             defmodule Fixture.Shared.Eventless do
+               def none, do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", "lib/fixture/shared/eventless.ex", 2}] = findings(result)
+    end
+
+    test "an `Elixir.`-prefixed alias is expanded into the indexed module" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            alias Elixir.Fixture.Shared.Membership
+
+            def execute(_state, command), do: Membership.register(command)
+          end
+          """,
+          [
+            {"lib/fixture/shared/membership.ex",
+             """
+             defmodule Fixture.Shared.Membership do
+               def register(_command), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", "lib/fixture/shared/membership.ex", 2}] = findings(result)
+    end
+
+    test "a local `tap/2` returning events is followed, not read as `Kernel.tap/2`" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          import Kernel, except: [tap: 2]
+
+          def execute(_state, _command), do: tap(:ok, fn -> [%{ev: 1}] end)
+
+          defp tap(_value, fun), do: fun.()
+        end
+        """)
+
+      assert {:ok, _counts} = result
+    end
+
+    test "a local `then/2` returning events is followed, not read as `Kernel.then/2`" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          import Kernel, except: [then: 2]
+
+          def execute(_state, command), do: then(command, fn _ -> [] end)
+
+          defp then(value, _fun), do: [%{ev: value}]
+        end
+        """)
+
+      assert {:ok, _counts} = result
+    end
+
+    test "`Kernel.then/2` and `Kernel.tap/2` keep Kernel semantics beside a local def" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          import Kernel, except: [tap: 2, then: 2]
+
+          def execute(%{kind: :a}, _command), do: Kernel.then(nil, fn _ -> [] end)
+          def execute(_state, _command), do: Kernel.tap(:ok, fn _ -> [%{ev: 1}] end)
+
+          defp then(value, _fun), do: [%{ev: value}]
+          defp tap(value, _fun), do: [%{ev: value}]
+        end
+        """)
+
+      assert [
+               {:eventless, "[]", @aggregate_file, 4},
+               {:eventless, ":ok", @aggregate_file, 5}
+             ] = findings(result)
+
+      # With no local def, a bare `then/2` is `Kernel.then/2`.
+      bare =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          def execute(_state, _command), do: then(nil, fn _ -> [] end)
+        end
+        """)
+
+      assert [{:eventless, "[]", @aggregate_file, 2}] = findings(bare)
+    end
   end
 end
