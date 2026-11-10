@@ -119,6 +119,14 @@ defmodule Decree.Commands.CompositeRouter do
       @doc false
       def __conditional_targets__, do: @conditional_targets
 
+      @doc false
+      def __route__(command_module) when is_atom(command_module) do
+        case Map.fetch(@registered_commands, command_module) do
+          {:ok, router} -> router.__route__(command_module)
+          :error -> nil
+        end
+      end
+
       @doc """
       Dispatch a registered command.
       """

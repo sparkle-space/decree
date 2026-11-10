@@ -154,8 +154,18 @@ defmodule Decree.Aggregates.Aggregate do
   `before_execute` and before `execute/2`, so the reads hold up the mailbox as a rebuild does.
   What they answer lives in one local variable for one `execute/2` call, on a copy of the
   command, and the append goes in under a condition. Both retry loops come back through there,
-  so each attempt reads afresh. See `Decree.Decision.Rule`. A route with no rule does none of
-  this: it is the same append, with no statement added.
+  so each attempt reads afresh. See `Decree.Decision.Rule`. A route with no rule, on an
+  aggregate with no command window, does none of this: it is the same append, with no
+  statement added.
+
+  ## Command window
+
+  An aggregate that declares `use Decree.Aggregate, command_window: [ms: n]` reads the command
+  index in `execute_command` too: after `before_execute`, it calls the aggregate's
+  `authorize/2` on an existing stream, then reads the command item with the rule's items, if
+  the route has a rule, in one read, classifies the match, and appends under the condition on
+  every command. A duplicate or a reused id never reaches `execute/2`. See "Command window" in
+  `Decree.Aggregate`.
 
   ## Telemetry
 
@@ -209,6 +219,8 @@ defmodule Decree.Aggregates.Aggregate do
     :snapshotting,
     # Why this aggregate must stop once it has replied, when its state can't be trusted.
     :stop_reason,
+    # Its definition's command window, in milliseconds, or nil for none.
+    :command_window_ms,
     aggregate_version: 0,
     lifespan_timeout: :infinity
   ]
@@ -238,7 +250,8 @@ defmodule Decree.Aggregates.Aggregate do
       application: application,
       aggregate_module: aggregate_module,
       aggregate_uuid: aggregate_uuid,
-      snapshotting: Snapshotting.new(application, aggregate_uuid, snapshot_options)
+      snapshotting: Snapshotting.new(application, aggregate_uuid, snapshot_options),
+      command_window_ms: Decree.Aggregate.command_window_ms(aggregate_module)
     }
 
     GenServer.start_link(__MODULE__, state, start_opts)
@@ -648,17 +661,46 @@ defmodule Decree.Aggregates.Aggregate do
     Kernel.apply(handler, before_execute, [aggregate_state, context])
   end
 
-  # The command `execute/2` gets, and what the append needs of a rule's reads. The result stays
-  # on this copy of the command: nothing after the one call below may hold it.
-  defp rule_read(%ExecutionContext{rule: nil, command: command}, _state), do: {:ok, command, nil}
+  # A windowed aggregate's admission, ownership and authorization guards, on an existing stream
+  # and before the window is read, so a refusal is never answered as a duplicate. An empty stream
+  # has nothing to own yet.
+  defp authorize(%Aggregate{command_window_ms: nil}, _command), do: :ok
+  defp authorize(%Aggregate{aggregate_version: 0}, _command), do: :ok
 
-  defp rule_read(%ExecutionContext{rule: rule, command: command} = context, state) do
-    %Aggregate{application: application} = state
+  defp authorize(%Aggregate{} = state, command) do
+    %Aggregate{aggregate_module: aggregate_module, aggregate_state: aggregate_state} = state
 
-    with {:ok, result, rule_read} <- Dispatch.read_rule(application, rule, context) do
-      {:ok, %{command | rule_result: result}, rule_read}
+    case aggregate_module.authorize(aggregate_state, command) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
     end
   end
+
+  # The command `execute/2` gets, and what the append needs of the reads: a rule's, the window's,
+  # or both. A rule's result stays on this copy of the command: nothing after the one call below
+  # may hold it.
+  defp rule_read(%ExecutionContext{rule: nil, command: command}, %Aggregate{
+         command_window_ms: nil
+       }),
+       do: {:ok, command, nil}
+
+  defp rule_read(%ExecutionContext{rule: rule, command: command} = context, state) do
+    %Aggregate{
+      application: application,
+      aggregate_module: aggregate_module,
+      command_window_ms: window_ms
+    } = state
+
+    case Dispatch.read_aggregate(application, aggregate_module, window_ms, context) do
+      {:ok, result, rule_read} -> {:ok, ride(command, rule, result), rule_read}
+      # Its own tag, so no other step's answer is read as one.
+      {:retry, reason} -> {:read_again, reason}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ride(command, nil, _result), do: command
+  defp ride(command, _rule, result), do: %{command | rule_result: result}
 
   defp execute_command(%ExecutionContext{} = context, %Aggregate{} = state) do
     %ExecutionContext{command: command, handler: handler, function: function} = context
@@ -667,6 +709,7 @@ defmodule Decree.Aggregates.Aggregate do
     Logger.debug(describe(state) <> " executing command: " <> inspect(command))
 
     with :ok <- before_execute_command(aggregate_state, context),
+         :ok <- authorize(state, command),
          {:ok, command, rule_read} <- rule_read(context, state) do
       case Kernel.apply(handler, function, [aggregate_state, command]) do
         {:error, _error} = reply ->
@@ -693,6 +736,9 @@ defmodule Decree.Aggregates.Aggregate do
     else
       {:error, _error} = reply ->
         {reply, state}
+
+      {:read_again, reason} ->
+        retry_rule(context, state, reason)
     end
   rescue
     error ->
@@ -801,19 +847,21 @@ defmodule Decree.Aggregates.Aggregate do
         end
 
       {:error, :append_condition_failed} ->
-        retry_rule(context, state)
+        retry_rule(context, state, :append_condition_failed)
 
       {:error, _error} = reply ->
         {reply, state}
     end
   end
 
-  # Only a rule route's append carries a condition. Its stream did not move, or the store would
-  # have said so first, so the state stands, and the attempt reads again.
-  defp retry_rule(%ExecutionContext{rule: rule} = context, %Aggregate{} = state) do
+  # Only a rule route's append, or a windowed aggregate's, carries a condition, and only a
+  # rule's second read on a windowed aggregate can find a command match its first did not. The
+  # stream did not move, or the store would have said so first, so the state stands, and the
+  # attempt reads again.
+  defp retry_rule(%ExecutionContext{rule: rule} = context, %Aggregate{} = state, reason) do
     case ExecutionContext.retry_rule(context) do
       {:ok, retried} ->
-        Dispatch.rule_retried(state.application, rule, context)
+        Dispatch.rule_retried(state.application, rule || state.aggregate_module, context, reason)
 
         execute_command(retried, state)
 

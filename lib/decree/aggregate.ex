@@ -33,25 +33,152 @@ defmodule Decree.Aggregate do
   row exists for it. `warm_snapshot/3` records that row ahead of the first command.
   `prune_snapshots/2` deletes the rows of the versions below the declared one: run it once
   no running code reads an older version.
+
+  ## Command window
+
+      defmodule MyApp.Account do
+        use Decree.Aggregate, command_window: [ms: 300_000]
+
+        defstruct [:account_id, :owner]
+
+        def authorize(%__MODULE__{owner: owner}, %{actor: actor}) when actor != owner,
+          do: {:error, :unauthorized}
+
+        def authorize(%__MODULE__{}, _command), do: :ok
+
+        # execute/2 and apply/2 as for any aggregate
+      end
+
+  An aggregate that declares a command window answers a repeat of a `command_id` from the
+  store's command index, as a `Decree.Decision` does, and not from its state. `ms` is the
+  window's length in milliseconds, a positive integer literal, checked when the module
+  compiles: a missing or bad `ms`, an unknown key under `command_window:`, or a module with no
+  public `authorize/2` fails the build. The length lives on the definition alone: no config is
+  read and there is no default. `command_window_ms/1` answers it. A module with no
+  `command_window:` has no window: none of what follows runs for it, and `authorize/2` is never
+  called.
+
+  `c:authorize/2` holds the aggregate's admission, ownership and authorization guards, and
+  answers `:ok` or `{:error, reason}`. In the aggregate's process each attempt at a command runs,
+  in this order:
+
+    1. The route's `before_execute`, as on any route.
+    2. `authorize/2` on the state, only when the stream is not empty. Its refusal is the
+       answer as it stands, with nothing read: an actor who may not ask never learns that a
+       `command_id` is live. An empty stream has nothing to own yet: a create's own guards stay
+       in `execute/2`. The emptiness is this process's state, so a process that has not yet
+       received an event another pod appended to its stream reads the window before
+       `authorize/2`, and can answer a duplicate or a reused id ahead of a refusal, appending
+       nothing. An append on that stale state loses its expected version and appends nothing:
+       after a rebuild that succeeds, and while attempts remain, the next attempt runs
+       `authorize/2`; otherwise the dispatch answers the rebuild's or the retry's error.
+    3. One read of the command item (`command:<command_id>`) and the tag index item, with the
+       route's rule's items in the same read when the route has a rule, and the classification
+       of a decision's step 7 with this window, on an empty stream too: a reuse on another
+       stream needs no state to see.
+    4. `execute/2`, only for a command the window found open.
+    5. The append, always under the condition the read built, whose `target` is the aggregate.
+
+  The answers:
+
+    - `{:error, :duplicate_command}` - a match inside the window, from this command's kind on
+      this stream. Nothing is appended and `execute/2` is not called.
+    - `{:error, :reused_command_id}` - a match inside the window from another command kind, or
+      on another stream (the route's stream tag is the scope). Nothing is appended.
+    - `{:error, :tag_index_not_enabled}` - the `command` family, or a family the route's rule
+      requires, is not enabled by the tag index facts, as "Index facts" in `Decree.Decision`
+      says: a resend refuses as a new command does.
+    - `{:error, :command_id_required}`, `{:error, :invalid_command_id}` or
+      `{:error, :invalid_aggregate_identity}` for a direct call that bypassed the router and
+      carries no usable `command_id` or stream tag.
+    - otherwise what the command answers on any route.
+
+  The window's semantics are a decision's: the stamp and `read_at` are both the database's
+  clock, the edge is outside, a negative age is inside, and after the window the same id is a
+  new command and appends. Two writers racing one `command_id` both read the window open, and
+  one commits: on the same stream the other loses its expected version, rebuilds and reads
+  again, and is the duplicate; on another stream of the same kind its condition fails, it reads
+  again, and the id is reused. Neither answers a store's atom while attempts remain. A route
+  with a rule counts the command item against the rule's `max_items`; a route with none takes a
+  rule's default bounds (16 items, 48 probes, 1,000 matched events, 100 new events per batch).
+
+  A host moving an aggregate onto this window from one timed by its own pods' clocks runs both
+  through a rolling deploy. A new pod refuses every resend an old pod would when `ms` is at
+  least the old window plus twice the largest offset between a pod's clock and the database's:
+  the old pod stamps before its commit, so the time between only shortens the age the database
+  measures. The host knows the old window, so the host's test holds that floor.
+
+  An application checks a windowed aggregate as it starts: every one it routes must be a target
+  of its event store's `conditional_appends: [targets: [...]]`, and every route to one must
+  give its stream an entity tag, so an opaque identity, or a function identity with no
+  `stream_tag:`, raises an `ArgumentError` and the application does not start. A declared
+  target that declares a window draws no warning. A router outside the application is not
+  checked, and its dispatch answers the store's `{:error, :undeclared_conditional_target}`.
+
+  `check_command_window/2` is the same read and classification for a host's facade, before its
+  business proofs: the probe reads the index, and the dispatch's condition still decides under
+  the store's lock.
+
+  `[:decree, :decision, :read]` fires once per attempt that read and passed the index check, and
+  `[:decree, :decision, :retry]` for a failed condition or a command match only a rule's second
+  read has (`:new_command_match`), as on a rule route. Their `decision` is
+  the route's rule, or the aggregate's module on a route with none. See
+  `Decree.Decision.Rule`.
   """
 
   alias Decree.Aggregates.Aggregate, as: AggregateProcess
-  alias Decree.Aggregates.AggregateStateBuilder
+  alias Decree.Aggregates.{AggregateStateBuilder, ExecutionContext}
   alias Decree.Application.Config
+  alias Decree.Command
+  alias Decree.Decision.Dispatch
   alias Decree.EventStore
   alias Decree.EventStore.{SnapshotData, TypeProvider}
+  alias Decree.Middleware.{ExtractAggregateIdentity, Pipeline}
   alias Decree.Snapshotting
 
   @snapshot_keys [:every, :version]
+  @command_window_keys [:ms]
+
+  @doc """
+  An aggregate's admission, ownership and authorization guards, required of a module that
+  declares `command_window:`. See "Command window". Called on an existing stream only, before
+  the window is read, and never for a module that declares no window.
+  """
+  @callback authorize(state :: struct(), command :: struct()) :: :ok | {:error, term()}
+
+  @optional_callbacks authorize: 2
 
   @doc false
   defmacro __using__(opts) do
-    snapshot = definition!(__CALLER__.module, opts)
+    {snapshot, command_window} = definition!(__CALLER__.module, opts)
+
+    check_authorize =
+      if command_window do
+        quote do: @before_compile({Decree.Aggregate, :__check_authorize__})
+      end
 
     quote do
+      unquote(check_authorize)
+
       @doc false
       def __decree_aggregate__(:snapshot), do: unquote(snapshot)
+      def __decree_aggregate__(:command_window), do: unquote(command_window)
     end
+  end
+
+  # A window is decided after `authorize/2`, so a module that declares one and defines no public
+  # `authorize/2` would answer a duplicate to whoever asked.
+  @doc false
+  defmacro __check_authorize__(%Macro.Env{module: module}) do
+    if not Module.defines?(module, {:authorize, 2}, :def) do
+      invalid!(
+        module,
+        "`command_window:` requires a public `authorize/2`, the aggregate's admission, " <>
+          "ownership and authorization guards, answering `:ok` or `{:error, reason}`"
+      )
+    end
+
+    :ok
   end
 
   # The options are read as written: a value that is not an integer literal is refused,
@@ -64,14 +191,53 @@ defmodule Decree.Aggregate do
       )
     end
 
-    case Keyword.keys(opts) -- [:snapshot] do
+    case Keyword.keys(opts) -- [:snapshot, :command_window] do
       [] -> :ok
       [option | _] -> invalid!(module, "unknown option #{inspect(option)}")
     end
 
-    case Keyword.fetch(opts, :snapshot) do
-      :error -> nil
-      {:ok, snapshot} -> snapshot!(module, snapshot)
+    snapshot =
+      case Keyword.fetch(opts, :snapshot) do
+        :error -> nil
+        {:ok, snapshot} -> snapshot!(module, snapshot)
+      end
+
+    command_window =
+      case Keyword.fetch(opts, :command_window) do
+        :error -> nil
+        {:ok, command_window} -> command_window!(module, command_window)
+      end
+
+    {snapshot, command_window}
+  end
+
+  defp command_window!(module, command_window) do
+    unless Keyword.keyword?(command_window) do
+      invalid!(
+        module,
+        "expected `command_window:` to be a keyword list, got: " <>
+          Macro.to_string(command_window)
+      )
+    end
+
+    case Keyword.keys(command_window) -- @command_window_keys do
+      [] -> :ok
+      [key | _] -> invalid!(module, "unknown `command_window:` key #{inspect(key)}")
+    end
+
+    case Keyword.fetch(command_window, :ms) do
+      {:ok, ms} when is_integer(ms) and ms > 0 ->
+        [ms: ms]
+
+      {:ok, ms} ->
+        invalid!(
+          module,
+          "expected `command_window: [ms: ...]` to be a positive integer, got: " <>
+            Macro.to_string(ms)
+        )
+
+      :error ->
+        invalid!(module, "`command_window:` requires `ms:`, a positive integer")
     end
   end
 
@@ -149,10 +315,97 @@ defmodule Decree.Aggregate do
   @doc false
   # The definition's options, or nil for a module that declares none or does not
   # `use Decree.Aggregate`.
-  def declared(aggregate_module) do
+  def declared(aggregate_module), do: definition(aggregate_module, :snapshot)
+
+  @doc """
+  The length of `aggregate_module`'s command window in milliseconds, as its definition declares
+  it (`use Decree.Aggregate, command_window: [ms: n]`), or nil for a module that declares none
+  or does not `use Decree.Aggregate`. No config is read, and there is no default length. See
+  "Command window".
+  """
+  @spec command_window_ms(module()) :: pos_integer() | nil
+  def command_window_ms(aggregate_module) when is_atom(aggregate_module) do
+    case definition(aggregate_module, :command_window) do
+      [ms: ms] -> ms
+      nil -> nil
+    end
+  end
+
+  @doc """
+  What a dispatch of `command` would answer from its aggregate's command window now, read before
+  a host's own business proofs: `:ok`, `{:error, :duplicate_command}`,
+  `{:error, :reused_command_id}`, `{:error, :tag_index_not_enabled}`, or the refusal a dispatch
+  gives first, such as `{:error, :command_id_required}`, `{:error, :invalid_command_id}` or
+  `{:error, :invalid_aggregate_identity}`.
+
+  It resolves the command's route through the application's router, computes the stream tag
+  as that route's dispatch does, and reads and classifies through the code the aggregate's
+  process runs, the window's items alone: on a rule route the rule's items are the dispatch's.
+  It reads the command index only. It does not fold the aggregate's state or call
+  `authorize/2`: a host that needs that order runs its own fold and `authorize/2` first. And it
+  decides nothing: the dispatch's condition still decides under the store's lock, so a racing
+  writer can commit between the probe and the dispatch.
+
+  The command is read as sent, before any middleware of the router's own. Raises an
+  `ArgumentError` for a command the application routes nowhere, and for one whose route reaches
+  a decision, or an aggregate that declares no `command_window:`: a probe that sees no window is
+  a wiring bug.
+  """
+  @spec check_command_window(Decree.Application.t(), struct()) :: :ok | {:error, term()}
+  def check_command_window(application, %command_module{} = command) when is_atom(application) do
+    module = Config.get(application, :application)
+
+    route =
+      module.__route__(command_module) ||
+        raise ArgumentError, "#{inspect(command_module)} has no route in #{inspect(module)}"
+
+    aggregate =
+      route[:aggregate] ||
+        raise ArgumentError,
+              "#{inspect(command_module)} is decided by #{inspect(route[:decision])}, which " <>
+                "has a command window of its own"
+
+    window_ms =
+      command_window_ms(aggregate) ||
+        raise ArgumentError,
+              "#{inspect(command_module)} is routed to #{inspect(aggregate)}, which declares " <>
+                "no `command_window:`"
+
+    with :ok <- Command.check_id(Map.get(command, :command_id)),
+         {:ok, identity} <- route_identity(command, route) do
+      context = %ExecutionContext{
+        command: command,
+        identity: route[:identity],
+        aggregate_identity: identity,
+        stream_tag: route[:stream_tag]
+      }
+
+      case Dispatch.read_aggregate(application, aggregate, window_ms, context) do
+        {:ok, _result, _read} -> :ok
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  # The identity the route's dispatch resolves, through the middleware that resolves it.
+  defp route_identity(command, route) do
+    pipeline = %Pipeline{
+      command: command,
+      identity: route[:identity],
+      identity_prefix: route[:identity_prefix],
+      identity_opaque: route[:identity_opaque]
+    }
+
+    case ExtractAggregateIdentity.before_dispatch(pipeline) do
+      %Pipeline{halted: true, response: {:error, _reason} = error} -> error
+      %Pipeline{assigns: %{aggregate_identity: identity}} -> {:ok, identity}
+    end
+  end
+
+  defp definition(aggregate_module, key) do
     if Code.ensure_loaded?(aggregate_module) and
          function_exported?(aggregate_module, :__decree_aggregate__, 1) do
-      aggregate_module.__decree_aggregate__(:snapshot)
+      aggregate_module.__decree_aggregate__(key)
     end
   end
 

@@ -4,9 +4,12 @@ defmodule Decree.Decision.Dispatch do
   # One dispatch of a decision, in the dispatcher's task. The steps are those of
   # `Decree.Decision`'s moduledoc, and each is named below by its number there.
   #
-  # `read_rule/3` and `append_rule/5` are the same steps for a `Decree.Decision.Rule`, in an
-  # aggregate's process: a dispatch with no command tag, so no command item and no scope. Its
-  # one framework item is the index item.
+  # `read_aggregate/4` and `append_rule/5` are the same steps in an aggregate's process, for a
+  # `Decree.Decision.Rule`, an aggregate's command window, or both in one read. A rule on an
+  # aggregate with no window is a dispatch with no command tag, so no command item and no scope:
+  # its one framework item is the index item. A window adds the command item, the route's stream
+  # tag as the scope and step 7, with the aggregate's own length, and nothing else of a
+  # decision's: no fold, no `admit/2`, no `decide/2`.
 
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Command
@@ -45,6 +48,10 @@ defmodule Decree.Decision.Dispatch do
     :fold,
     # A rule's condition, once its reads have answered.
     :condition,
+    # On a read in an aggregate's process, the aggregate's module, and its command window's
+    # length when it declares one. `decision` is then the route's rule, or nil.
+    :aggregate,
+    :window_ms,
     attempt: 1
   ]
 
@@ -79,31 +86,110 @@ defmodule Decree.Decision.Dispatch do
   end
 
   @doc """
-  A rule's reads, for one attempt at a command, in the aggregate's process. Answers
-  `{:ok, result, rule_read}`, where `rule_read` is what `append_rule/5` takes, or
-  `{:error, reason}`. After `[]` from `query/2` it holds no condition, and keeps the rule's
-  bounds for the batch. A raise, an exit or a throw is the aggregate's to catch.
+  An aggregate's reads, for one attempt at a command, in its process: the route's rule, the
+  aggregate's command window (`window_ms`, nil for none), or both in one read and one
+  condition. Answers `{:ok, result, read}`, where `read` is what `append_rule/5` takes,
+  `{:retry, :new_command_match}` for a command match only a rule's second read has, or
+  `{:error, reason}`. With a window, a match inside it answers `{:error, :duplicate_command}`
+  or `{:error, :reused_command_id}`. After `[]` from a rule's `query/2` on an aggregate with no
+  window it holds no condition, and keeps the rule's bounds for the batch. A raise, an exit or
+  a throw is the aggregate's to catch.
   """
-  def read_rule(application, rule, %ExecutionContext{} = context) do
-    dispatch = %__MODULE__{
-      application: application,
-      decision: rule,
-      context: context,
-      tag_context: %TagContext{metadata: context.metadata, command: context.command},
-      scope: [],
-      bounds: rule.__rule__(),
-      fold: PersonalFields.fold_events(rule),
-      attempt: context.attempt
-    }
+  def read_aggregate(application, aggregate, window_ms, %ExecutionContext{} = context) do
+    with {:ok, dispatch} <- aggregate_dispatch(application, aggregate, window_ms, context) do
+      started = System.monotonic_time()
 
-    started = System.monotonic_time()
+      case reads(dispatch, started) do
+        {:ok, merged, reads, answers, tags} ->
+          read_time = System.monotonic_time() - started
 
-    case reads(dispatch, started) do
-      {:ok, merged, reads, answers, _tags} ->
-        filter(dispatch, merged, reads, System.monotonic_time() - started, answers)
+          with {:ok, result, dispatch} <- filter(dispatch, merged, reads, read_time, answers),
+               :ok <- window(dispatch, merged, tags) do
+            {:ok, result, dispatch}
+          end
 
-      :nothing_to_read ->
-        {:ok, %Result{}, dispatch}
+        :nothing_to_read ->
+          {:ok, %Result{}, dispatch}
+
+        {:retry, _reason} = retry ->
+          retry
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp aggregate_dispatch(application, aggregate, nil, %ExecutionContext{rule: rule} = context)
+       when not is_nil(rule) do
+    {:ok,
+     %__MODULE__{
+       application: application,
+       decision: rule,
+       aggregate: aggregate,
+       context: context,
+       tag_context: %TagContext{metadata: context.metadata, command: context.command},
+       scope: [],
+       bounds: rule.__rule__(),
+       fold: PersonalFields.fold_events(rule),
+       attempt: context.attempt
+     }}
+  end
+
+  # A backstop for a call that bypassed the router: its middleware has already answered a bad
+  # `command_id`, and the application's start an identity that gives no stream tag. With no
+  # stream tag the scope would be empty, and the same kind's id on another stream a duplicate.
+  defp aggregate_dispatch(application, aggregate, window_ms, %ExecutionContext{} = context)
+       when is_integer(window_ms) do
+    %ExecutionContext{command: command, rule: rule} = context
+
+    with :ok <- Command.check_id(Map.get(command, :command_id)),
+         {:ok, stream_tag} <- window_scope(context) do
+      {:ok,
+       %__MODULE__{
+         application: application,
+         decision: rule,
+         aggregate: aggregate,
+         window_ms: window_ms,
+         context: context,
+         tag_context: %TagContext{metadata: context.metadata, command: command},
+         command_tag: Append.command_tag(command),
+         kind_tag: Append.kind_tag(command),
+         stream_tag: stream_tag,
+         scope: [stream_tag],
+         bounds: window_bounds(aggregate, rule),
+         fold: rule && PersonalFields.fold_events(rule),
+         attempt: context.attempt
+       }}
+    end
+  end
+
+  defp window_scope(%ExecutionContext{} = context) do
+    case Append.stream_tag(context) do
+      nil -> {:error, :invalid_aggregate_identity}
+      stream_tag -> {:ok, stream_tag}
+    end
+  end
+
+  # A rule's bounds count the command item too. A route with no rule takes a rule's defaults.
+  defp window_bounds(aggregate, nil), do: Decree.Decision.Rule.__window__(aggregate)
+  defp window_bounds(_aggregate, rule), do: rule.__rule__()
+
+  # Step 7 for an aggregate's window, with the same classifier as a decision's.
+  defp window(%__MODULE__{window_ms: nil}, _merged, _tags), do: :ok
+
+  defp window(%__MODULE__{} = dispatch, %Merged{} = merged, tags) do
+    case classify(dispatch, merged, tags) do
+      {:ok, :open} ->
+        :ok
+
+      {:ok, :duplicate} ->
+        shape(:duplicate)
+
+      # A rule refuses a `replay: true` item and a window's read has none, so no match here is
+      # a replay's. Were one, nothing could answer what its first run decided: it fails closed.
+      {:ok, :replay} ->
+        {:error, :reused_command_id}
 
       {:error, _reason} = error ->
         error
@@ -144,13 +230,14 @@ defmodule Decree.Decision.Dispatch do
   end
 
   @doc """
-  Says a rule's condition failed and the attempt runs again.
+  Says an aggregate's read or condition failed and the attempt runs again. `decision` is the
+  route's rule, or the aggregate's module on a windowed route with none.
   """
-  def rule_retried(application, rule, %ExecutionContext{attempt: attempt}) do
+  def rule_retried(application, decision, %ExecutionContext{attempt: attempt}, reason) do
     :telemetry.execute(@retry, %{attempt: attempt}, %{
       application: application,
-      decision: rule,
-      reason: :append_condition_failed
+      decision: decision,
+      reason: reason
     })
   end
 
@@ -342,7 +429,12 @@ defmodule Decree.Decision.Dispatch do
     end
   end
 
-  # Step 1, up to the read.
+  # Step 1, up to the read. A windowed aggregate's route with no rule reads the framework's
+  # items alone.
+  defp first_read(%__MODULE__{decision: nil} = dispatch) do
+    bounded(dispatch, [], layout(dispatch, []))
+  end
+
   defp first_read(%__MODULE__{decision: decision, context: context} = dispatch) do
     case decision.query(context.command, dispatch.tag_context) do
       {:error, _reason} = error ->
@@ -350,6 +442,10 @@ defmodule Decree.Decision.Dispatch do
 
       [] when is_nil(dispatch.command_tag) ->
         :nothing_to_read
+
+      # A rule with nothing to check, on a windowed aggregate: the window still reads.
+      [] when not is_nil(dispatch.aggregate) ->
+        bounded(dispatch, [], layout(dispatch, []))
 
       items ->
         with {:ok, parsed} <- Read.parse(own_items(dispatch, items)),
@@ -373,6 +469,12 @@ defmodule Decree.Decision.Dispatch do
 
   defp own_items(%__MODULE__{bounds: %{create: types}, stream_tag: stream_tag}, items) do
     [[types: types, tags: [stream_tag]] | items]
+  end
+
+  # A read in an aggregate's process holds no replay item, windowed or not: a rule has no
+  # scope of its own to hold one to, and an aggregate keeps its own replay cases.
+  defp replays_in_scope(%__MODULE__{aggregate: aggregate}, parsed) when not is_nil(aggregate) do
+    if Enum.any?(parsed, & &1.replay), do: {:error, :invalid_query}, else: :ok
   end
 
   # Past the window step 7 checks nothing, so a replay item's own scope tag is what keeps
@@ -549,7 +651,8 @@ defmodule Decree.Decision.Dispatch do
   # exit's is. In the steps, not in `shape/1`: `Decree.Decision.Assertions` shares that, with no
   # logs or telemetry to keep a value from. A rule's is reduced whatever it lists, as its raises
   # are, because it can read another subject's plaintext.
-  defp callback_answer(%__MODULE__{fold: nil, command_tag: tag}, answer) when not is_nil(tag) do
+  defp callback_answer(%__MODULE__{fold: nil, command_tag: tag, aggregate: nil}, answer)
+       when not is_nil(tag) do
     answer
   end
 
@@ -559,7 +662,8 @@ defmodule Decree.Decision.Dispatch do
 
   defp callback_answer(%__MODULE__{}, answer), do: answer
 
-  # Step 7: the mode is what step 8 takes. The window is read per attempt, and only for a match.
+  # Step 7: the mode is what step 8 takes. The window is read per attempt, and only for a match:
+  # a decision's from its callback, an aggregate's from its definition.
   defp classify(%__MODULE__{} = dispatch, %Merged{} = merged, tags) do
     case Read.command_positions(merged) do
       [] ->
@@ -575,6 +679,10 @@ defmodule Decree.Decision.Dispatch do
           end
         end
     end
+  end
+
+  defp command_window(%__MODULE__{window_ms: window_ms}) when is_integer(window_ms) do
+    {:ok, window_ms}
   end
 
   defp command_window(%__MODULE__{decision: decision}) do
@@ -807,7 +915,9 @@ defmodule Decree.Decision.Dispatch do
 
   defp within(_dispatch, _bound, value, limit) when value <= limit, do: :ok
 
-  defp within(%__MODULE__{application: application, decision: decision}, bound, value, limit) do
+  defp within(%__MODULE__{application: application} = dispatch, bound, value, limit) do
+    decision = named(dispatch)
+
     Logger.error(fn ->
       "#{inspect(decision)} refused on the #{bound} bound: #{value} over #{limit}"
     end)
@@ -835,10 +945,15 @@ defmodule Decree.Decision.Dispatch do
 
     :telemetry.execute(@read, measurements, %{
       application: dispatch.application,
-      decision: dispatch.decision,
+      decision: named(dispatch),
       attempt: dispatch.attempt
     })
   end
+
+  # What logs and telemetry name: the decision or the rule, or on a windowed aggregate's route
+  # with no rule, the aggregate's module.
+  defp named(%__MODULE__{decision: nil, aggregate: aggregate}), do: aggregate
+  defp named(%__MODULE__{decision: decision}), do: decision
 
   defp telemetry_stop({:ok, _outcome, events}, start_time, metadata) do
     Telemetry.stop(@execute, start_time, Map.put(metadata, :events, events))
