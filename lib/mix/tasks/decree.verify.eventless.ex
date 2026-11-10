@@ -19,7 +19,8 @@ defmodule Mix.Tasks.Decree.Verify.Eventless do
   `__registered_commands__/0` and, for each command, `__route__/1`. A decision route walks
   the decision's `decide/2`; any other route walks the `handler:` module's `function:` (an
   aggregate's `execute/2`, a `to: Handler, aggregate: Agg` route's `handle/2`, or the
-  route's `function:`). Routes sharing a module and function are walked once.
+  route's `function:`). Routes sharing a module and function are walked once, as a
+  decision when any of them is one.
 
   The sources are every `.ex` file under the project's `elixirc_paths`. A receiver the
   walk cannot find there is claimed as internal, and reported unclassified, when it is
@@ -50,7 +51,7 @@ defmodule Mix.Tasks.Decree.Verify.Eventless do
     config = Mix.Project.config()
     root = File.cwd!()
 
-    entries = routers |> Enum.flat_map(&entries/1) |> Enum.uniq_by(&{&1.module, &1.fun})
+    entries = Enum.flat_map(routers, &entries/1)
 
     result =
       Eventless.lint(entries,

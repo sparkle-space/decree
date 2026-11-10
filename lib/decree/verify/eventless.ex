@@ -34,11 +34,11 @@ defmodule Decree.Verify.Eventless do
   The caller names the entries: `%{module: module, fun: atom, kind: :aggregate |
   :decision}`, one per routed handler function, read from a router's registry (`mix
   decree.verify.eventless` reads `__route__/1`). Entries sharing a module and function are
-  walked once. The walk starts at every PUBLIC `def` clause of `fun/2` in the module, a
-  `defdelegate` included; a `defp` is never called by `Kernel.apply/3`. `use
-  Decree.Aggregate` injects no `execute/2` (the command window runs in the aggregate
-  process before the handler is applied), so such a module is walked through its own
-  `execute/2` like any other.
+  walked once, as a `:decision` when any of them is one (its tails are a superset). The
+  walk starts at every PUBLIC `def` clause of `fun/2` in the module, a `defdelegate`
+  included; a `defp` is never called by `Kernel.apply/3`. `use Decree.Aggregate` injects
+  no `execute/2` (the command window runs in the aggregate process before the handler is
+  applied), so such a module is walked through its own `execute/2` like any other.
 
   ## Shapes
 
@@ -50,17 +50,23 @@ defmodule Decree.Verify.Eventless do
     4. `{:ok, []}` or `{:ok, nil}`;
     5. a `Keyword.get/3` or `Map.get/3` default that is one of the above, or the implicit
        `nil` default of `Keyword.get/2` and `Map.get/2`;
-    6. `{:streams, []}`, from a `:decision` entry only.
+    6. `{:streams, []}`, from a `:decision` entry only: written literally, or a
+       `{:streams, value}` whose value resolves to `[]` (a binding, a module attribute, a
+       followed call). Any other value passes, an unclassifiable one included: runtime
+       members are the normal decision answer.
 
   ## Tail positions
 
   The last expression of a clause body or block (`do: …` included); every branch of
   `if`/`unless`, `cond`, `case`, `with` (its `do` body and every `else` clause), `try`
   (`do`, `rescue`, `catch`, `else`) and `receive` (clauses and `after`); both operands of
-  `||` and `&&`, both of `++` when both can be empty, and the value of a tail `=` or `|>`
-  (a pipe is rewritten into its call first). A falsy left of `||` and a truthy left of
-  `&&` are never returned, so an eventless literal there is a finding only when it can be:
-  a truthy one (`[]`, `:ok`, `{:ok, …}`) on the left of `||`, a `nil` on the left of `&&`.
+  `||` and `&&`, the right operand of `and` and `or` (a non-boolean left raises
+  `BadBooleanError`, so the left is never returned), both of `++` when both can be empty,
+  the first argument of `tap/2`, the value of the function `then/2` applies (`Kernel.tap/2`
+  and `Kernel.then/2` alike), and the value of a tail `=` or `|>` (a pipe is rewritten
+  into its call first). A falsy left of `||` and a truthy left of `&&` are never returned,
+  so an eventless literal there is a finding only when it can be: a truthy one (`[]`,
+  `:ok`, `{:ok, …}`) on the left of `||`, a `nil` on the left of `&&`.
 
   A `with` with no `else` returns the value of a `<-` clause whose pattern it does not
   match. Only a literal eventless fall-through is caught: an eventless literal a clause's
@@ -115,7 +121,10 @@ defmodule Decree.Verify.Eventless do
   `Keyword.get/2,3` on options it cannot resolve, a local call with no `def` in the module
   and no import that could supply it (or one an `internal?` import outside the index
   could), a call to an indexed module that defines no such function in source, an
-  `internal?` receiver outside the index, a module attribute with no literal value, a
+  `internal?` receiver outside the index, a receiver whose first segment is an alias the
+  module's table (file-wide plus its own) maps to two or more different modules (the walk
+  models no lexical scope, so it cannot tell which one the call sees; the same target
+  aliased twice is no conflict), a module attribute with no literal value, a
   runtime field or `Access` read, `quote`/`unquote`/`super`, and the unresolved variables
   above.
 
@@ -131,7 +140,10 @@ defmodule Decree.Verify.Eventless do
     * a function in a module `internal?` calls external (a dependency), which is not
       read;
     * a followed function's clauses are all analysed, whichever one the caller's
-      arguments select.
+      arguments select;
+    * a decision's `{:streams, members}` whose members are empty at runtime, or whose
+      value the walk cannot resolve: `Decree.Decision.Dispatch.shape/1` refuses an empty or
+      malformed members list at runtime, so it is not reported.
 
   ## Findings
 
@@ -151,8 +163,6 @@ defmodule Decree.Verify.Eventless do
 
   @no_value_calls [:raise, :reraise, :throw, :exit]
   @value_operators [
-    :and,
-    :or,
     :not,
     :!,
     :==,
@@ -220,7 +230,7 @@ defmodule Decree.Verify.Eventless do
     end
 
     index = build_index(root, paths)
-    entries = Enum.uniq_by(entries, &{&1.module, &1.fun})
+    entries = merge_entries(entries)
 
     {walked, findings} =
       Enum.reduce(entries, {0, []}, fn entry, {count, acc} ->
@@ -247,6 +257,16 @@ defmodule Decree.Verify.Eventless do
     end
   end
 
+  # One entry per module and function, walked as a decision when any route names it one:
+  # a decision's tails are a superset of an aggregate handler's.
+  defp merge_entries(entries) do
+    entries
+    |> Enum.group_by(&{&1.module, &1.fun}, & &1.kind)
+    |> Enum.map(fn {{module, fun}, kinds} ->
+      %{module: module, fun: fun, kind: if(:decision in kinds, do: :decision, else: :aggregate)}
+    end)
+  end
+
   defp finding_key(f), do: {f.file, f.line, f.module, f.fun, f.shape, f.origin}
 
   # ---------------------------------------------------------------------------
@@ -270,18 +290,20 @@ defmodule Decree.Verify.Eventless do
       |> File.read!()
       |> Code.string_to_quoted!(file: file, columns: true, token_metadata: true)
 
-    file_aliases = AliasMap.collect(ast)
+    file_aliases = AliasMap.pairs(ast)
     relative = Path.relative_to(file, root)
 
     for {module, body} <- ModuleScopes.scopes(ast), is_atom(module) and not is_nil(module) do
       body = ModuleScopes.prune_nested_defmodules(body)
       exprs = block_exprs(body)
+      aliases = file_aliases ++ AliasMap.pairs(body, module)
 
       %{
         module: module,
         file: relative,
         defs: collect_defs(exprs),
-        aliases: Map.merge(file_aliases, AliasMap.collect(body, module)),
+        aliases: Map.new(aliases),
+        alias_conflicts: AliasMap.conflicts(aliases),
         imports: for({:import, _, [target | _]} <- exprs, do: target),
         uses: for({:use, _, [target | _]} <- exprs, do: target),
         attributes: collect_attributes(exprs)
@@ -500,6 +522,9 @@ defmodule Decree.Verify.Eventless do
   defp tail({:streams, []}, %{kind: :decision} = ctx),
     do: [eventless(ctx, "{:streams, []}", {:streams, []})]
 
+  defp tail({:streams, value}, %{kind: :decision} = ctx) when not is_list(value),
+    do: tail_streams(value, ctx)
+
   defp tail({_left, _right}, _ctx), do: []
   defp tail(list, _ctx) when is_list(list), do: []
 
@@ -520,6 +545,14 @@ defmodule Decree.Verify.Eventless do
             do: %{finding | shape: "{:ok, #{finding.shape}}", value: {:ok, finding.value}},
             else: finding
           )
+  end
+
+  # `{:streams, value}`: only a value that resolves to `[]` is a finding. Runtime members
+  # are the normal decision answer, and `Decree.Decision.Dispatch.shape/1` refuses an
+  # empty or malformed one at runtime, so every other result is dropped.
+  defp tail_streams(value, ctx) do
+    for %{kind: :eventless, value: []} = finding <- tail(value, ctx),
+        do: %{finding | shape: "{:streams, #{finding.shape}}", value: {:streams, []}}
   end
 
   # --- blocks and matches ---
@@ -642,6 +675,10 @@ defmodule Decree.Verify.Eventless do
     left_findings = Enum.reject(tail(left, ctx), &(&1.kind == :eventless and &1.value != nil))
     left_findings ++ tail(right, ctx)
   end
+
+  # A non-boolean left raises `BadBooleanError`, so the left is never returned: the right
+  # operand is, when it is reached.
+  defp tail_node({op, _meta, [_left, right]}, ctx) when op in [:and, :or], do: tail(right, ctx)
 
   defp tail_node({:++, _meta, [left, right]}, ctx) do
     left_findings = tail(left, ctx)
@@ -951,6 +988,8 @@ defmodule Decree.Verify.Eventless do
   defp local_call(:then, [value, fun], ctx),
     do: apply_fun(fun, ctx, [{:expr, value, ctx}], ctx)
 
+  defp local_call(:tap, [value, _fun], ctx), do: tail(value, ctx)
+
   defp local_call(:apply, _args, ctx), do: [unclassified(ctx, "`apply`")]
   defp local_call(name, _args, _ctx) when name in [:struct, :struct!], do: []
 
@@ -1017,6 +1056,16 @@ defmodule Decree.Verify.Eventless do
       :variable ->
         [unclassified(ctx, "a call through a variable module `#{short(receiver)}.#{name}`")]
 
+      {:conflict, alias_name} ->
+        targets = Enum.map_join(ctx.rec.alias_conflicts[alias_name], ", ", &inspect/1)
+
+        [
+          unclassified(
+            ctx,
+            "the alias `#{alias_name}` names more than one module in this file: #{targets}"
+          )
+        ]
+
       {:internal, segments} ->
         [
           unclassified(
@@ -1054,6 +1103,9 @@ defmodule Decree.Verify.Eventless do
   defp external_call(Access, :get, [container | _], ctx),
     do: [unclassified(ctx, "a runtime Access read on `#{short(container)}`")]
 
+  defp external_call(Kernel, :then, [value, fun], ctx), do: local_call(:then, [value, fun], ctx)
+  defp external_call(Kernel, :tap, [value, _fun], ctx), do: tail(value, ctx)
+
   defp external_call(module, :apply, _args, ctx) when module in [Kernel, :erlang],
     do: [unclassified(ctx, "`apply`")]
 
@@ -1077,7 +1129,8 @@ defmodule Decree.Verify.Eventless do
 
   # Resolves a receiver to `{:indexed, rec}`, `{:external, module}`,
   # `{:internal, segments}` (a name the index does not hold and the caller's
-  # `internal?` predicate claims) or `:variable`.
+  # `internal?` predicate claims), `{:conflict, alias}` (a first segment the module's
+  # alias table maps to more than one module) or `:variable`.
   defp resolve_receiver({:__MODULE__, _, context}, ctx) when is_atom(context),
     do: {:indexed, ctx.rec}
 
@@ -1088,10 +1141,12 @@ defmodule Decree.Verify.Eventless do
       else: :variable
   end
 
-  defp resolve_receiver({:__aliases__, _, segments}, ctx) when is_list(segments) do
-    if Enum.all?(segments, &is_atom/1),
-      do: by_segments(candidates(segments, ctx), ctx),
-      else: :variable
+  defp resolve_receiver({:__aliases__, _, [first | _] = segments}, ctx) do
+    cond do
+      not Enum.all?(segments, &is_atom/1) -> :variable
+      Map.has_key?(ctx.rec.alias_conflicts, first) -> {:conflict, first}
+      true -> by_segments(candidates(segments, ctx), ctx)
+    end
   end
 
   defp resolve_receiver(module, ctx) when is_atom(module) and not is_nil(module) do

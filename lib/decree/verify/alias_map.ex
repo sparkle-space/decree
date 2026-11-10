@@ -4,12 +4,16 @@ defmodule Decree.Verify.AliasMap do
   # The syntactic `alias` table `Decree.Verify.Eventless` expands a written receiver
   # through.
   #
-  # `collect/1,2` returns `%{short_name => full_segments}` for every `alias` in the AST it
-  # is handed: `alias A.B`, `alias A.B, as: C` and the brace form `alias A.{B, C.D}`. It is
-  # SYNTACTIC: lexical scope is not modelled (an alias written inside one function reads as
-  # AST-wide), a later declaration of the same short name replaces an earlier one, and a
-  # target that is itself an alias is not chased. A target with a computed segment is
-  # skipped, except a leading `__MODULE__` when `collect/2` is given the enclosing module.
+  # `pairs/1,2` returns `{short_name, full_segments}`, in source order, for every `alias` in
+  # the AST it is handed: `alias A.B`, `alias A.B, as: C` and the brace form
+  # `alias A.{B, C.D}`. It is SYNTACTIC: lexical scope is not modelled (an alias written
+  # inside one function reads as AST-wide), and a target that is itself an alias is not
+  # chased. A target with a computed segment is skipped, except a leading `__MODULE__` when
+  # `pairs/2` is given the enclosing module. `Map.new/1` of the pairs is the table, a later
+  # declaration of the same short name replacing an earlier one.
+  #
+  # `conflicts/1` returns `%{short_name => [module]}` for every short name the pairs map to
+  # two or more different targets; a name declared twice with one target is no conflict.
   #
   # `expand/2` replaces the FIRST segment of a written name when the table holds it, and
   # returns the segments unchanged otherwise. It performs one step; a caller that wants a
@@ -17,10 +21,10 @@ defmodule Decree.Verify.AliasMap do
 
   @type t :: %{optional(atom()) => [atom()]}
 
-  @spec collect(Macro.t(), module() | nil) :: t()
-  def collect(ast, module \\ nil) do
-    {_ast, aliases} =
-      Macro.prewalk(ast, %{}, fn
+  @spec pairs(Macro.t(), module() | nil) :: [{atom(), [atom()]}]
+  def pairs(ast, module \\ nil) do
+    {_ast, pairs} =
+      Macro.prewalk(ast, [], fn
         {:alias, _, [{:__aliases__, _, segments} | opts]} = node, acc ->
           segments = expand_module(segments, module)
           {node, put(acc, name(segments, opts), segments)}
@@ -39,7 +43,16 @@ defmodule Decree.Verify.AliasMap do
           {node, acc}
       end)
 
-    aliases
+    Enum.reverse(pairs)
+  end
+
+  @spec conflicts([{atom(), [atom()]}]) :: %{optional(atom()) => [module()]}
+  def conflicts(pairs) do
+    for {name, targets} <- Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1)),
+        targets = Enum.uniq(targets),
+        length(targets) > 1,
+        into: %{},
+        do: {name, targets |> Enum.map(&Module.concat/1) |> Enum.sort()}
   end
 
   @spec expand([atom()], t()) :: [atom()]
@@ -64,7 +77,7 @@ defmodule Decree.Verify.AliasMap do
 
   defp put(acc, name, segments) do
     if is_atom(name) and Enum.all?(segments, &is_atom/1),
-      do: Map.put(acc, name, segments),
+      do: [{name, segments} | acc],
       else: acc
   end
 
