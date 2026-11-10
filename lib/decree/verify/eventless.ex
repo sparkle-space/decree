@@ -985,11 +985,6 @@ defmodule Decree.Verify.Eventless do
 
   # --- local calls ---
 
-  defp local_call(:then, [value, fun], ctx),
-    do: apply_fun(fun, ctx, [{:expr, value, ctx}], ctx)
-
-  defp local_call(:tap, [value, _fun], ctx), do: tail(value, ctx)
-
   defp local_call(:apply, _args, ctx), do: [unclassified(ctx, "`apply`")]
   defp local_call(name, _args, _ctx) when name in [:struct, :struct!], do: []
 
@@ -1007,6 +1002,9 @@ defmodule Decree.Verify.Eventless do
 
       imported != nil ->
         follow(imported, name, args, ctx, [:def])
+
+      name in [:then, :tap] and arity == 2 ->
+        external_call(Kernel, name, args, ctx)
 
       MapSet.member?(@kernel, {name, arity}) ->
         []
@@ -1103,7 +1101,9 @@ defmodule Decree.Verify.Eventless do
   defp external_call(Access, :get, [container | _], ctx),
     do: [unclassified(ctx, "a runtime Access read on `#{short(container)}`")]
 
-  defp external_call(Kernel, :then, [value, fun], ctx), do: local_call(:then, [value, fun], ctx)
+  defp external_call(Kernel, :then, [value, fun], ctx),
+    do: apply_fun(fun, ctx, [{:expr, value, ctx}], ctx)
+
   defp external_call(Kernel, :tap, [value, _fun], ctx), do: tail(value, ctx)
 
   defp external_call(module, :apply, _args, ctx) when module in [Kernel, :erlang],

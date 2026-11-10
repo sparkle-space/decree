@@ -13,7 +13,8 @@ defmodule Decree.Verify.AliasMap do
   # declaration of the same short name replacing an earlier one.
   #
   # `conflicts/1` returns `%{short_name => [module]}` for every short name the pairs map to
-  # two or more different targets; a name declared twice with one target is no conflict.
+  # two or more different targets; a name declared twice with one target is no conflict,
+  # however it is spelled (`Foo.Bar` and `Elixir.Foo.Bar` are one module).
   #
   # `expand/2` replaces the FIRST segment of a written name when the table holds it, and
   # returns the segments unchanged otherwise. It performs one step; a caller that wants a
@@ -49,10 +50,10 @@ defmodule Decree.Verify.AliasMap do
   @spec conflicts([{atom(), [atom()]}]) :: %{optional(atom()) => [module()]}
   def conflicts(pairs) do
     for {name, targets} <- Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1)),
-        targets = Enum.uniq(targets),
+        targets = targets |> Enum.map(&Module.concat/1) |> Enum.uniq(),
         length(targets) > 1,
         into: %{},
-        do: {name, targets |> Enum.map(&Module.concat/1) |> Enum.sort()}
+        do: {name, Enum.sort(targets)}
   end
 
   @spec expand([atom()], t()) :: [atom()]
