@@ -12,6 +12,7 @@ defmodule Decree.PersonalFields.Case do
   alias Decree.EventStore.RecordedEvent
   alias Decree.FrameworkStorage
   alias Decree.PersonalFields.Fixtures.{App, Keys}
+  alias Decree.PersonalFields.Envelope
   alias Decree.PersonalFields.Fixtures.Commands.Emit
   alias Decree.Store.Config
   alias Decree.UUID
@@ -66,6 +67,17 @@ defmodule Decree.PersonalFields.Case do
     {:ok, prepared} = Append.prepare(App, stream, event_data, context)
 
     prepared
+  end
+
+  @doc """
+  An envelope as an earlier release wrote it for `field` of an event stored as `event_module`
+  in `stream`: `"email"` for a field, `"metadata.email"` for a metadata entry.
+  """
+  def old_envelope!(stream, event_module, field, subject, value) do
+    location = {stream, to_string(event_module), field}
+    {:ok, envelope} = Envelope.encrypt(value, Keys.key(subject), subject, location)
+
+    envelope
   end
 
   @doc "Writes to the store with no framework in the way, at any version."

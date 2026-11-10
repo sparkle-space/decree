@@ -12,8 +12,8 @@ defmodule Decree.PersonalFields.Aggregate do
         defstruct [:user_id, :email, oauth_links: []]
       end
 
-    - `@personal_fold` lists the events `apply/2` reads a declared field of. They are decrypted
-      in the fold, body fields only, because `apply/2` never sees metadata. Every other event
+    - `@personal_fold` lists the events `apply/2` reads a declared or retired field of. They are
+      decrypted in the fold, body fields only, because `apply/2` never sees metadata. Every other event
       reaches `apply/2` as stored, so an aggregate that folds a value it never reads is not
       locked by one subject's lost key. An event left off the list leaves an envelope in state.
 

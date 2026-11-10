@@ -174,10 +174,11 @@ defmodule Decree.Application do
     - `:key_source` - a `Decree.PersonalFields.KeySource`. With none, an append of a declared
       value fails with `{:error, :key_unknown}`.
 
-    - `:personal_metadata_keys` - metadata keys an event must declare to carry. A dispatch
-      putting a non-nil value under one of them, in atom or string form, on an event that does
-      not declare it fails with `{:error, :undeclared_personal_metadata}`. With none, there
-      is no such check.
+    - `:personal_metadata_keys` - metadata keys an event must declare under
+      `personal_metadata:` to carry. A dispatch putting a non-nil value under one of them, in
+      atom or string form, on an event that does not declare it there fails with
+      `{:error, :undeclared_personal_metadata}`; listing it under `personal_metadata_retired:`
+      is not enough. With none, there is no such check.
 
   See `Decree.PersonalFields`.
 
