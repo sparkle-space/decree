@@ -53,6 +53,7 @@ defmodule Decree.MixProject do
       "test/framework/middleware/support",
       "test/framework/pubsub/support",
       "test/framework/registration/support",
+      "test/framework/verify/support",
       "test/store/support",
       "test/store/subscriptions/support",
       "test/conformance/support",
