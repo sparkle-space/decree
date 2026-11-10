@@ -818,4 +818,181 @@ defmodule Decree.Verify.EventlessTest do
       end
     end
   end
+
+  describe "lint/2 — operators, Kernel wrappers, aliases, entries and streams" do
+    test "`and`/`or` return their right operand, so an eventless right is a finding" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          def execute(%{kind: :a}, _command), do: flag() or []
+          def execute(%{kind: :b}, _command), do: flag() and :ok
+          def execute(_state, _command), do: flag() and [%{ev: 1}]
+
+          defp flag, do: true
+        end
+        """)
+
+      assert Enum.sort(shapes(result)) == Enum.sort([{:eventless, "[]"}, {:eventless, ":ok"}])
+    end
+
+    test "`tap/2` returns its first argument and `Kernel.then/2` its function's value" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          def execute(%{kind: :a}, _command), do: tap([], &IO.inspect/1)
+          def execute(%{kind: :b}, _command), do: Kernel.tap(:ok, fn _ -> nil end)
+          def execute(%{kind: :c}, _command), do: Kernel.then(nil, fn _ -> [] end)
+          def execute(_state, _command), do: tap([%{ev: 1}], &IO.inspect/1)
+        end
+        """)
+
+      assert [
+               {:eventless, "[]", @aggregate_file, 2},
+               {:eventless, ":ok", @aggregate_file, 3},
+               {:eventless, "[]", @aggregate_file, 4}
+             ] = findings(result)
+    end
+
+    test "an alias shadowed by a function-local alias to another module is unclassified" do
+      helper =
+        {"lib/fixture/shared/eventless.ex",
+         """
+         defmodule Fixture.Shared.Eventless do
+           def none, do: []
+         end
+         """}
+
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            alias Fixture.Shared.Eventless, as: Helper
+
+            def execute(_state, _command), do: Helper.none()
+
+            def other do
+              alias Some.Dep, as: Helper
+              Helper.y()
+            end
+          end
+          """,
+          [helper]
+        )
+
+      assert [
+               {:unclassified,
+                "unclassified: the alias `Helper` names more than one module in this file: " <>
+                  "Fixture.Shared.Eventless, Some.Dep", @aggregate_file, 4}
+             ] = findings(result)
+
+      # The same target aliased twice is no conflict: the helper is followed.
+      repeated =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            alias Fixture.Shared.Eventless, as: Helper
+
+            def execute(_state, _command), do: Helper.none()
+
+            def other do
+              alias Fixture.Shared.Eventless, as: Helper
+              Helper.none()
+            end
+          end
+          """,
+          [helper]
+        )
+
+      assert [{:eventless, "[]", "lib/fixture/shared/eventless.ex", 2}] = findings(repeated)
+    end
+
+    test "sibling modules in one file aliasing one name to different modules are unclassified" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            alias Some.Dep, as: Helper
+
+            def execute(_state, _command), do: Helper.x()
+          end
+
+          defmodule Fixture.Aggregates.Other do
+            alias Fixture.Shared.Eventless, as: Helper
+
+            def run, do: Helper.none()
+          end
+          """,
+          [
+            {"lib/fixture/shared/eventless.ex",
+             """
+             defmodule Fixture.Shared.Eventless do
+               def none, do: []
+             end
+             """}
+          ]
+        )
+
+      assert [
+               {:unclassified,
+                "unclassified: the alias `Helper` names more than one module in this file: " <>
+                  "Fixture.Shared.Eventless, Some.Dep", @aggregate_file, 4}
+             ] = findings(result)
+    end
+
+    test "a function routed as an aggregate handler and as a decision is walked as a decision" do
+      source = """
+      defmodule Fixture.Aggregates.Thing do
+        def decide(_state, _command), do: {:streams, []}
+      end
+      """
+
+      aggregate = entry(@thing, :decide, :aggregate)
+      decision = entry(@thing, :decide, :decision)
+
+      assert [{:eventless, "{:streams, []}", @aggregate_file, 2}] =
+               findings(lint_aggregate(source, [], [aggregate, decision]))
+
+      assert [{:eventless, "{:streams, []}", @aggregate_file, 2}] =
+               findings(lint_aggregate(source, [], [decision, aggregate]))
+
+      # The duplicate is walked once: one module, one clause.
+      assert {:ok, %{modules: 1, entries: 1}} =
+               lint_aggregate(
+                 """
+                 defmodule Fixture.Aggregates.Thing do
+                   def decide(_state, command), do: [%{ev: command.id}]
+                 end
+                 """,
+                 [],
+                 [aggregate, decision]
+               )
+    end
+
+    test "a decision's `{:streams, value}` is eventless only when the value resolves to `[]`" do
+      source = """
+      defmodule Fixture.Aggregates.Thing do
+        @empty []
+
+        def decide(%{kind: :a}, _command) do
+          empty = []
+          {:streams, empty}
+        end
+
+        def decide(%{kind: :b}, _command), do: {:streams, @empty}
+        def decide(state, _command), do: {:streams, build(state)}
+
+        defp build(nil), do: nil
+        defp build(state), do: state.members
+      end
+      """
+
+      assert [
+               {:eventless, "{:streams, []}", @aggregate_file, 5},
+               {:eventless, "{:streams, []}", @aggregate_file, 9}
+             ] = findings(lint_aggregate(source, [], [entry(@thing, :decide, :decision)]))
+
+      assert {:ok, %{modules: 1, entries: 3}} =
+               lint_aggregate(source, [], [entry(@thing, :decide, :aggregate)])
+    end
+  end
 end
