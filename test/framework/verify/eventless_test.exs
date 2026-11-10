@@ -1184,4 +1184,294 @@ defmodule Decree.Verify.EventlessTest do
       assert [{:eventless, "[]", @aggregate_file, 2}] = findings(bare)
     end
   end
+
+  describe "lint/2 — imports anywhere in the module, with their selectors" do
+    @macros_file "lib/fixture/shared/macros.ex"
+    @empty_file "lib/fixture/shared/empty.ex"
+    @macros_source {@macros_file,
+                    """
+                    defmodule Fixture.Shared.Macros do
+                      def x, do: :x
+                      def empty(_command), do: []
+                      defmacro then(_v, _f), do: []
+                    end
+                    """}
+
+    test "an `only:` that leaves an indexed `then/2` macro out keeps `Kernel.then/2`" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Fixture.Shared.Macros, only: [x: 0]
+
+            def execute(_s, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+          end
+          """,
+          [@macros_source]
+        )
+
+      assert {:ok, _counts} = result
+    end
+
+    test "a function-local Kernel exclusion and macro import are unclassified" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            def execute(_s, cmd) do
+              import Kernel, except: [then: 2]
+              import Fixture.Shared.Evil, only: [then: 2]
+
+              then(cmd, fn _ -> [%{ev: 1}] end)
+            end
+          end
+          """,
+          [
+            {"lib/fixture/shared/evil.ex",
+             """
+             defmodule Fixture.Shared.Evil do
+               defmacro then(_v, _f), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [
+               {:unclassified, "unclassified: the imported macro Fixture.Shared.Evil.then/2",
+                @aggregate_file, 6}
+             ] = findings(result)
+    end
+
+    test "an `only:` that names an indexed def follows it" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Fixture.Shared.Macros, only: [empty: 1]
+
+            def execute(_s, cmd), do: empty(cmd)
+          end
+          """,
+          [@macros_source]
+        )
+
+      assert [{:eventless, "[]", @macros_file, 3}] = findings(result)
+    end
+
+    test "a function-local import of an indexed def is followed" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            def execute(_s, cmd) do
+              import Fixture.Shared.Empty
+
+              empty(cmd)
+            end
+          end
+          """,
+          [
+            {@empty_file,
+             """
+             defmodule Fixture.Shared.Empty do
+               def empty(_command), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", @empty_file, 2}] = findings(result)
+    end
+
+    test "every module that may supply a local call is followed" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            def unrelated(cmd) do
+              import Fixture.Shared.Full
+
+              helper(cmd)
+            end
+
+            def execute(_s, cmd) do
+              import Fixture.Shared.Empty
+
+              helper(cmd)
+            end
+          end
+          """,
+          [
+            {"lib/fixture/shared/full.ex",
+             """
+             defmodule Fixture.Shared.Full do
+               def helper(command), do: [%{ev: command}]
+             end
+             """},
+            {@empty_file,
+             """
+             defmodule Fixture.Shared.Empty do
+               def helper(_command), do: []
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", @empty_file, 2}] = findings(result)
+    end
+
+    test "an `except:` that leaves out an indexed `then/2` macro keeps `Kernel.then/2`" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Fixture.Shared.Macros, except: [then: 2]
+
+            def execute(%{kind: :a}, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+            def execute(%{kind: :b}, cmd), do: then(cmd, fn _ -> [] end)
+            def execute(_s, cmd), do: empty(cmd)
+          end
+          """,
+          [@macros_source]
+        )
+
+      assert [
+               {:eventless, "[]", @aggregate_file, 5},
+               {:eventless, "[]", @macros_file, 3}
+             ] = findings(result)
+    end
+
+    test "a Kernel exclusion beside an `internal?` import outside the index is unclassified" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          import Kernel, except: [then: 2]
+          import Fixture.Gone
+
+          def execute(_s, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+        end
+        """)
+
+      assert [{:unclassified, shape, @aggregate_file, 5}] = findings(result)
+      assert shape =~ "then/2"
+      assert shape =~ "Fixture.Gone"
+    end
+
+    test "a function-local Kernel exclusion keeps `Kernel.then/2` beside the import" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            def unrelated(cmd) do
+              import Kernel, except: [then: 2]
+              import Fixture.Shared.Then, only: [then: 2]
+
+              then(cmd, fn _ -> [] end)
+            end
+
+            def execute(_s, cmd), do: then(cmd, fn _ -> [] end)
+          end
+          """,
+          [
+            {"lib/fixture/shared/then.ex",
+             """
+             defmodule Fixture.Shared.Then do
+               def then(value, _fun), do: [%{ev: value}]
+             end
+             """}
+          ]
+        )
+
+      assert [{:eventless, "[]", @aggregate_file, 9}] = findings(result)
+    end
+
+    test "an `import Kernel` supplies only Kernel's own names" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          import Kernel, except: [then: 2]
+
+          def execute(_s, cmd), do: events_for(cmd)
+        end
+        """)
+
+      assert [
+               {:unclassified,
+                "unclassified: the local call events_for/1, which has no def in the module",
+                @aggregate_file, 4}
+             ] = findings(result)
+    end
+
+    test "an `only: :functions` selects the defs and leaves the macros out" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            import Fixture.Shared.Macros, only: :functions
+
+            def execute(%{kind: :a}, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+            def execute(_s, cmd), do: empty(cmd)
+          end
+          """,
+          [@macros_source]
+        )
+
+      assert [{:eventless, "[]", @macros_file, 3}] = findings(result)
+    end
+
+    test "a top-level Kernel exclusion after the def keeps the Kernel reading" do
+      result =
+        lint_aggregate("""
+        defmodule Fixture.Aggregates.Thing do
+          import Ecto.Query
+
+          def execute(_s, cmd), do: then(cmd, fn _ -> [] end)
+
+          import Kernel, except: [then: 2]
+        end
+        """)
+
+      assert [{:eventless, "[]", @aggregate_file, 4}] = findings(result)
+    end
+
+    test "a non-literal selector may supply anything" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            @names [x: 0]
+            import Fixture.Shared.Macros, only: @names
+
+            def execute(_s, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+          end
+          """,
+          [@macros_source]
+        )
+
+      assert [
+               {:unclassified, "unclassified: the imported macro Fixture.Shared.Macros.then/2",
+                @aggregate_file, 5}
+             ] = findings(result)
+    end
+
+    test "an `import` inside a `quote` belongs to the caller" do
+      result =
+        lint_aggregate(
+          """
+          defmodule Fixture.Aggregates.Thing do
+            defmacro __using__(_opts) do
+              quote do
+                import Fixture.Shared.Macros
+              end
+            end
+
+            def execute(_s, cmd), do: then(cmd, fn _ -> [%{ev: 1}] end)
+          end
+          """,
+          [@macros_source]
+        )
+
+      assert {:ok, _counts} = result
+    end
+  end
 end
