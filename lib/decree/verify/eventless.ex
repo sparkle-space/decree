@@ -27,7 +27,9 @@ defmodule Decree.Verify.Eventless do
   nested bodies pruned from their parent's. That gives a module index: each module's
   `def`/`defp`/`defdelegate` clauses by name and arity (`\\\\` defaults counted, a
   bodyless default head applied), its `alias` table (file-wide plus its own body), its
-  `import`s, its `use`s and its literal module attributes.
+  `import`s (anywhere in its body, function-local ones included, with their `only:` and
+  `except:` selectors; one inside a `quote` belongs to the caller and is skipped), its
+  `use`s and its literal module attributes.
 
   ## Population
 
@@ -88,7 +90,13 @@ defmodule Decree.Verify.Eventless do
   From a tail position the walk follows:
 
     * a local call to a `def`/`defp` of the same module, or to a function of a module the
-      module `import`s, when it is indexed — every clause of that name and arity;
+      module `import`s, when it is indexed — every clause of that name and arity. An
+      import anywhere in the module counts for every call in it: lexical scope is not
+      modelled, so the walk cannot tell which import a call sees, and it follows every
+      import whose selectors may supply the name and arity. A literal `name: arity` list,
+      `:functions`, `:macros` or `:sigils` selects exactly (for a module outside the index,
+      whose kinds are unknown, `:functions` and `:macros` may supply anything); any other
+      selector (an attribute, a variable) may supply anything;
     * a remote call whose receiver resolves to an indexed module: an alias (through the
       module's `alias` table, chained), `__MODULE__`, `__MODULE__.X`, a nested module's
       short name, or a module atom;
@@ -110,7 +118,11 @@ defmodule Decree.Verify.Eventless do
   A receiver that resolves to no indexed module is classified by the caller's
   `internal?:` predicate: one it claims is `unclassified` (its source is not under the
   scanned paths); any other is external and passes, as `Enum`, `Map` and a dependency's
-  modules do, apart from the shape-5 defaults above. `Kernel` functions pass.
+  modules do, apart from the shape-5 defaults above. `Kernel` functions pass. The Kernel
+  reading is never removed: an `import Kernel` selector that may leave the name out,
+  anywhere in the module, only puts the imports that may supply the call beside it (an
+  import's position is not modelled). Kernel's own exports are known, so an
+  `import Kernel` supplies no other name.
 
   ## Fail closed
 
@@ -120,14 +132,15 @@ defmodule Decree.Verify.Eventless do
   variable module, `apply/2,3`, an anonymous call it cannot resolve, `Keyword.fetch!/2` or
   `Keyword.get/2,3` on options it cannot resolve, a local call with no `def` in the module
   and no import that could supply it (or one an `internal?` import outside the index
-  could), a local call to a macro the module defines (a local macro) or an indexed import
-  defines as a public `defmacro` (an imported macro), a call to an indexed module that
-  defines no such function in source, an `internal?` receiver outside the index, a receiver
-  whose first segment is an alias the module's table (file-wide plus its own) maps to two
-  or more different modules (the walk models no lexical scope, so it cannot tell which one
-  the call sees; the same target aliased twice is no conflict), a module attribute with no
-  literal value, a runtime field or `Access` read, `quote`/`unquote`/`super`, and the
-  unresolved variables above.
+  could, including a Kernel name an `import Kernel` selector may leave out), a local call
+  to a macro the module defines (a local macro) or a public `defmacro` an indexed import's
+  selectors may supply (an imported macro, even when another candidate is a def or
+  Kernel), a call to an indexed module that defines no such function in source, an
+  `internal?` receiver outside the index, a receiver whose first segment is an alias the
+  module's table (file-wide plus its own) maps to two or more different modules (the walk
+  models no lexical scope, so it cannot tell which one the call sees; the same target
+  aliased twice is no conflict), a module attribute with no literal value, a runtime field
+  or `Access` read, `quote`/`unquote`/`super`, and the unresolved variables above.
 
   ## Stated residuals
 
@@ -139,9 +152,12 @@ defmodule Decree.Verify.Eventless do
       followed;
     * a `Decree.Aggregate.Multi` whose run produces no events;
     * a function in a module `internal?` calls external (a dependency), which is not
-      read;
+      read, a local call an import of such a module may supply included (its macros are
+      not read either);
     * a followed function's clauses are all analysed, whichever one the caller's
       arguments select;
+    * a Kernel name an `import Kernel` excludes keeps the Kernel reading beside its real
+      supplier (a dependency's `then/2`), which can report a false finding, fail-closed;
     * a decision's `{:streams, members}` whose members are empty at runtime, or whose
       value the walk cannot resolve: `Decree.Decision.Dispatch.shape/1` refuses an empty or
       malformed members list at runtime, so it is not reported.
@@ -187,11 +203,11 @@ defmodule Decree.Verify.Eventless do
   @value_literals [:%, :%{}, :{}, :<<>>, :fn, :&, :__MODULE__, :__ENV__, :__DIR__, :__CALLER__]
   @unclassifiable [:quote, :unquote, :unquote_splicing, :super, :var!]
 
-  # The functions and macros every module imports by default.
-  @kernel MapSet.new(
-            Kernel.__info__(:functions) ++
-              Kernel.__info__(:macros) ++ Kernel.SpecialForms.__info__(:macros)
-          )
+  # The functions and macros every module imports by default; an `import Kernel` selector
+  # can leave out Kernel's own, never a special form.
+  @kernel_macros MapSet.new(Kernel.__info__(:macros))
+  @kernel_own MapSet.union(MapSet.new(Kernel.__info__(:functions)), @kernel_macros)
+  @kernel MapSet.union(@kernel_own, MapSet.new(Kernel.SpecialForms.__info__(:macros)))
 
   @type entry :: %{module: module(), fun: atom(), kind: :aggregate | :decision}
   @type finding :: %{
@@ -305,7 +321,7 @@ defmodule Decree.Verify.Eventless do
         defs: collect_defs(exprs),
         aliases: Map.new(aliases),
         alias_conflicts: AliasMap.conflicts(aliases),
-        imports: for({:import, _, [target | _]} <- exprs, do: target),
+        imports: collect_imports(body),
         uses: for({:use, _, [target | _]} <- exprs, do: target),
         attributes: collect_attributes(exprs)
       }
@@ -315,6 +331,62 @@ defmodule Decree.Verify.Eventless do
   defp block_exprs({:__block__, _meta, exprs}), do: exprs
   defp block_exprs(nil), do: []
   defp block_exprs(expr), do: [expr]
+
+  # Every `import` in the module body, function-local ones included, with its selectors.
+  # A `quote` body is skipped: its imports belong to the caller it is injected into.
+  defp collect_imports(body) do
+    {_ast, found} =
+      Macro.prewalk(body, [], fn
+        {:quote, _, args}, acc when is_list(args) ->
+          {nil, acc}
+
+        {:import, _, [target | opts]} = node, acc when length(opts) <= 1 ->
+          {node, [import_record(target, opts) | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(found)
+  end
+
+  # A selector is a literal `name: arity` list, `:functions`, `:macros` or `:sigils`;
+  # anything else (an attribute, a variable) is `:unknown`, which may select anything.
+  defp import_record(target, opts) do
+    {only, except} =
+      case opts do
+        [] ->
+          {nil, nil}
+
+        [opts] when is_list(opts) ->
+          if keyword_literal?(opts),
+            do: {selector(opts, :only), selector(opts, :except)},
+            else: {:unknown, :unknown}
+
+        _non_literal ->
+          {:unknown, :unknown}
+      end
+
+    %{target: target, only: only, except: except}
+  end
+
+  defp selector(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error ->
+        nil
+
+      {:ok, kind} when kind in [:functions, :macros, :sigils] ->
+        kind
+
+      {:ok, pairs} when is_list(pairs) ->
+        if Enum.all?(pairs, &match?({name, arity} when is_atom(name) and is_integer(arity), &1)),
+          do: pairs,
+          else: :unknown
+
+      {:ok, _other} ->
+        :unknown
+    end
+  end
 
   defp collect_attributes(exprs) do
     for {:@, _, [{name, _, [value]}]} <- exprs, is_atom(name), into: %{}, do: {name, value}
@@ -992,8 +1064,6 @@ defmodule Decree.Verify.Eventless do
   defp local_call(name, args, ctx) do
     arity = length(args)
 
-    imported = imported_definer(ctx, name, arity, [:def])
-
     cond do
       clauses_for(ctx.rec, name, arity, [:def, :defp]) != [] ->
         follow(ctx.rec, name, args, ctx, [:def, :defp])
@@ -1001,49 +1071,129 @@ defmodule Decree.Verify.Eventless do
       defines_macro?(ctx.rec, name, arity) ->
         [unclassified(ctx, "the local macro #{name}/#{arity}")]
 
-      (macro_import = imported_definer(ctx, name, arity, [:defmacro])) != nil ->
-        [unclassified(ctx, "the imported macro #{inspect(macro_import.module)}.#{name}/#{arity}")]
-
-      imported != nil ->
-        follow(imported, name, args, ctx, [:def])
-
-      name in [:then, :tap] and arity == 2 ->
-        external_call(Kernel, name, args, ctx)
-
-      MapSet.member?(@kernel, {name, arity}) ->
-        []
-
-      (internal = internal_import(ctx)) != nil ->
-        [
-          unclassified(
-            ctx,
-            "the local call #{name}/#{arity}, which `import #{Macro.to_string(internal)}`, " <>
-              "a module outside the index, may supply"
-          )
-        ]
-
-      imports_external?(ctx) ->
-        []
-
       true ->
-        [unclassified(ctx, "the local call #{name}/#{arity}, which has no def in the module")]
+        imported_call(name, args, ctx)
     end
   end
 
-  defp internal_import(ctx),
-    do: Enum.find(ctx.rec.imports, &match?({:internal, _}, resolve_receiver(&1, ctx)))
+  # No lexical scope is modelled, so a call may see any module that may supply it, and
+  # each is analysed: Kernel for a name it exports (never removed), every indexed
+  # import's macro (unclassified) or def (followed), and, when Kernel is not the sure
+  # supplier, an `internal?` import outside the index (unclassified) or an external one
+  # (passes). With none, the call is unclassified.
+  defp imported_call(name, args, ctx) do
+    arity = length(args)
+    {kernel?, kernel_excluded?} = kernel_supplies(ctx, name, arity)
+    macros = imported_definers(ctx, name, arity, :defmacro)
+    defs = imported_definers(ctx, name, arity, :def)
+    others? = not kernel? or kernel_excluded?
+    internal = if others?, do: unindexed_imports(ctx, name, arity, :internal), else: []
+    external = if others?, do: unindexed_imports(ctx, name, arity, :external), else: []
 
-  defp imported_definer(ctx, name, arity, kinds) do
-    Enum.find_value(ctx.rec.imports, fn target ->
-      case resolve_receiver(target, ctx) do
-        {:indexed, rec} -> if clauses_for(rec, name, arity, kinds) != [], do: rec
-        _other -> nil
-      end
-    end)
+    found =
+      if(kernel?, do: kernel_call(name, args, ctx), else: []) ++
+        Enum.map(
+          macros,
+          &unclassified(ctx, "the imported macro #{inspect(&1.module)}.#{name}/#{arity}")
+        ) ++
+        Enum.flat_map(defs, &follow(&1, name, args, ctx, [:def])) ++
+        Enum.map(
+          internal,
+          &unclassified(
+            ctx,
+            "the local call #{name}/#{arity}, which `import #{Macro.to_string(&1.target)}`, " <>
+              "a module outside the index, may supply"
+          )
+        )
+
+    if kernel? or macros != [] or defs != [] or internal != [] or external != [],
+      do: found,
+      else: [unclassified(ctx, "the local call #{name}/#{arity}, which has no def in the module")]
   end
 
-  defp imports_external?(ctx),
-    do: Enum.any?(ctx.rec.imports, &match?({:external, _}, resolve_receiver(&1, ctx)))
+  defp kernel_call(name, args, ctx) when name in [:then, :tap] and length(args) == 2,
+    do: external_call(Kernel, name, args, ctx)
+
+  defp kernel_call(_name, _args, _ctx), do: []
+
+  # `{supplied?, excluded?}`: whether Kernel exports `name/arity`, and whether an
+  # `import Kernel` anywhere (top-level or function-local, literal or not) may leave it
+  # out. Kernel is never removed: an import's position is not modelled, so a top-level
+  # exclusion written after a def that uses Kernel's name must not hide it. An exclusion
+  # only puts the imports that may supply the call beside Kernel.
+  defp kernel_supplies(ctx, name, arity) do
+    cond do
+      not MapSet.member?(@kernel, {name, arity}) ->
+        {false, false}
+
+      not MapSet.member?(@kernel_own, {name, arity}) ->
+        {true, false}
+
+      true ->
+        kind = if MapSet.member?(@kernel_macros, {name, arity}), do: :defmacro, else: :def
+
+        excluded? =
+          Enum.any?(
+            ctx.rec.imports,
+            &(resolve_receiver(&1.target, ctx) == {:external, Kernel} and
+                supplies(&1, name, arity, kind) != :yes)
+          )
+
+        {true, excluded?}
+    end
+  end
+
+  # Every indexed module an import may supply `name/arity` from as a public `kind` clause.
+  defp imported_definers(ctx, name, arity, kind) do
+    for imp <- ctx.rec.imports,
+        {:indexed, rec} <- [resolve_receiver(imp.target, ctx)],
+        clauses_for(rec, name, arity, [kind]) != [],
+        supplies(imp, name, arity, kind) != :no,
+        uniq: true,
+        do: rec
+  end
+
+  # The imports of `class` (`:internal` or `:external`) outside the index that may supply
+  # `name/arity`. Kernel's exports are known, so its import is never a candidate here.
+  defp unindexed_imports(ctx, name, arity, class) do
+    for imp <- ctx.rec.imports,
+        {^class, module} <- [resolve_receiver(imp.target, ctx)],
+        module != Kernel,
+        supplies(imp, name, arity, nil) != :no,
+        do: imp
+  end
+
+  # `:yes`, `:no` or `:maybe`: whether `import` supplies `name/arity`, a clause of `kind`
+  # (`:def`, `:defmacro`, or `nil` for a module outside the index, whose kinds are
+  # unknown).
+  defp supplies(%{only: only, except: except}, name, arity, kind) do
+    case {admits(only, name, arity, kind), names(except, name, arity)} do
+      {:no, _} -> :no
+      {_, :yes} -> :no
+      {:yes, :no} -> :yes
+      _maybe -> :maybe
+    end
+  end
+
+  defp admits(nil, _name, _arity, _kind), do: :yes
+  defp admits(pairs, name, arity, _kind) when is_list(pairs), do: names(pairs, name, arity)
+  defp admits(:sigils, name, _arity, _kind), do: yes_no(sigil?(name))
+  defp admits(:functions, _name, _arity, kind), do: kind_is(kind, :def)
+  defp admits(:macros, _name, _arity, kind), do: kind_is(kind, :defmacro)
+  defp admits(:unknown, _name, _arity, _kind), do: :maybe
+
+  defp names(nil, _name, _arity), do: :no
+  defp names(pairs, name, arity) when is_list(pairs), do: yes_no({name, arity} in pairs)
+  defp names(_unknown, _name, _arity), do: :maybe
+
+  defp kind_is(nil, _kind), do: :maybe
+  defp kind_is(kind, kind), do: :yes
+  defp kind_is(_other, _kind), do: :no
+
+  defp sigil?(name), do: String.starts_with?(Atom.to_string(name), "sigil_")
+
+  defp yes_no(true), do: :yes
+  defp yes_no(false), do: :no
 
   # --- remote calls ---
 
