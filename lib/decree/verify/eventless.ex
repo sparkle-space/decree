@@ -28,7 +28,8 @@ defmodule Decree.Verify.Eventless do
   `def`/`defp`/`defdelegate` clauses by name and arity (`\\\\` defaults counted, a
   bodyless default head applied), its `alias` table (file-wide plus its own body), its
   `import`s (anywhere in its body, function-local ones included, with their `only:` and
-  `except:` selectors; one inside a `quote` belongs to the caller and is skipped), its
+  `except:` selectors; one inside a `quote`'s `do` body belongs to the caller and is
+  skipped, while its options and `unquote` calls are the module's own), its
   `use`s and its literal module attributes.
 
   ## Population
@@ -333,12 +334,14 @@ defmodule Decree.Verify.Eventless do
   defp block_exprs(expr), do: [expr]
 
   # Every `import` in the module body, function-local ones included, with its selectors.
-  # A `quote` body is skipped: its imports belong to the caller it is injected into.
+  # A `quote`'s `do` body is skipped, as its imports belong to the caller it is injected
+  # into; its options (`bind_quoted:`) and the `unquote`/`unquote_splicing` calls in its
+  # body run in the module's own context and are walked.
   defp collect_imports(body) do
     {_ast, found} =
       Macro.prewalk(body, [], fn
-        {:quote, _, args}, acc when is_list(args) ->
-          {nil, acc}
+        {:quote, meta, args}, acc when is_list(args) ->
+          {{:quote, meta, Enum.map(args, &quoted_options/1)}, acc}
 
         {:import, _, [target | opts]} = node, acc when length(opts) <= 1 ->
           {node, [import_record(target, opts) | acc]}
@@ -348,6 +351,32 @@ defmodule Decree.Verify.Eventless do
       end)
 
     Enum.reverse(found)
+  end
+
+  defp quoted_options([_ | _] = args) do
+    if Keyword.keyword?(args) and Keyword.has_key?(args, :do),
+      do: Keyword.update!(args, :do, &unquoted/1),
+      else: args
+  end
+
+  defp quoted_options(arg), do: arg
+
+  # The `unquote`/`unquote_splicing` calls in a quoted body; a nested `quote`'s are the
+  # caller's.
+  defp unquoted(body) do
+    {_ast, calls} =
+      Macro.prewalk(body, [], fn
+        {:quote, _, args}, acc when is_list(args) ->
+          {nil, acc}
+
+        {op, _, [_ | _]} = node, acc when op in [:unquote, :unquote_splicing] ->
+          {nil, [node | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    calls
   end
 
   # A selector is a literal `name: arity` list, `:functions`, `:macros` or `:sigils`;
