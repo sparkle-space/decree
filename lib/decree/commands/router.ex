@@ -970,8 +970,10 @@ defmodule Decree.Commands.Router do
   end
 
   # A command's route as its dispatch resolves it, `identify` included, for what reads a route
-  # outside a dispatch: the application's start check and `Decree.Aggregate.check_command_window/2`.
-  # Atoms and the route's own identity function only, so no aggregate module is called here.
+  # outside a dispatch: the application's start check, `Decree.Aggregate.check_command_window/2`
+  # and `mix decree.verify.eventless`, which reads `handler:` and `function:`, the module and
+  # function the dispatch calls (`decide/2` on a decision). Atoms and the route's own identity
+  # function only, so no aggregate module is called here.
   @doc false
   def route(command_opts, registered_identities) do
     identified_by = command_opts[:decision] || command_opts[:aggregate]
@@ -995,7 +997,9 @@ defmodule Decree.Commands.Router do
       identity_prefix: identity_prefix,
       identity_opaque: identity_opaque,
       stream_tag: command_opts[:stream_tag],
-      rule: command_opts[:rule]
+      rule: command_opts[:rule],
+      handler: command_opts[:to],
+      function: command_opts[:function]
     ]
   end
 
