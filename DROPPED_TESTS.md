@@ -116,6 +116,13 @@ Test cases removed from files that stay:
 
 Kept and rewritten: the conformance case "should implement `Decree.EventStore.Adapter` behaviour" is "should implement `Decree.Store` behaviour", of the application's store module; `test/framework/event/event_handler_batch_test.exs` pins the acked event's number, which is what a store's `ack/2` receives, where it pinned the acked event.
 
+Reached by another route, with the same assertions:
+
+- `test/framework/personal_fields/key_stream_test.exs` "telemetry, when the append raises" raises the same class from the same store function, the store's "could not lookup ... not started" config lookup (`Decree.Store.Config.Store`), through a flagged append on `FailingStore`. The adapter-level `pretend_declared/1` it used has no store-level equivalent, because the deletable prefixes are read from the store's config, not through a store callback.
+- `test/framework/event_handler_after_start_test.exs` "should be called again after a reset" and "should not apply events buffered before the reset", and `test/framework/event/event_handler_retry_wait_test.exs` "a reset during the wait drops the pending retry", run on a stand-in subscription process (`Decree.MockEventStoreCase.start_stand_in_subscription!/0`). `Decree.EventStore.unsubscribe/2` calls the subscription process and never the store module, so a stub of the store cannot answer it.
+- `test/framework/event/event_handler_subscription_test.exs` asserts the `:origin` start in the stub's body, where the adapter stub matched it in its head. A mismatch still fails the subscribing handler.
+- `test/framework/aggregates/aggregate_concurrency_test.exs` expects `subscribe_to_stream/4`, the store's callback for a single stream, where it expected `subscribe_to/6` with a binary stream.
+
 ## Upstream test configurations not run
 
 - eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.

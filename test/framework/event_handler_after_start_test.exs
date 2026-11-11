@@ -11,6 +11,11 @@ defmodule Decree.Event.HandlerAfterStartTest do
       {:ok, handler}
     end)
 
+    # Every handler here subscribes to all streams: a subscription to one stream fails.
+    stub(MockEventStore, :subscribe_to_stream, fn stream, _handler_name, _handler, _opts ->
+      flunk("unexpected subscription to the stream #{inspect(stream)}")
+    end)
+
     :ok
   end
 
