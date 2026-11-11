@@ -81,12 +81,33 @@ Test cases removed from files that stay (4):
 - `test/framework/commands/dispatch_consistency_test.exs`: "process manager consistency should successfully dispatch command" (drives `StronglyConsistentProcessManager`).
 - `test/framework/event/upcaster_test.exs`: "upcast events received by process manager will receive upcasted events".
 
+## Deleted with the dead surface
+
+The feature is deleted (#8075, founder ruling 2026-11-11): `link_to_stream/4`, `paginate_streams/1` with `Decree.Store.Page`, and the `:shared_connection_pool` option. Its upstream tests go with it. decree's own tests of these, which were never upstream's, are not listed.
+
+Files (4):
+
+- `test/store/storage/link_events_test.exs` (7 tests): `Appender.link/4`, the storage half of a link.
+- `test/store/streams/paginate_streams_test.exs` (6 tests): `paginate_streams/1` and `Decree.Store.Page`.
+- `test/store/subscriptions/linked_event_stream_subscription_test.exs` (1 test): a subscription to a stream of links.
+- `test/store/shared_connection_pool_test.exs` (7 tests, one of them tagged `:manual`): the `:shared_connection_pool` option.
+
+Test cases removed from files that stay:
+
+- `test/store/event_store_test.exs`: the "link to event store" describe, "should link multiple events", "should read linked events", "should fail attempting to link to `$all` stream" and "allows to supply a db connection, so we can link to streams in a running transaction".
+- `test/store/streams/single_stream_test.exs`: from "link events to stream", "should link events", "should link events with `:any_version` expected version", "should fail when wrong expected version", "should fail linking events that don't exist" and "should prevent duplicate linked events". "should guess the event type when not passed" stays, in a describe renamed "an event with no event type", without the setup step that appended to a second stream for the links.
+- `test/store/streams/hard_delete_stream_test.exs`: "reading a stream should not include linked events from deleted stream".
+- `test/store/streams/soft_delete_stream_test.exs`: "reading a stream will include linked events from deleted stream".
+- `test/store/config_test.exs`: "parse `:shared_connection_pool`".
+
+`test/store/manual/seed_eventstore.exs`, a script and not a test, loses its link step. The committed dumps were seeded with links before #8075, and `test/store/migrated_event_store_test.exs` "read linked stream forward" still reads them.
+
 ## Upstream test configurations not run
 
 - eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.
 - eventstore's `test.text_ids` (`MIX_ENV=text_ids`): runs the store suite with text correlation and causation ids. sparklespace uses the default uuid ids.
 - eventstore's `test.migration` (`MIX_ENV=migration`) and the `:migration`-tagged tests (`migrate_event_store_test.exs`, `list_event_store_migrations_test.exs`, `migrated_event_store_test.exs`): they restore the dumps in `test/store/fixture` with `pg_restore` and compare schemas with `pg_dump`. Excluded by default, as upstream does. Run with `mix test --only migration` where `pg_dump` and `pg_restore` (version 18 or later, to match the server) are installed: on 2026-10-29 all 13 passed that way. They are not in CI: the runner image does not ship a version-18 client, and adding one is a follow-up; the store-migration path is P4's.
-- `:manual` (`shared_connection_pool_test.exs`, one test) and `:ignore`: excluded, as upstream does.
+- `:ignore`: excluded, as upstream does. `:manual` is still excluded but tags no test: its one test, in `shared_connection_pool_test.exs`, went with that file (see "Deleted with the dead surface").
 
 ## Kept, with assertions adapted to Postgres
 
@@ -128,4 +149,4 @@ So: `assert_receive_timeout` rose from 1_000 to 2_000 for framework and conforma
 
 ## Audit
 
-`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.
+`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port", the 4 under "Deleted with the dead surface" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.

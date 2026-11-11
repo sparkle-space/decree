@@ -26,7 +26,7 @@ defmodule Decree.PersonalFields.KeyStream do
 
   `mint/5` and `rewrap/4` refuse a prefix the store does not declare, with
   `{:error, :undeclared_key_stream}`, because a stream outside the declaration gets none of
-  its refusals: a query, a link or a stray event type would all be let in. A store without
+  its refusals: a query or a stray event type would be let in. A store without
   `enable_hard_deletes` answers `:undeclared_key_stream` for every prefix, whatever it declares,
   because it could never erase the key.
 

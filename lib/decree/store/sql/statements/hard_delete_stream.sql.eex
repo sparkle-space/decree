@@ -1,19 +1,21 @@
 <%!--
-  The fourth of a hard delete's six statements: see `DeleteStream.hard_delete/3`. Its snapshot
-  starts after the stream's row and the event rows are locked, so it sees everything an append
-  or a link committed while one of those was held, and with the event rows held nothing can
-  add a `stream_events` row of these events. The tag and type rows go here, with the events,
-  because a tag row has no foreign key to answer for it: `$all`'s `stream_events` rows are the
-  only record of an event's position, so they are what this statement finds them by.
+  The third of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Its snapshot
+  starts after the stream's row is locked, so it sees everything an append committed while
+  that was held, and with the row held nothing can add a `stream_events` row of these events:
+  no link exists or can be made. The tag and type rows go here, with the events, because a
+  tag row has no foreign key to answer for it: `$all`'s `stream_events` rows are the only
+  record of an event's position, so they are what this statement finds them by.
 
-  `linked_events` also deletes the stream's own rows, and may or may not return them, because
-  `deleted_stream_events` reached them first in this statement. That is why it is read for
-  `stream_id = 0` only: `$all`'s rows are in that CTE and no other.
+  `linked_events` deletes every other `stream_events` row of these events: `$all`'s, and any
+  link row a store still holds from before links were removed. It also deletes the stream's
+  own rows, and may or may not return them, because `deleted_stream_events` reached them
+  first in this statement. That is why it is read for `stream_id = 0` only: `$all`'s rows are
+  in that CTE and no other.
 
   `event_tags` rows are locked by `position, tag`, the order `delete_stream_tags` locks them
-  in. The two meet on tag rows through a link stream, with no common lock: this one holds the
-  link stream's row and that one the subject's. One order means no cycle. A row the other
-  took first is skipped: it is gone, as this statement wants it.
+  in. The two meet on tag rows only through such a stored link row, with no common lock: this
+  one holds the linking stream's row and that one the subject's. One order means no cycle. A
+  row the other took first is skipped: it is gone, as this statement wants it.
 --%>
 WITH deleted_stream_events AS (
   DELETE FROM "<%= schema %>".stream_events

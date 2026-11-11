@@ -190,19 +190,6 @@ defmodule Decree.Store.Streams.HardDeleteStreamTest do
 
       assert match?(%RecordedEvent{stream_uuid: ^stream2_uuid, event_number: 4}, event)
     end
-
-    test "reading a stream should not include linked events from deleted stream",
-         %{stream_uuid: stream1_uuid} do
-      stream2_uuid = UUID.uuid4()
-
-      {:ok, events} = EventStore.read_stream_forward(stream1_uuid)
-
-      :ok = EventStore.link_to_stream(stream2_uuid, 0, events)
-
-      :ok = EventStore.delete_stream(stream1_uuid, :any_version, :hard)
-
-      assert {:ok, []} = EventStore.read_stream_forward(stream2_uuid)
-    end
   end
 
   describe "hard delete stream when disabled" do

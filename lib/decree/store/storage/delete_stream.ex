@@ -36,31 +36,30 @@ defmodule Decree.Store.Storage.DeleteStream do
     end
   end
 
-  # Six statements in the caller's transaction, each with a snapshot of its own.
+  # Five statements in the caller's transaction, each with a snapshot of its own.
   #
-  # The stream's row comes first and alone, so everything after it sees what an append or a
-  # link committed while holding the row. NO KEY UPDATE, as an append takes it, serialises
-  # against appends and links into this stream. The expected version is checked again here:
-  # `Stream.delete/5` read it before this transaction, and an append that landed in between
-  # would otherwise be erased unseen.
+  # The stream's row comes first and alone, so everything after it sees what an append
+  # committed while holding the row. NO KEY UPDATE, as an append takes it, serialises against
+  # appends into this stream. The expected version is checked again here: `Stream.delete/5`
+  # read it before this transaction, and an append that landed in between would otherwise be
+  # erased unseen. No link exists or can be made, so nothing but an append into this stream
+  # adds a `stream_events` row for one of its events, and with the row held the stream's
+  # events are fixed for the rest of the delete.
   #
-  # The event rows come next and alone, in `event_id` order, FOR UPDATE because NO KEY UPDATE
-  # does not conflict with a link's KEY SHARE. A link takes the same rows in the same order
-  # after its own stream's row, so the two cannot cycle, and neither can two hard deletes that
-  # meet on events through a link stream. An event a concurrent delete removed is skipped.
+  # Then the check for a tag index fact the stream holds, which refuses the delete: a disable
+  # it removed would leave an earlier enable standing. There is no window. The stream's row
+  # holds off any append into this stream, and the check's snapshot starts after that wait, so
+  # it sees every one that committed.
   #
-  # Then the check for a tag index fact, held or linked, which refuses the delete: a disable it
-  # removed would leave an earlier enable standing. There is no window. The stream's row holds
-  # off any append or link into this stream, the event rows any link of them, and the check's
-  # snapshot starts after both waits, so it sees every one that committed.
+  # The delete takes the stream's events from every stream, `$all` included, with their tag
+  # and type rows. A store can still hold link rows written before links were removed, and an
+  # event's goes with it. Two hard deletes that meet on such an event, one of the stream it was
+  # appended to and one of a stream linking it, can deadlock: the victim rolls back whole,
+  # answers the raw `deadlock_detected` error and can be retried.
   #
-  # The delete's snapshot then starts after that wait, so a link that committed during it is
-  # seen and removed with the event, and every `stream_events` row of an event is touched only
-  # while that event's row is held. With the event rows held no link of them is in flight, so
-  # the stream's row, after them and on its own because the order of a statement's CTEs is
-  # undocumented, finds no link's KEY SHARE on it and nothing still referencing it but the
-  # stream's `versioned_snapshots` rows. The one KEY SHARE it can still wait on is a versioned
-  # snapshot write's.
+  # The stream's row goes after that, on its own because the order of a statement's CTEs is
+  # undocumented, and finds nothing still referencing it but the stream's `versioned_snapshots`
+  # rows. The one KEY SHARE it can still wait on is a versioned snapshot write's.
   #
   # Those rows go with the stream's row, in any pod: their foreign key to `streams` cascades
   # its DELETE, which is how an old pod's hard delete, with no statement for that table,
@@ -80,8 +79,6 @@ defmodule Decree.Store.Storage.DeleteStream do
     {expected_version, opts} = Keyword.pop(opts, :expected_version, :any_version)
 
     with :ok <- StreamStorage.lock_at_version(conn, stream_id, expected_version, schema, opts),
-         {:ok, %Postgrex.Result{}} <-
-           Postgrex.query(conn, Statements.lock_deleted_events(schema), [stream_id], opts),
          :ok <- no_index_facts(conn, stream_id, schema, opts),
          {:ok, %Postgrex.Result{}} <-
            Postgrex.query(conn, Statements.hard_delete_stream(schema), [stream_id], opts),
@@ -125,12 +122,12 @@ defmodule Decree.Store.Storage.DeleteStream do
   # of `$all` never waits on a stream's row, so neither lock can cycle with an append.
   #
   # The subject's row is there so this and a hard delete of the same stream serialise. A hard
-  # delete of a link stream holding the subject's events takes no such row and meets this on
-  # tag rows, and the shared `position, tag` lock order keeps that from a cycle. `$all` is the
-  # append lock (TM-6): with it held, a conditional append either saw these rows before this
-  # began, or starts after the commit and cannot see them. It is a lock and never an UPDATE,
-  # because `event_notification` fires on UPDATE and would broadcast a phantom `$all`
-  # notification.
+  # delete of a stream holding link rows of the subject's events, written before links were
+  # removed, takes no such row and meets this on tag rows, and the shared `position, tag` lock
+  # order keeps that from a cycle. `$all` is the append lock (TM-6): with it held, a
+  # conditional append either saw these rows before this began, or starts after the commit and
+  # cannot see them. It is a lock and never an UPDATE, because `event_notification` fires on
+  # UPDATE and would broadcast a phantom `$all` notification.
   def delete_tags(conn, stream_id, tag_kinds, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
 

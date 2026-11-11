@@ -132,7 +132,7 @@ defmodule Decree.Store.Supervisor do
   end
 
   defp validate_config!(event_store, name, config) do
-    conn = postgrex_conn(name, config)
+    conn = postgrex_conn(name)
     column_data_type = Config.column_data_type(event_store, config)
     correlation_id_type = Config.correlation_id_type(event_store, config)
     causation_id_type = Config.causation_id_type(event_store, config)
@@ -161,26 +161,7 @@ defmodule Decree.Store.Supervisor do
     end)
   end
 
-  # Get the name of the main Postgres database connection pool.
-  #
-  # By default each event store instance will start its own connection pool.
-  #
-  # The `:shared_connection_pool` config option can be used to share the same
-  # database connection pool between multiple event store instances when they
-  # connect to the same physical database. This will reduce the total number of
-  # connections.
-  defp postgrex_conn(name, config) do
-    case Keyword.get(config, :shared_connection_pool) do
-      nil ->
-        Module.concat([name, Postgrex])
-
-      shared_connection_pool when is_atom(shared_connection_pool) ->
-        Module.concat([shared_connection_pool, Postgrex])
-
-      invalid ->
-        raise ArgumentError,
-              "Invalid `:shared_connection_pool` specified, expected an atom but got: " <>
-                inspect(invalid)
-    end
-  end
+  # The name of the main Postgres database connection pool. Each event store instance starts
+  # its own, named after the instance.
+  defp postgrex_conn(name), do: Module.concat([name, Postgrex])
 end

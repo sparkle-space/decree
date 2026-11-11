@@ -27,13 +27,6 @@ defmodule Decree.Store.Storage.AppendErrorTest do
 
       assert {:error, :stream_not_found} = EventStore.read_stream_forward(stream_uuid)
     end
-
-    # The append arm is "append event to schema which does not exist" in
-    # test/store/storage/append_events_test.exs.
-    test "a link to a schema that does not exist", %{conn: conn} do
-      assert {:error, %AppendError{class: :rejected, code: :undefined_table}} =
-               Appender.link(conn, 1, [UUID.uuid4()], schema: "doesnotexist")
-    end
   end
 
   describe "the four domain results stay atoms" do
@@ -45,11 +38,6 @@ defmodule Decree.Store.Storage.AppendErrorTest do
 
       assert {:error, :duplicate_event} =
                EventStore.append_to_stream(UUID.uuid4(), :any_version, [event])
-    end
-
-    test "`:not_found` through `link_to_stream/4`" do
-      assert {:error, :not_found} =
-               EventStore.link_to_stream(UUID.uuid4(), :any_version, [UUID.uuid4()])
     end
 
     test "`:duplicate_stream_uuid` from the appender", %{conn: conn, schema: schema} do

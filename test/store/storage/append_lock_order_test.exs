@@ -137,10 +137,10 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
     end
   end
 
-  # A hard delete is four statements, so its lock order is its code's: the stream's row, then
-  # the event rows, then their delete, then the delete of the stream's row. An append holding
-  # the row and re-sending a stored event id therefore waits on nothing the delete holds. If
-  # the order flips, that append and the delete form a cycle.
+  # A hard delete's statements run one at a time, so its lock order is its code's: the
+  # stream's row, then the delete of its events, then the delete of the stream's row. An
+  # append holding the row and re-sending a stored event id therefore waits on nothing the
+  # delete holds. If the order flips, that append and the delete form a cycle.
   describe "a hard delete's own lock order" do
     test "blocked on the stream's row, it holds no event row", context do
       %{observer: observer, schema: schema, second_appender_backend: deleter_backend} = context
@@ -204,83 +204,6 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
 
       assert {:ok, :ok} = LockSession.commit(holder)
       assert :ok = Task.await(delete)
-    end
-  end
-
-  describe "a link" do
-    test "first: the append blocks, then numbers after the linked events", context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-
-      source_id = create_stream(context, "source")
-      target_id = create_stream(context, "target")
-      linked = read_events(context, "source")
-
-      linker = LockSession.start(context.postgrex_config)
-
-      LockSession.run(linker, fn tx ->
-        assert :ok = EventStore.link_to_stream("target", :any_version, linked, conn: tx)
-      end)
-
-      append = async_append(appender, "target", :any_version, 1)
-      LockSession.wait_until_blocked(observer, appender_backend, linker.backend)
-
-      assert {:ok, :ok} = LockSession.commit(linker)
-      assert :ok = Task.await(append)
-
-      assert stream_versions(context, source_id) == [1]
-      assert stream_versions(context, target_id) == [1, 2, 3]
-    end
-
-    test "first, then an integer expected version answers `:wrong_expected_version`", context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-
-      create_stream(context, "source")
-      target_id = create_stream(context, "target")
-      linked = read_events(context, "source")
-
-      linker = LockSession.start(context.postgrex_config)
-
-      LockSession.run(linker, fn tx ->
-        assert :ok = EventStore.link_to_stream("target", :any_version, linked, conn: tx)
-      end)
-
-      append = async_append(appender, "target", 1, 1)
-      LockSession.wait_until_blocked(observer, appender_backend, linker.backend)
-
-      assert {:ok, :ok} = LockSession.commit(linker)
-      assert {:error, :wrong_expected_version} = Task.await(append)
-
-      assert stream_versions(context, target_id) == [1, 2]
-    end
-
-    test "second: blocked on the stream, it numbers after the append, with no deadlock",
-         context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-      %{second_appender: linker, second_appender_backend: linker_backend} = context
-
-      source_id = create_stream(context, "source")
-      target_id = create_stream(context, "target")
-      linked = read_events(context, "source")
-
-      holder = LockSession.start(context.postgrex_config)
-      LockSession.lock_row(holder, context.schema, @all_stream)
-
-      append = async_append(appender, "target", :any_version, 1)
-      LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
-
-      link =
-        Task.async(fn ->
-          EventStore.link_to_stream("target", :any_version, linked, conn: linker)
-        end)
-
-      LockSession.wait_until_blocked(observer, linker_backend, appender_backend)
-
-      assert {:ok, :ok} = LockSession.commit(holder)
-      assert :ok = Task.await(append)
-      assert :ok = Task.await(link)
-
-      assert stream_versions(context, source_id) == [1]
-      assert stream_versions(context, target_id) == [1, 2, 3]
     end
   end
 
@@ -426,37 +349,43 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
     end
   end
 
-  # A link moves the stream while an append waits on its row, and a second session
-  # holds the append's pinned event id uncommitted on another stream. The link commits,
-  # so the append is stale, and it is left waiting on the event id's unique index.
+  # Another append moves the stream while this one waits on its row, and a second session
+  # holds this append's pinned event id uncommitted on another stream: its events insert
+  # comes before `$all`, so it holds the id while it waits there on the mover. The mover
+  # commits, so this append is stale, and it is left waiting on the event id's unique index.
   defp stage_in_flight_duplicate(context) do
     %{observer: observer, appender: appender, appender_backend: appender_backend} = context
 
     create_stream(context, "stream")
-    create_stream(context, "source")
-    linked = read_events(context, "source")
     event_id = UUID.uuid4()
     [event] = EventFactory.create_events(1)
     event = %EventData{event | event_id: event_id}
 
-    linker = LockSession.start(context.postgrex_config)
+    mover = LockSession.start(context.postgrex_config)
 
-    LockSession.run(linker, fn tx ->
-      assert :ok = EventStore.link_to_stream("stream", :any_version, linked, conn: tx)
+    LockSession.run(mover, fn tx ->
+      assert :ok =
+               EventStore.append_to_stream("stream", :any_version, EventFactory.create_events(1),
+                 conn: tx
+               )
     end)
 
     stale_append =
       Task.async(fn -> EventStore.append_to_stream("stream", 1, [event], conn: appender) end)
 
-    LockSession.wait_until_blocked(observer, appender_backend, linker.backend)
+    LockSession.wait_until_blocked(observer, appender_backend, mover.backend)
 
     writer = LockSession.start(context.postgrex_config)
 
-    LockSession.run(writer, fn tx ->
-      assert :ok = EventStore.append_to_stream("pinned-stream", 0, [event], conn: tx)
-    end)
+    write =
+      LockSession.start_run(writer, fn tx ->
+        EventStore.append_to_stream("pinned-stream", 0, [event], conn: tx)
+      end)
 
-    assert {:ok, :ok} = LockSession.commit(linker)
+    LockSession.wait_until_blocked(observer, writer.backend, mover.backend)
+
+    assert {:ok, :ok} = LockSession.commit(mover)
+    assert :ok = LockSession.await_run(write)
     LockSession.wait_until_blocked(observer, appender_backend, writer.backend)
 
     %{stale_append: stale_append, writer: writer, event_id: event_id}

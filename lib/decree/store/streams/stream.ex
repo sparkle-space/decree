@@ -91,43 +91,6 @@ defmodule Decree.Store.Streams.Stream do
     |> maybe_retry_once(conn, opts, &append_to_streams(conn, appends, &1))
   end
 
-  # The read here decides whether to create the stream and may be stale: `Appender.link/4`
-  # checks the expected version again under the stream's row lock. Losing the race to create
-  # the stream or a deadlock aborts this transaction, so a retry runs all of it again, from
-  # the read.
-  def link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, opts) do
-    with :ok <- validate_link_target(stream_uuid, opts),
-         :ok <- validate_link_source(events_or_event_ids, opts) do
-      transaction(
-        conn,
-        fn transaction ->
-          with {:ok, stream} <- stream_info(transaction, stream_uuid, expected_version, opts),
-               {:ok, stream} <- prepare_stream(transaction, stream, opts),
-               :ok <-
-                 do_link_to_storage(
-                   transaction,
-                   stream,
-                   events_or_event_ids,
-                   expected_version,
-                   opts
-                 ) do
-            :ok
-          else
-            {:error, error} -> Postgrex.rollback(transaction, error)
-          end
-        end,
-        opts
-      )
-      |> maybe_retry_once(
-        conn,
-        opts,
-        &link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, &1)
-      )
-    end
-  end
-
-  def paginate_streams(conn, opts), do: Storage.paginate_streams(conn, opts)
-
   def read_stream_forward(conn, stream_uuid, start_version, count, opts) do
     with {:ok, stream} <- stream_info(conn, stream_uuid, :stream_exists, opts) do
       read_storage_forward(conn, stream, start_version, count, opts)
@@ -292,20 +255,6 @@ defmodule Decree.Store.Streams.Stream do
       {:ok, stream_info}
     end
   end
-
-  # Create stream when it doesn't yet exist.
-  defp prepare_stream(conn, %StreamInfo{stream_id: nil} = stream, opts) do
-    %StreamInfo{stream_uuid: stream_uuid} = stream
-
-    opts = query_opts(opts)
-
-    with {:ok, stream_id} <- Storage.create_stream(conn, stream_uuid, opts) do
-      {:ok, %StreamInfo{stream | stream_id: stream_id}}
-    end
-  end
-
-  # Stream already exists, nothing to do.
-  defp prepare_stream(_conn, %StreamInfo{} = stream, _opts), do: {:ok, stream}
 
   defp do_append_to_storage(
          conn,
@@ -546,60 +495,6 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  # A hard delete of a stream holding links removes those events from every stream, so a
-  # link into a stream that can be deleted would put an event of another stream in its way.
-  # Runs where `validate_deletable_types/2` does, for the same reason: a refusal sends no
-  # statement. A link into a decision's stream would put there an event no decision saw, as
-  # `validate_plain_append/2` says of an append.
-  defp validate_link_target(stream_uuid, opts) do
-    cond do
-      String.starts_with?(stream_uuid, deletable_prefixes(opts)) ->
-        {:error, :link_into_deletable_stream}
-
-      String.starts_with?(stream_uuid, conditional_prefixes(opts)) ->
-        {:error, :link_into_conditional_prefix}
-
-      true ->
-        :ok
-    end
-  end
-
-  # A hard delete of a stream holding a link removes the event from every stream, so a link
-  # to a decision's event would put it within reach of a stream no prefix protects. That
-  # goes by the stream the event was appended to, whatever the target and whatever a
-  # `deletable` prefix says of it. A bare id can't say which stream that is without a
-  # statement, so a store that declares a prefix takes no bare ids. Runs where
-  # `validate_link_target/2` does, after it, for the same reason. This reads what a
-  # `RecordedEvent` says and a caller can change that, so it is an early answer: the store's
-  # own rows decide in `Appender.link/4`, before anything is written.
-  defp validate_link_source(events_or_event_ids, opts) do
-    case conditional_prefixes(opts) do
-      [] ->
-        :ok
-
-      prefixes ->
-        cond do
-          Enum.any?(events_or_event_ids, &conditional_event?(&1, prefixes)) ->
-            {:error, :link_of_conditional_event}
-
-          Enum.all?(events_or_event_ids, &known_source?/1) ->
-            :ok
-
-          true ->
-            {:error, :link_by_id_with_conditional_prefixes}
-        end
-    end
-  end
-
-  defp conditional_event?(%RecordedEvent{stream_uuid: stream_uuid}, prefixes)
-       when is_binary(stream_uuid),
-       do: String.starts_with?(stream_uuid, prefixes)
-
-  defp conditional_event?(_event_or_event_id, _prefixes), do: false
-
-  defp known_source?(%RecordedEvent{stream_uuid: stream_uuid}), do: is_binary(stream_uuid)
-  defp known_source?(_event_id), do: false
-
   # A stream under a declared prefix is what later decisions rest on, its `command:` tags
   # included. One a `deletable` prefix also covers has been declared as both, and "Deletable
   # streams" states that cost. Runs where `validate_tags/1` does, for the same reason: a
@@ -658,33 +553,6 @@ defmodule Decree.Store.Streams.Stream do
       metadata: serializer.serialize(metadata),
       created_at: created_at
     }
-  end
-
-  defp do_link_to_storage(
-         conn,
-         %StreamInfo{} = stream,
-         events_or_event_ids,
-         expected_version,
-         opts
-       ) do
-    %StreamInfo{stream_id: stream_id} = stream
-
-    event_ids = Enum.map(events_or_event_ids, &extract_event_id/1)
-
-    opts =
-      Keyword.merge(opts,
-        expected_version: expected_version,
-        conditional_prefixes: conditional_prefixes(opts)
-      )
-
-    Storage.link_to_stream(conn, stream_id, event_ids, opts)
-  end
-
-  defp extract_event_id(%RecordedEvent{event_id: event_id}), do: event_id
-  defp extract_event_id(event_id) when is_binary(event_id), do: event_id
-
-  defp extract_event_id(invalid) do
-    raise ArgumentError, message: "Invalid event id, expected a UUID but got: #{inspect(invalid)}"
   end
 
   defp write_to_stream(
@@ -967,7 +835,7 @@ defmodule Decree.Store.Streams.Stream do
     &append_to_stream(conn, stream_uuid, expected_version, events, &1)
   end
 
-  # `retry` runs the whole append or link again with the given opts, from its stream-info reads.
+  # `retry` runs the whole append again with the given opts, from its stream-info reads.
   # Not inside a caller's transaction: the unique violation aborted it, so the read would
   # answer `in_failed_sql_transaction`, and the caller decides. A `DBConnection.run/3`
   # checkout is not one, and retries. `Decree.Store` takes no `mode: :savepoint`, which would
@@ -989,11 +857,11 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  # A deadlock victim's transaction rolled back, so nothing was written and the append or
-  # link can run again, from its stream-info read. Not inside a caller's transaction, a
+  # A deadlock victim's transaction rolled back, so nothing was written and the append can
+  # run again, from its stream-info read. Not inside a caller's transaction, a
   # `%DBConnection{}` that `conn_mode: :transaction` marks: that transaction is aborted
   # and the caller decides. A `DBConnection.run/3` checkout is not one, and retries.
-  # The path for 1,000 or more events and a link retry around their own whole transaction.
+  # The path for 1,000 or more events retries around its own whole transaction.
   defp maybe_retry_once(
          {:error, %AppendError{code: :deadlock_detected}} = error,
          %DBConnection{conn_mode: :transaction},

@@ -144,32 +144,6 @@ defmodule Decree.Store do
   The above can be used for multi-tenancy where the data for each tenant is
   stored in a separate, isolated schema.
 
-  ## Shared database connection pools
-
-  By default each event store will start its own `Postgrex` database connection
-  pool. The size of the pool is configured with the `pool_size` config option.
-
-  When you have multiple event stores running you will also end up with multiple
-  connection pools. If they are all connecting to the same physical Postgres
-  database then it can be useful to share a single pool amongst all event
-  stores. Use the `shared_connection_pool` config option to specify a name for
-  the shared connection pool. Then configure the event stores you'd like to
-  share the pool with the same name.
-
-  This can be done in config:
-
-      # config/config.exs
-      config :my_app, MyApp.EventStore, shared_connection_pool: :shared_pool
-
-  Or when starting the event stores, such as via a `Supervisor`:
-
-      Supervisor.start_link(
-        [
-          {MyApp.EventStore, name: :eventstore1, shared_connection_pool: :shared_pool},
-          {MyApp.EventStore, name: :eventstore2, shared_connection_pool: :shared_pool},
-          {MyApp.EventStore, name: :eventstore3, shared_connection_pool: :shared_pool}
-        ], opts)
-
   ## Using an existing database connection or transaction
 
   In some situations you might want to execute the event store operations using
@@ -235,7 +209,8 @@ defmodule Decree.Store do
       row left by an old pod's hard delete, or by a raw delete of events, is ignored, so
       it uses up no `count`. `after` does not fall.
     - A soft-deleted stream's events are still returned.
-    - A link is not seen. The original event is, once, with its original stream.
+    - A link row a store still holds from before links were removed is not seen. The
+      original event is, once, with its original stream.
 
   **The coverage gap.** A query matches rows of the `event_tags` and `event_types`
   tables. An event from before store migration 1.5.0, or one an old pod appended through
@@ -311,9 +286,8 @@ defmodule Decree.Store do
   **Nothing else writes to a declared prefix.** A stream starting with a prefix of
   `conditional_appends` holds what a condition let through, and only that. A plain
   `c:append_to_stream/4` or `c:append_to_streams/2` to one answers
-  `{:error, :plain_append_to_conditional_prefix}`, one such member refusing the whole batch,
-  and a `c:link_to_stream/4` into one answers `{:error, :link_into_conditional_prefix}`. Both
-  are answered before any statement is sent, at every expected version. A condition is what
+  `{:error, :plain_append_to_conditional_prefix}`, one such member refusing the whole batch.
+  This is answered before any statement is sent, at every expected version. A condition is what
   makes an append conditional, so one passing on a declared `target` is allowed on such a
   stream.
 
@@ -323,19 +297,9 @@ defmodule Decree.Store do
   expected version, unless the stream also starts with a prefix of `deletable`: a store that
   declares both has said so, and "Deletable streams" states that cost. A store without
   `enable_hard_deletes` keeps its own answer, and a soft delete is unchanged. The refusal goes
-  by the stream's name, and a hard delete of another stream holding a link to such an event
-  would remove that event as "Deletable streams" says. So no such link is made: a
-  `c:link_to_stream/4` of an event appended to a stream starting with a declared prefix
-  answers `{:error, :link_of_conditional_event}`, whatever the target and even if a `deletable`
-  prefix also covers that stream, and a store declaring a prefix refuses a bare event id with
-  `{:error, :link_by_id_with_conditional_prefixes}`, because which stream it came from can't be
-  known without a statement. Pass the `%Decree.Store.RecordedEvent{}`, read from any stream: it
-  names the stream it was appended to. Both are answered before any statement is sent, and
-  after the target's own refusals. That reads the struct, and the store's own rows decide
-  before anything is written, so an edited `stream_uuid` gains nothing: it answers
-  `{:error, :link_of_conditional_event}` from inside the link's transaction, which rolls back
-  as any failed link does, a caller's transaction with it. A store that declares no prefix keeps what it did, and sends no extra statement. A link made
-  before the prefix was declared, or by a store that declares none, is not found by this.
+  by the stream's name, and no other stream can hold such an event, because no link exists or
+  can be made. A link row a store still holds from before links were removed is not found by
+  this: a hard delete of the stream holding it removes the event, as "Deletable streams" says.
 
   **What the append wrote.** With `returning: :append_result`, an append answers
   `{:ok, %Decree.Store.AppendResult{}}` in place of `:ok`, with the last position it wrote and
@@ -453,22 +417,19 @@ defmodule Decree.Store do
   any statement is sent. Without this a forgotten type would stay queryable and vanish under
   a decision.
 
-  **Links.** A hard delete of a stream holding links removes those events from every stream,
-  the streams they were appended to included, so a stream that can be deleted must hold
-  nothing but its own events. A `c:link_to_stream/4` into a stream starting with a declared
-  prefix answers `{:error, :link_into_deletable_stream}` before any statement is sent, at
-  every expected version. A link out of a deletable stream passes, unless a
-  `conditional_appends` prefix also covers that stream, and that link goes with the event when
-  a hard delete takes it.
+  **Links.** No link exists or can be made, so a stream that can be deleted holds nothing but
+  its own events. A store can still hold link rows written before links were removed, and a
+  hard delete of a stream holding one removes that event from every stream, the stream it was
+  appended to included.
 
-  **Tag index facts.** A stream holding or linking an event tagged `tag_index:fact` can never
-  be hard-deleted, whatever its prefix or its declarations, the stream an application keeps
-  its facts on, a `Platform` singleton's included. The delete answers
-  `{:error, :hard_delete_of_index_fact}` from inside its transaction, which rolls back with
-  every row standing, a caller's transaction with it. A hard delete of a stream holding links
-  deletes the linked events everywhere, so a deleted disable would leave an earlier enable
-  standing: see `Decree.Store.TagIndex`. The check reads after the stream's row and the event
-  rows are locked, so no append or link into the stream can slip past it.
+  **Tag index facts.** A stream holding an event tagged `tag_index:fact`, its own or through a
+  link row written before links were removed, can never be hard-deleted, whatever its prefix
+  or its declarations, the stream an application keeps its facts on, a `Platform` singleton's
+  included. The delete answers `{:error, :hard_delete_of_index_fact}` from inside its
+  transaction, which rolls back with every row standing, a caller's transaction with it. A
+  hard delete takes the stream's events from every stream, so a deleted disable would leave
+  an earlier enable standing: see `Decree.Store.TagIndex`. The check reads after the stream's
+  row is locked, so no append into the stream can slip past it.
 
   **The limit.** The refusal is by name. An item of tags alone, naming a kind that is not
   declared, can still match a deletable event. So the declaration must list every kind a
@@ -493,15 +454,6 @@ defmodule Decree.Store do
           | {:conn, Postgrex.conn() | DBConnection.t()}
           | {:timeout, timeout()}
   @type options :: [option]
-  @type pagination_option ::
-          option
-          | {:page_size, pos_integer()}
-          | {:page_number, pos_integer()}
-          | {:search, String.t()}
-          | {:sort_by,
-             :stream_uuid | :stream_id | :stream_version | :created_at | :deleted_at | :status}
-          | {:sort_dir, :asc | :desc}
-  @type pagination_options :: [pagination_option]
   @type read_query_option ::
           option
           | {:from, integer()}
@@ -608,22 +560,6 @@ defmodule Decree.Store do
         opts = Keyword.merge(opts, overrides)
 
         Stream.append_to_streams(conn, appends, opts)
-      end
-
-      def link_to_stream(
-            stream_uuid,
-            expected_version,
-            events_or_event_ids,
-            opts \\ []
-          )
-
-      def link_to_stream(@all_stream, _expected_version, _events_or_event_ids, _opts),
-        do: {:error, :cannot_append_to_all_stream}
-
-      def link_to_stream(stream_uuid, expected_version, events_or_event_ids, opts) do
-        {conn, opts} = parse_opts(opts)
-
-        Stream.link_to_stream(conn, stream_uuid, expected_version, events_or_event_ids, opts)
       end
 
       def read_stream_forward(
@@ -760,17 +696,6 @@ defmodule Decree.Store do
         {conn, opts} = parse_opts(opts)
 
         Stream.delete_tags(conn, stream_uuid, tag_kinds, opts)
-      end
-
-      def paginate_streams(opts \\ []) do
-        pagination_opts =
-          Keyword.take(opts, [:page_size, :page_number, :search, :sort_by, :sort_dir])
-
-        {conn, opts} = parse_opts(opts)
-
-        opts = Keyword.merge(opts, pagination_opts)
-
-        Stream.paginate_streams(conn, opts)
       end
 
       def stream_info(stream_uuid, opts \\ [])
@@ -963,7 +888,7 @@ defmodule Decree.Store do
     end
   end
 
-  alias Decree.Store.{Config, EventData, Page}
+  alias Decree.Store.{Config, EventData}
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Streams.StreamInfo
 
@@ -1056,8 +981,8 @@ defmodule Decree.Store do
 
   A declared prefix also keeps every other writer out: an append with no condition to a
   stream starting with one is refused. A target keeps nobody out. It is compared on a
-  conditional append and nowhere else, so a stream it covers takes plain appends, links and
-  hard deletes as any other does. A `Decree.Decision.Rule` route's condition names its
+  conditional append and nowhere else, so a stream it covers takes plain appends and hard
+  deletes as any other does. A `Decree.Decision.Rule` route's condition names its
   aggregate as the target, and an application will not start while its store leaves one out:
   see "Two declarations" there.
 
@@ -1239,118 +1164,6 @@ defmodule Decree.Store do
               | {:error, :duplicate_stream_uuid}
               | {:error, {:already_retried_once, :duplicate_stream_uuid}}
               | {:error, Decree.Store.AppendError.t()}
-              | {:error, reason :: term}
-
-  @doc """
-  Link one or more existing events to another stream.
-
-  Allows you to construct streams containing events already appended to any
-  other stream. This is more efficient than copying events between streams since
-  only a reference to the existing event is created.
-
-    - `stream_uuid` is used to uniquely identify the target stream.
-
-    - `expected_version` is used for optimistic concurrency checks.
-      You can provide a non-negative integer to specify the expected stream
-      version. This is used to ensure you can only append to the stream if it is
-      at exactly that version.
-
-      You can also provide one of the following values to affect the concurrency
-      check behaviour:
-
-      - `:any_version` - No concurrency checking; allow any stream version
-        (including no stream).
-      - `:no_stream` - Ensure the stream does not exist.
-      - `:stream_exists` - Ensure the stream exists.
-
-    - `events_or_event_ids` is a list of `%Decree.Store.RecordedEvent{}` structs or
-      event ids. A store declaring a `conditional_appends` prefix takes only the structs.
-
-    - `opts` an optional keyword list containing:
-      - `name` the name of the event store if provided to `start_link/1`.
-      - `timeout` an optional timeout for the database transaction, in
-        milliseconds. Defaults to 15,000ms.
-
-  Returns `:ok` on success, or an `{:error, reason}` tagged tuple:
-
-    * `{:error, :wrong_expected_version}` when the actual stream version differs
-      from the provided expected version, or another writer linked or appended
-      at the same stream version first.
-    * `{:error, :stream_exists}` when the stream exists, but expected version
-      was `:no_stream`.
-    * `{:error, :stream_not_found}` when the stream does not exist, but
-      expected version was `:stream_exists`.
-    * `{:error, :stream_deleted}` when the stream was soft deleted.
-    * `{:error, :cannot_append_to_all_stream}` for the `$all` stream.
-    * `{:error, :link_into_deletable_stream}` when the stream starts with a
-      declared deletable prefix, at every expected version and before any
-      statement is sent. See "Deletable streams" in `Decree.Store`.
-    * `{:error, :link_into_conditional_prefix}` when the stream starts with a declared
-      `conditional_appends` prefix, at every expected version and before any statement is
-      sent. See "Conditional appends" in `Decree.Store`. A stream both declare answers
-      `:link_into_deletable_stream`.
-    * `{:error, :link_of_conditional_event}` when an event was appended to a stream
-      starting with a declared `conditional_appends` prefix, whatever the target and
-      before any statement is sent, and `{:error, :link_by_id_with_conditional_prefixes}`
-      when the store declares such a prefix and an event is given by its bare id, or as a
-      recorded event naming no stream. Both come after the two above. The first goes by the
-      recorded event's `stream_uuid` there, and by the store's own rows before anything is
-      written, so an edited `stream_uuid` is refused too, with the link's transaction rolled
-      back. See "Conditional appends" in `Decree.Store`.
-    * `{:error, :duplicate_event}` when an event is already linked to the
-      stream, or is listed twice.
-    * `{:error, :not_found}` when an event id does not exist, or when a hard
-      delete removed one of the events or the stream first. Nothing is written.
-    * `{:error, :duplicate_stream_uuid}` inside a caller's transaction, when
-      another writer created the stream first. The race aborted that transaction,
-      so this does not retry.
-    * `{:error, {:already_retried_once, :duplicate_stream_uuid}}` when the one
-      retry lost the race too.
-    * `{:error, %Decree.Store.AppendError{}}` for any other failure of the link's
-      locks or its inserts, classified `:unavailable`, `:retryable` or `:rejected`
-      (see `Decree.Store.AppendError`).
-
-  The link takes the stream's row and checks the expected version again on what
-  that returns, so a writer that got there first is answered as if it had been
-  seen from the start, whichever expected version was given. It then takes the
-  events' rows in `event_id` order, in one statement at any size, which is the
-  order a hard delete takes them in, so the two cannot deadlock. The stream's
-  order stays the caller's: events are numbered as listed, however they are locked.
-
-  Losing a race to create the stream and a `deadlock_detected` are each retried
-  once, the whole transaction from its first read, as `c:append_to_stream/4` does.
-  Neither is retried inside a caller's transaction, which it aborted.
-
-  A failure of the queries that read the stream's version or create the stream
-  is returned as the raw error `{:error, reason}` (for example a
-  `Postgrex.Error` or a `DBConnection.ConnectionError`), not as an
-  `AppendError`. The link runs in a transaction; when that
-  transaction cannot begin or commit, the call raises (for example a
-  `DBConnection.ConnectionError`), or returns `{:error, :rollback}` when the
-  connection reports a transaction state error at begin or commit.
-  """
-  @callback link_to_stream(
-              stream_uuid :: String.t(),
-              expected_version,
-              events :: list(Decree.Store.RecordedEvent.t()) | list(non_neg_integer),
-              opts :: options
-            ) ::
-              :ok
-              | {:error, :cannot_append_to_all_stream}
-              | {:error, :stream_exists}
-              | {:error, :stream_not_found}
-              | {:error, :wrong_expected_version}
-              | {:error, :stream_deleted}
-              | {:error, :link_into_deletable_stream}
-              | {:error, :link_into_conditional_prefix}
-              | {:error, :link_of_conditional_event}
-              | {:error, :link_by_id_with_conditional_prefixes}
-              | {:error, :duplicate_event}
-              | {:error, :not_found}
-              | {:error, :duplicate_stream_uuid}
-              | {:error, {:already_retried_once, :duplicate_stream_uuid}}
-              | {:error, Decree.Store.AppendError.t()}
-              | {:error, :rollback}
               | {:error, reason :: term}
 
   @doc """
@@ -1660,33 +1473,28 @@ defmodule Decree.Store do
 
   Will mark the stream as deleted, but will not delete its events. Events from
   soft deleted streams will still appear in the globally ordered all events
-  (`$all`) stream and in any linked streams.
+  (`$all`) stream.
 
   A soft deleted stream cannot be read nor appended to. Subscriptions to the
-  deleted stream will not receive any events but subscriptions containing linked
-  events from the deleted stream, such as the global all events stream, will
-  still receive events from the deleted stream.
+  deleted stream will not receive any events, but a subscription to the global
+  all events stream will still receive events from the deleted stream.
 
   ### Hard delete
 
   Will permanently delete the stream and its events. **This is irreversible and
   will remove data**. Events will be removed from the globally ordered all
-  events stream and any linked streams.
+  events stream (`$all`).
 
   The events' tag and type rows go in the same statement, so a query finds nothing of
-  them. A hard delete of a stream holding links deletes those events everywhere, as it
-  always has: from the streams they were appended to as well, tags included. Hard deletes
-  take no `$all`: see "Deletable streams" in `Decree.Store`.
+  them. A store can still hold link rows written before links were removed: a hard delete
+  of a stream holding one deletes that event everywhere, from the stream it was appended to
+  as well, tags included. Hard deletes take no `$all`: see "Deletable streams" in
+  `Decree.Store`.
 
   The expected version is checked again under the stream's row lock, so an append that
   lands after the first read answers `{:error, :wrong_expected_version}` to an integer
   expected version, and is deleted with the rest under `:any_version` or `:stream_exists`.
-  An append or a link into the stream waiting on that lock answers `{:error, :not_found}`.
-
-  The delete then takes its events' rows in `event_id` order, the order a link takes them
-  in, so the two wait for each other and cannot deadlock. A link in flight when the delete
-  takes a row commits first, and is removed with the event, wherever it was going. A link
-  behind the delete answers `{:error, :not_found}`, and writes nothing.
+  An append into the stream waiting on that lock answers `{:error, :not_found}`.
 
   Last, the stream's snapshots go: its row in the legacy `snapshots` table and its row at
   every version in `versioned_snapshots`, by the stream's `stream_uuid`. A versioned
@@ -1744,7 +1552,7 @@ defmodule Decree.Store do
   before any statement is sent, at every expected version. See "Conditional appends" in
   `Decree.Store`.
 
-  A hard delete of a stream holding or linking an event tagged `tag_index:fact` answers
+  A hard delete of a stream holding an event tagged `tag_index:fact` answers
   `{:error, :hard_delete_of_index_fact}` from inside its transaction, which rolls back with
   every row standing. See "Deletable streams" in `Decree.Store`.
 
@@ -1784,7 +1592,8 @@ defmodule Decree.Store do
         Defaults to 15,000ms.
 
   Only rows of events appended to this stream go. Rows of another stream holding the same
-  tag, an event this stream merely links to, and an event appended to it later all stay.
+  tag, an event this stream holds through a link row written before links were removed, and
+  an event appended to it later all stay.
   The events keep their `event_types` rows.
 
   It needs `enable_hard_deletes`. It takes the stream's row and then `$all`, so appends wait
@@ -1811,42 +1620,6 @@ defmodule Decree.Store do
               | {:error, :cannot_delete_all_stream}
               | {:error, :stream_not_found}
               | {:error, term}
-
-  @doc """
-  Paginate all streams.
-
-    - `opts` an optional keyword list containing:
-
-      - `page_size` the total number of streams per page. Defaults to 50.
-
-      - `page_number` the current page number. Defaults to page 1.
-
-      - `search` search for a stream by its identity.
-
-      - `sort_by` sort the streams by the given field.
-        Defaults to sorting by the stream's internal id (`:stream_id` field)
-
-      - `sort_dir` direction to sort streams by, either `:asc` or `:desc`.
-        Defaults to `:asc`.
-
-      - `name` the name of the event store if provided to `start_link/1`.
-        Defaults to the event store module name (e.g. `MyApp.EventStore`).
-
-      - `timeout` an optional timeout for the database query, in milliseconds.
-        Defaults to 15,000ms.
-
-  Returns an `{:ok, page}` result containing a list of `StreamInfo` structs, or
-  an error tagged tuple on failure.
-
-  ### Example
-
-      alias Decree.Store.Page
-
-      {:ok, %Page{entries: streams}} = MyApp.EventStore.paginate_streams()
-
-  """
-  @callback paginate_streams(opts :: pagination_options()) ::
-              {:ok, Page.t(StreamInfo.t())} | {:error, any()}
 
   @doc """
   Get basic information about a stream, including its version, status, and

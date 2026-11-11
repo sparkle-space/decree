@@ -1,6 +1,6 @@
 <%!--
   Deletes a source's snapshot rows in both tables: the one-row `snapshots` table an older pod
-  still writes, and every version's row in `versioned_snapshots`. It is also the sixth and
+  still writes, and every version's row in `versioned_snapshots`. It is also the fifth and
   last of a hard delete's statements, after `delete_stream_row`, where it is there for the
   legacy row: `delete_stream_row`'s cascade has already deleted the versioned rows. See
   `DeleteStream.hard_delete/3`.

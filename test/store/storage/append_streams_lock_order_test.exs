@@ -336,95 +336,6 @@ defmodule Decree.Store.Storage.AppendStreamsLockOrderTest do
     end
   end
 
-  describe "a link" do
-    test "first: the multi-stream append waits on it, holding the members before", context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-
-      create_stream(context, "source")
-      member = create_stream(context, "a-member")
-      create_stream(context, "m-target")
-      linked = read_events(context, "source")
-
-      linker = LockSession.start(context.postgrex_config)
-
-      LockSession.run(linker, fn tx ->
-        assert :ok = EventStore.link_to_stream("m-target", :any_version, linked, conn: tx)
-      end)
-
-      append = async_append(appender, [{"m-target", :any_version}, {"a-member", :any_version}])
-      LockSession.wait_until_blocked(observer, appender_backend, linker.backend)
-
-      assert_row_locked(context, member)
-
-      assert {:ok, :ok} = LockSession.commit(linker)
-      assert :ok = Task.await(append)
-
-      assert stream_versions(context, "m-target") == [1, 2, 3]
-      assert stream_versions(context, "a-member") == [1, 2]
-    end
-
-    test "second: blocked on a member, it numbers after the append, with no deadlock",
-         context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-      %{second_appender: linker, second_appender_backend: linker_backend} = context
-
-      create_stream(context, "source")
-      create_stream(context, "target")
-      create_stream(context, "other")
-      linked = read_events(context, "source")
-
-      holder = LockSession.start(context.postgrex_config)
-      LockSession.lock_row(holder, context.schema, @all_stream)
-
-      append = async_append(appender, [{"target", :any_version}, {"other", :any_version}])
-      LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
-
-      link =
-        Task.async(fn ->
-          EventStore.link_to_stream("target", :any_version, linked, conn: linker)
-        end)
-
-      LockSession.wait_until_blocked(observer, linker_backend, appender_backend)
-
-      assert {:ok, :ok} = LockSession.commit(holder)
-      assert :ok = Task.await(append)
-      assert :ok = Task.await(link)
-
-      assert stream_versions(context, "target") == [1, 2, 3]
-    end
-
-    # The link's foreign key takes KEY SHARE on the original stream's row, which FOR NO KEY
-    # UPDATE lets through. Were it to wait, it would wait on an append waiting on `$all`.
-    test "of a member's events does not wait on the row the append holds", context do
-      %{observer: observer, appender: appender, appender_backend: appender_backend} = context
-
-      original = create_stream(context, "original")
-      create_stream(context, "other")
-      linked = read_events(context, "original")
-
-      holder = LockSession.start(context.postgrex_config)
-      LockSession.lock_row(holder, context.schema, @all_stream)
-
-      append = async_append(appender, [{"original", :any_version}, {"other", :any_version}])
-      LockSession.wait_until_blocked(observer, appender_backend, holder.backend)
-
-      assert_row_locked(context, original)
-
-      assert :ok =
-               EventStore.link_to_stream("target", :any_version, linked,
-                 conn: context.second_appender
-               )
-
-      assert_row_locked(context, original)
-      assert stream_versions(context, "target") == [1]
-
-      assert {:ok, :ok} = LockSession.commit(holder)
-      assert :ok = Task.await(append)
-
-      assert stream_versions(context, "original") == [1, 2]
-    end
-  end
-
   describe "a hard delete of a member" do
     test "first: the append blocks, then answers `:not_found` and writes nothing", context do
       %{observer: observer, appender: appender, appender_backend: appender_backend} = context
@@ -580,11 +491,5 @@ defmodule Decree.Store.Storage.AppendStreamsLockOrderTest do
       Storage.CreateStream.execute(context.observer, stream_uuid, schema: context.schema)
 
     stream_id
-  end
-
-  defp read_events(context, stream_uuid) do
-    {:ok, events} = EventStore.read_stream_forward(stream_uuid, 0, 10, conn: context.observer)
-
-    events
   end
 end

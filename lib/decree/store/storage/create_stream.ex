@@ -16,7 +16,7 @@ defmodule Decree.Store.Storage.CreateStream do
         {:ok, stream_id}
 
       # Another writer's row, committed or waited on. This statement failing aborted the
-      # transaction, so `Decree.Store.Streams.Stream` retries from the stream-info read.
+      # transaction, so a retry starts again from the stream-info read.
       {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
         Logger.warning("Failed to create stream #{inspect(stream_uuid)}, already exists")
 

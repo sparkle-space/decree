@@ -9,8 +9,6 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
   @operations_per_session 500
   @pool ~w(a-pool B-pool c-pool D-pool e-pool F-pool g-pool H-pool)
   @shared_names 40
-  @link_source "link-source"
-  @link_source_events 64
   @doomed_streams 8
   @append_opts [schema: "public", serializer: Decree.Store.JsonSerializer]
   @delete_opts [schema: "public", enable_hard_deletes: true]
@@ -20,12 +18,8 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
   # other test's backend can move that counter. A backend flushes the counter when it
   # exits, so every session closes, and is seen gone, before the counter is read.
   #
-  # Hard deletes run here over `doomed-` streams of their own, with links of up to three of a
-  # doomed stream's events, in no order. A link and a hard delete take event rows in one order,
-  # so these cannot cycle, and a doomed stream can be a link's target, so two hard deletes
-  # meet here through a link stream on the same rows. `Decree.Store.Storage.LinkLockOrderTest`
-  # stages each of these. Nothing but `doomed-` streams' own events is linked into them, so
-  # that `link-source` and the pool keep every event.
+  # Hard deletes run here over `doomed-` streams of their own, which plain and multi-stream
+  # appends write to as well, so that the pool keeps every event.
   setup do
     config =
       TestEventStore
@@ -44,7 +38,7 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     [config: config, postgrex_config: postgrex_config, observer: observer]
   end
 
-  test "random batches, plain appends, links and hard deletes never deadlock", context do
+  test "random batches, plain appends and hard deletes never deadlock", context do
     %{observer: observer, postgrex_config: postgrex_config} = context
 
     seed(observer)
@@ -53,7 +47,6 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     assert_counter_sees_a_deadlock(context)
 
     before_run = deadlocks(context)
-    links = link_source_event_ids(observer)
     seed = ExUnit.configuration()[:seed]
 
     connections =
@@ -66,7 +59,7 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     results =
       connections
       |> Enum.map(fn {session, conn, _backend} ->
-        Task.async(fn -> run_session(conn, session, seed, links) end)
+        Task.async(fn -> run_session(conn, session, seed) end)
       end)
       |> Task.await_many(120_000)
       |> List.flatten()
@@ -91,10 +84,8 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     [
       :ok,
       {:error, {:already_retried_once, :duplicate_stream_uuid}},
-      # A link of an event already in the target.
-      {:error, :duplicate_event},
       :hard_deleted,
-      # An append, or a link, that a hard delete got to first.
+      # An append that a hard delete got to first.
       {:error, :not_found},
       # A hard delete another one, or the stream's absence, got to first.
       {:error, :stream_not_found}
@@ -105,22 +96,16 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     for stream_uuid <- @pool do
       :ok = Stream.append_to_stream(conn, stream_uuid, 0, [event([])], @append_opts)
     end
-
-    events = for _index <- 1..@link_source_events, do: event([])
-
-    :ok = Stream.append_to_stream(conn, @link_source, 0, events, @append_opts)
   end
 
-  defp run_session(conn, session, seed, links) do
+  defp run_session(conn, session, seed) do
     :rand.seed(:exsss, {seed, session, 7620})
 
     for operation <- 1..@operations_per_session do
       case :rand.uniform(100) do
         roll when roll <= 45 -> multi_stream_append(conn, session, operation)
-        roll when roll <= 70 -> plain_append(conn, session, operation)
-        roll when roll <= 82 -> link(conn, session, operation, links)
-        roll when roll <= 90 -> doomed_append(conn, session, operation)
-        roll when roll <= 95 -> doomed_link(conn, operation)
+        roll when roll <= 82 -> plain_append(conn, session, operation)
+        roll when roll <= 95 -> doomed_append(conn, session, operation)
         _roll -> hard_delete(conn)
       end
     end
@@ -156,15 +141,6 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
     %{answer: answer, event_ids: Enum.map(events, & &1.event_id)}
   end
 
-  defp link(conn, session, operation, links) do
-    event_ids = Enum.take_random(links, :rand.uniform(3))
-
-    answer =
-      Stream.link_to_stream(conn, name(session, operation), :any_version, event_ids, @append_opts)
-
-    %{answer: answer, event_ids: []}
-  end
-
   # Its events leave no position to check once deleted, so these report none, and neither
   # does a batch with a doomed member. The other members still keep all of theirs.
   defp doomed_append(conn, session, operation) do
@@ -185,51 +161,6 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
       end
 
     %{answer: answer, event_ids: []}
-  end
-
-  # One to three events, into a stream of its own or into a doomed stream: see the note at the
-  # top.
-  defp doomed_link(conn, operation) do
-    target =
-      case :rand.uniform(2) do
-        1 -> "linked-doomed-#{rem(operation, @doomed_streams)}"
-        2 -> doomed_name()
-      end
-
-    case doomed_event_ids(conn, :rand.uniform(3)) do
-      [] ->
-        %{answer: :ok, event_ids: []}
-
-      event_ids ->
-        answer =
-          Stream.link_to_stream(
-            conn,
-            target,
-            :any_version,
-            Enum.shuffle(event_ids),
-            @append_opts
-          )
-
-        %{answer: answer, event_ids: []}
-    end
-  end
-
-  defp doomed_event_ids(conn, count) do
-    %Postgrex.Result{rows: rows} =
-      Postgrex.query!(
-        conn,
-        """
-        SELECT se.event_id
-        FROM stream_events se
-        JOIN streams s USING (stream_id)
-        WHERE s.stream_uuid = $1
-        ORDER BY se.stream_version DESC
-        LIMIT $2
-        """,
-        [doomed_name(), count]
-      )
-
-    Enum.map(rows, fn [event_id] -> UUID.binary_to_string!(event_id) end)
   end
 
   defp hard_delete(conn) do
@@ -263,22 +194,6 @@ defmodule Decree.Store.Storage.AppendStreamsLoadTest do
       metadata: %{},
       tags: tags
     }
-  end
-
-  defp link_source_event_ids(conn) do
-    %Postgrex.Result{rows: rows} =
-      Postgrex.query!(
-        conn,
-        """
-        SELECT se.event_id
-        FROM stream_events se
-        JOIN streams s USING (stream_id)
-        WHERE s.stream_uuid = $1
-        """,
-        [@link_source]
-      )
-
-    Enum.map(rows, fn [event_id] -> UUID.binary_to_string!(event_id) end)
   end
 
   # A real one, so the counter is shown to move on this server, in this database, by the

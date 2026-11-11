@@ -1,14 +1,15 @@
 <%!--
-  A subject's tag rows, by kind. `own.original_stream_id = $1` is load-bearing: a stream can
-  hold links to another subject's events, and those rows are not this subject's. The rows are
-  found through the stream's own events and their `$all` links, never by tag value, so a later
-  holder of the same value keeps theirs. `stream_id = 0 AND original_stream_id = $1` has no
-  index, which is why this goes through the stream's own rows.
+  A subject's tag rows, by kind. `own.original_stream_id = $1` is load-bearing: a store can
+  still hold link rows written before links were removed, so a stream can hold another
+  subject's events, and those rows are not this subject's. The rows are found through the
+  stream's own events and their `$all` rows, never by tag value, so a later holder of the same
+  value keeps theirs. `stream_id = 0 AND original_stream_id = $1` has no index, which is why
+  this goes through the stream's own rows.
 
   `event_tags` rows are locked by `position, tag`, the order `hard_delete_stream` locks them
-  in. The two meet on tag rows through a link stream, with no common lock: this one holds the
-  subject's row and that one the link stream's. One order means no cycle. A row the other
-  took first is skipped, so the count is of what this statement deleted.
+  in. The two meet on tag rows only through such a stored link row, with no common lock: this
+  one holds the subject's row and that one the linking stream's. One order means no cycle. A
+  row the other took first is skipped, so the count is of what this statement deleted.
 --%>
 WITH locked_event_tags AS (
   SELECT t.tag, t.position

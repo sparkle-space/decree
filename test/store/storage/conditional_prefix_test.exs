@@ -3,8 +3,7 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
 
   import Decree.Store.StoreRows
 
-  alias Decree.Store.{AppendResult, Config, EventData, LockSession, UUID}
-  alias Decree.Store.Sql.Statements
+  alias Decree.Store.{AppendResult, Config, EventData, LockSession}
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -93,366 +92,6 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
       assert :ok = EventStore.append_to_streams([{"a", 0, events(1)}, {"b", 0, events(2)}])
 
       assert all_version(context) == 3
-    end
-  end
-
-  describe "`link_to_stream`" do
-    setup do
-      :ok = EventStore.append_to_stream("source", 0, events(2))
-
-      {:ok, linked} = EventStore.read_stream_forward("source")
-
-      [linked: linked]
-    end
-
-    test "into a declared prefix sends no statement, at every expected version", context do
-      for stream_uuid <- ["decision-1", "ruling-1"],
-          expected_version <- @expected_versions do
-        assert EventStore.link_to_stream(stream_uuid, expected_version, context.linked,
-                 conn: @no_conn
-               ) == {:error, :link_into_conditional_prefix},
-               inspect({stream_uuid, expected_version})
-      end
-    end
-
-    test "writes nothing", context do
-      assert EventStore.link_to_stream("decision-1", :any_version, context.linked) ==
-               {:error, :link_into_conditional_prefix}
-
-      assert stream_id(context, "decision-1") == nil
-    end
-
-    test "out of one is refused with no statement, whatever the target", context do
-      linked = decided_events("decision-1")
-
-      for stream_uuid <- ["plain", "decision", "no-decision-1"],
-          expected_version <- @expected_versions do
-        assert EventStore.link_to_stream(stream_uuid, expected_version, linked, conn: @no_conn) ==
-                 {:error, :link_of_conditional_event},
-               inspect({stream_uuid, expected_version})
-      end
-
-      assert stream_id(context, "plain") == nil
-    end
-
-    test "out of one is refused however few of the events come from one", context do
-      linked = context.linked ++ decided_events("ruling-1")
-
-      assert EventStore.link_to_stream("plain", :any_version, linked, conn: @no_conn) ==
-               {:error, :link_of_conditional_event}
-
-      assert EventStore.link_to_stream("plain", :any_version, Enum.reverse(linked),
-               conn: @no_conn
-             ) == {:error, :link_of_conditional_event}
-    end
-
-    test "a RecordedEvent read back from a linking stream names the stream it came from",
-         context do
-      :ok = EventStore.link_to_stream("linking", :any_version, context.linked)
-
-      {:ok, forward} = EventStore.read_stream_forward("linking")
-      {:ok, backward} = EventStore.read_stream_backward("linking")
-
-      assert Enum.map(forward, & &1.stream_uuid) == ["source", "source"]
-      assert Enum.map(backward, & &1.stream_uuid) == ["source", "source"]
-    end
-
-    test "out of a linking stream goes by where the event came from" do
-      :ok = EventStore.append_to_stream("decision-1", 0, events(1), condition: condition())
-
-      {:ok, decided} = EventStore.read_stream_forward("decision-1")
-
-      # Only a store that declared nothing could have made this link.
-      start_supervised!(
-        {TestEventStore, name: :undeclared_linker, serializer: PassThroughSerializer}
-      )
-
-      :ok = EventStore.link_to_stream("linking", :any_version, decided, name: :undeclared_linker)
-
-      {:ok, read_back} = EventStore.read_stream_forward("linking")
-
-      assert EventStore.link_to_stream("plain", :any_version, read_back, conn: @no_conn) ==
-               {:error, :link_of_conditional_event}
-    end
-
-    test "a bare id is refused with no statement, whatever the target", context do
-      ids = Enum.map(context.linked, & &1.event_id)
-
-      for stream_uuid <- ["plain", "decision", "no-decision-1"],
-          expected_version <- @expected_versions do
-        assert EventStore.link_to_stream(stream_uuid, expected_version, ids, conn: @no_conn) ==
-                 {:error, :link_by_id_with_conditional_prefixes},
-               inspect({stream_uuid, expected_version})
-      end
-    end
-
-    test "a bare id among RecordedEvents is refused", context do
-      [event, other] = context.linked
-
-      assert EventStore.link_to_stream("plain", :any_version, [event, other.event_id],
-               conn: @no_conn
-             ) == {:error, :link_by_id_with_conditional_prefixes}
-    end
-
-    test "a RecordedEvent that names no stream is taken as a bare id", context do
-      [event | _events] = context.linked
-
-      for stream_uuid <- [nil, :source] do
-        assert EventStore.link_to_stream(
-                 "plain",
-                 :any_version,
-                 [%{event | stream_uuid: stream_uuid}],
-                 conn: @no_conn
-               ) == {:error, :link_by_id_with_conditional_prefixes},
-               inspect(stream_uuid)
-      end
-    end
-
-    test "a RecordedEvent out of a stream outside the prefixes passes", context do
-      assert :ok = EventStore.link_to_stream("plain", :any_version, context.linked)
-
-      assert stream_versions(context, "plain") == [1, 2]
-    end
-
-    test "no events pass, as they do on any store" do
-      assert :ok = EventStore.link_to_stream("plain", :any_version, [])
-    end
-
-    test "the target's arms keep their order and win", context do
-      ids = Enum.map(context.linked, & &1.event_id)
-      decided = decided_events("decision-1")
-
-      for linked <- [ids, decided] do
-        assert EventStore.link_to_stream("decision-2", :any_version, linked, conn: @no_conn) ==
-                 {:error, :link_into_conditional_prefix}
-      end
-
-      start_supervised!(
-        {TestEventStore,
-         name: :both_target_store,
-         conditional_appends: [stream_prefixes: ["decision-"]],
-         deletable: [stream_prefixes: ["XPost-", "decision-"], event_types: ["typed"]],
-         serializer: PassThroughSerializer}
-      )
-
-      for linked <- [ids, decided] do
-        assert EventStore.link_to_stream("XPost-1", :any_version, linked,
-                 conn: @no_conn,
-                 name: :both_target_store
-               ) == {:error, :link_into_deletable_stream}
-      end
-    end
-
-    test "a stream a `deletable` prefix also covers is still refused", context do
-      start_supervised!(
-        {TestEventStore,
-         name: :both_source_store,
-         conditional_appends: [stream_prefixes: ["decision-"]],
-         deletable: [stream_prefixes: ["decision-"], event_types: ["typed"]],
-         serializer: PassThroughSerializer}
-      )
-
-      assert EventStore.link_to_stream("plain", :any_version, decided_events("decision-1"),
-               conn: @no_conn,
-               name: :both_source_store
-             ) == {:error, :link_of_conditional_event}
-
-      assert stream_id(context, "plain") == nil
-    end
-
-    test "a store with no declared prefix links bare ids as it did", context do
-      ids = Enum.map(context.linked, & &1.event_id)
-
-      for declared <- [[], [targets: [:declared_target]]] do
-        name = :"no_prefix_store_#{length(declared)}"
-
-        start_supervised!(
-          {TestEventStore,
-           name: name, conditional_appends: declared, serializer: PassThroughSerializer}
-        )
-
-        stream_uuid = "bare-#{name}"
-
-        assert :ok = EventStore.link_to_stream(stream_uuid, :any_version, ids, name: name)
-        assert stream_versions(context, stream_uuid) == [1, 2]
-      end
-    end
-
-    defp decided_events(stream_uuid) do
-      :ok = EventStore.append_to_stream(stream_uuid, 0, events(1), condition: condition())
-
-      {:ok, decided} = EventStore.read_stream_forward(stream_uuid)
-
-      decided
-    end
-
-    test "of an edited RecordedEvent goes by the store's rows, and writes nothing", context do
-      [event] = decided_events("decision-1")
-      forged = %{event | stream_uuid: "source"}
-
-      assert EventStore.link_to_stream("plain", :any_version, [forged]) ==
-               {:error, :link_of_conditional_event}
-
-      assert stream_id(context, "plain") == nil
-      assert stream_rows(context, event.event_id) == 2
-    end
-
-    test "of an edited RecordedEvent read back from a linking stream is refused too", context do
-      [event] = decided_events("decision-1")
-
-      start_supervised!(
-        {TestEventStore, name: :undeclared_forger, serializer: PassThroughSerializer}
-      )
-
-      :ok = EventStore.link_to_stream("linking", :any_version, [event], name: :undeclared_forger)
-
-      {:ok, [read_back]} = EventStore.read_stream_forward("linking")
-
-      assert EventStore.link_to_stream("plain", :any_version, [
-               %{read_back | stream_uuid: "linking"}
-             ]) == {:error, :link_of_conditional_event}
-
-      assert stream_id(context, "plain") == nil
-    end
-
-    test "of an edited RecordedEvent among honest ones is refused, and writes nothing",
-         context do
-      [event] = decided_events("decision-1")
-      forged = %{event | stream_uuid: "source"}
-
-      for linked <- [context.linked ++ [forged], [forged | context.linked]] do
-        assert EventStore.link_to_stream("plain", :any_version, linked) ==
-                 {:error, :link_of_conditional_event}
-
-        assert stream_id(context, "plain") == nil
-      end
-
-      for %{event_id: event_id} <- context.linked do
-        assert stream_rows(context, event_id) == 2
-      end
-    end
-
-    test "of an edited RecordedEvent in a caller's transaction aborts it, as any error there",
-         context do
-      [event] = decided_events("decision-1")
-      forged = %{event | stream_uuid: "source"}
-
-      # The stale link is the comparison: the same rollback, from the same transaction.
-      for {linked, version, answer} <- [
-            {[forged], :any_version, :link_of_conditional_event},
-            {context.linked, 3, :wrong_expected_version}
-          ] do
-        session = LockSession.start(context.postgrex_config)
-
-        LockSession.run(session, fn tx ->
-          assert EventStore.append_to_stream("written", 0, events(1), conn: tx) == :ok
-
-          assert EventStore.link_to_stream("plain", version, linked, conn: tx) ==
-                   {:error, answer}
-
-          assert_raise DBConnection.ConnectionError, ~r/transaction rolling back/, fn ->
-            Postgrex.query!(tx, "SELECT 1", [])
-          end
-        end)
-
-        assert LockSession.commit(session) == {:error, :rollback}
-        assert stream_id(context, "plain") == nil
-        assert stream_id(context, "written") == nil
-      end
-
-      assert stream_rows(context, event.event_id) == 2
-    end
-
-    test "a RecordedEvent out of a stream outside the prefixes asks the store once", context do
-      assert :ok =
-               Stream.link_to_stream(context.conn, "plain", :any_version, context.linked,
-                 schema: context.schema,
-                 conditional_appends: @declared,
-                 log: statement_log()
-               )
-
-      assert statements_asking_sources(context) == 1
-      assert stream_versions(context, "plain") == [1, 2]
-    end
-
-    test "a store declaring no prefix never asks", context do
-      for {stream_uuid, declared} <- [
-            {"none", []},
-            {"targets", [conditional_appends: [targets: [:declared_target]]]},
-            {"empty", [conditional_appends: [stream_prefixes: []]]}
-          ] do
-        assert :ok =
-                 Stream.link_to_stream(
-                   context.conn,
-                   stream_uuid,
-                   :any_version,
-                   context.linked,
-                   [schema: context.schema, log: statement_log()] ++ declared
-                 )
-
-        assert statements_asking_sources(context) == 0
-        assert stream_versions(context, stream_uuid) == [1, 2]
-      end
-    end
-
-    # A transaction's BEGIN and COMMIT log an atom for their query.
-    defp statement_log do
-      test_pid = self()
-
-      fn
-        %DBConnection.LogEntry{query: %Postgrex.Query{statement: statement}} ->
-          send(test_pid, {:statement, IO.iodata_to_binary(statement)})
-
-        %DBConnection.LogEntry{} ->
-          :ok
-      end
-    end
-
-    defp statements_asking_sources(context) do
-      asking = context.schema |> Statements.query_link_sources() |> IO.iodata_to_binary()
-
-      drain_statements() |> Enum.count(&(&1 == asking))
-    end
-
-    defp drain_statements do
-      receive do
-        {:statement, statement} -> [statement | drain_statements()]
-      after
-        0 -> []
-      end
-    end
-
-    # The event's own row and its row in `$all`, so a link would make a third.
-    defp stream_rows(context, event_id) do
-      [[count]] =
-        rows(
-          context,
-          ~s|SELECT count(*) FROM "#{context.schema}".stream_events WHERE event_id = $1|,
-          [UUID.string_to_binary!(event_id)]
-        )
-
-      count
-    end
-
-    test "into a name that only resembles a prefix passes", context do
-      for stream_uuid <- ["decision", "no-decision-1"] do
-        assert :ok = EventStore.link_to_stream(stream_uuid, :any_version, context.linked)
-      end
-    end
-
-    test "answers the deletable refusal for a stream both declare", context do
-      start_supervised!(
-        {TestEventStore,
-         name: :both_store,
-         conditional_appends: [stream_prefixes: ["decision-"]],
-         deletable: [stream_prefixes: ["decision-"], event_types: ["typed"]],
-         serializer: PassThroughSerializer}
-      )
-
-      assert EventStore.link_to_stream("decision-1", :any_version, context.linked,
-               conn: @no_conn,
-               name: :both_store
-             ) == {:error, :link_into_deletable_stream}
     end
   end
 
@@ -620,16 +259,11 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
       end
     end
 
-    test "of a plain stream cannot reach a decision's event through an edited RecordedEvent",
-         context do
+    test "of a plain stream leaves a decision's event standing", context do
       :ok = decided("decision-1", :hard_store)
       :ok = EventStore.append_to_stream("plain", 0, events(1), name: :hard_store)
 
       {:ok, [event]} = EventStore.read_stream_forward("decision-1", 0, 1, name: :hard_store)
-
-      assert EventStore.link_to_stream("plain", :any_version, [%{event | stream_uuid: "source"}],
-               name: :hard_store
-             ) == {:error, :link_of_conditional_event}
 
       assert stream_versions(context, "plain") == [1]
 
@@ -803,9 +437,6 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
 
   describe "a caller's transaction" do
     test "survives each refusal, and every one of them writes nothing", context do
-      :ok = EventStore.append_to_stream("source", 0, events(1))
-      {:ok, linked} = EventStore.read_stream_forward("source")
-
       session = LockSession.start(context.postgrex_config)
 
       LockSession.run(session, fn tx ->
@@ -820,12 +451,9 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
                  conn: tx
                ) == {:error, :plain_append_to_conditional_prefix}
 
-        assert EventStore.link_to_stream("decision-1", :any_version, linked, conn: tx) ==
-                 {:error, :link_into_conditional_prefix}
-
         assert %Postgrex.Result{rows: [[1]]} = Postgrex.query!(tx, "SELECT 1", [])
 
-        assert {:ok, %AppendResult{position: 2, stream_versions: %{"written" => 1}}} =
+        assert {:ok, %AppendResult{position: 1, stream_versions: %{"written" => 1}}} =
                  EventStore.append_to_stream("written", 0, events(1),
                    conn: tx,
                    returning: :append_result
@@ -834,7 +462,7 @@ defmodule Decree.Store.Storage.ConditionalPrefixTest do
 
       assert {:ok, :ok} = LockSession.commit(session)
       assert stream_versions(context, "written") == [1]
-      assert all_version(context) == 2
+      assert all_version(context) == 1
     end
   end
 

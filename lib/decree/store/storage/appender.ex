@@ -2,7 +2,6 @@ defmodule Decree.Store.Storage.Appender do
   @moduledoc false
   alias Decree.Store.{AppendCondition, AppendError, AppendResult, Query, RecordedEvent, UUID}
   alias Decree.Store.Sql.Statements
-  alias Decree.Store.Storage.Stream, as: StreamStorage
 
   require Logger
 
@@ -128,56 +127,6 @@ defmodule Decree.Store.Storage.Appender do
           "Failed to append events to streams #{inspect(stream_uuids)} due to: " <>
             inspect(error)
         )
-
-        reply
-    end
-  end
-
-  @doc """
-  Link the given list of existing event ids to another stream in storage, in the
-  caller's transaction, and in this order, each a statement of its own:
-
-    1. The stream's row, with the `:expected_version` option, default `:any_version`,
-       checked on what the lock returns, because the caller's read may be stale. A row
-       that is gone answers `{:error, :not_found}`.
-    2. Every event's row in KEY SHARE, in one statement at any size and in `event_id`
-       order, the order a hard delete takes them in. This comes after the stream's row
-       because a hard delete takes that one first too: the other way round a link of an
-       event already in the stream would cycle with its hard delete. An event that does
-       not exist, or that a hard delete has removed, answers `{:error, :not_found}` here,
-       before anything is written. A repeated id is one row, and reaches the insert.
-    3. With a non-empty `:conditional_prefixes` option, the streams the events were appended
-       to, from the store's own rows, which the locks above hold still. One starting with a
-       prefix answers `{:error, :link_of_conditional_event}`, before anything is written. A
-       `Decree.Store.RecordedEvent` says the same, but a caller can change that. An empty
-       or absent option sends no statement.
-    4. The inserts, in batches of 1,000, which number the events in the caller's order:
-       locking is sorted, numbering is not.
-
-  Returns `:ok` on success, or one of `{:error, :not_found}`,
-  `{:error, :duplicate_event}`, `{:error, :wrong_expected_version}`,
-  `{:error, :stream_exists}`, `{:error, :stream_deleted}`,
-  `{:error, :link_of_conditional_event}` and
-  `{:error, %Decree.Store.AppendError{}}` for every other failure of these statements,
-  a `deadlock_detected` included.
-  """
-  def link(conn, stream_id, event_ids, opts \\ [])
-
-  def link(conn, stream_id, event_ids, opts) do
-    {schema, opts} = Keyword.pop(opts, :schema)
-    {expected_version, opts} = Keyword.pop(opts, :expected_version, :any_version)
-    {conditional_prefixes, opts} = Keyword.pop(opts, :conditional_prefixes, [])
-
-    event_ids = Enum.map(event_ids, &encode_uuid/1)
-
-    with :ok <- lock_link_target(conn, stream_id, expected_version, schema, opts),
-         :ok <- lock_link_events(conn, event_ids, schema, opts),
-         :ok <- check_link_sources(conn, event_ids, conditional_prefixes, schema, opts),
-         :ok <- insert_link_batches(conn, stream_id, event_ids, schema, opts) do
-      :ok
-    else
-      {:error, error} = reply ->
-        Logger.warning("Failed to link events to stream due to: #{inspect(error)}")
 
         reply
     end
@@ -335,81 +284,6 @@ defmodule Decree.Store.Storage.Appender do
   end
 
   defp array_element(value), do: value
-
-  # `{:error, :stream_not_found}` cannot come from the version check here, because the
-  # stream has an id, so it says the row is gone.
-  defp lock_link_target(conn, stream_id, expected_version, schema, opts) do
-    case StreamStorage.lock_at_version(conn, stream_id, expected_version, schema, opts) do
-      :ok -> :ok
-      {:error, :stream_not_found} -> {:error, :not_found}
-      {:error, reason} = reply when is_atom(reason) -> reply
-      {:error, error} -> handle_error(error)
-    end
-  end
-
-  # Against the distinct ids, on their binaries, because a repeated id returns one row and
-  # must still reach the insert to answer `:duplicate_event`.
-  defp lock_link_events(conn, event_ids, schema, opts) do
-    distinct = event_ids |> Enum.uniq() |> length()
-
-    case Postgrex.query(conn, Statements.lock_link_events(schema), [event_ids], opts) do
-      {:ok, %Postgrex.Result{num_rows: ^distinct}} -> :ok
-      {:ok, %Postgrex.Result{}} -> {:error, :not_found}
-      {:error, error} -> handle_error(error)
-    end
-  end
-
-  # A store declaring no prefix has nothing to check, so it sends no statement.
-  defp check_link_sources(_conn, _event_ids, [], _schema, _opts), do: :ok
-
-  defp check_link_sources(conn, event_ids, prefixes, schema, opts) do
-    case Postgrex.query(conn, Statements.query_link_sources(schema), [event_ids], opts) do
-      {:ok, %Postgrex.Result{rows: rows}} ->
-        if Enum.any?(rows, fn [stream_uuid] -> String.starts_with?(stream_uuid, prefixes) end) do
-          {:error, :link_of_conditional_event}
-        else
-          :ok
-        end
-
-      {:error, error} ->
-        handle_error(error)
-    end
-  end
-
-  defp insert_link_batches(conn, stream_id, event_ids, schema, opts) do
-    event_ids
-    |> Stream.chunk_every(1_000)
-    |> Enum.reduce_while(:ok, fn batch, :ok ->
-      event_count = length(batch)
-
-      parameters =
-        batch
-        |> Stream.with_index(1)
-        |> Enum.flat_map(fn {event_id, index} -> [index, event_id] end)
-
-      params = [stream_id, event_count] ++ parameters
-
-      case insert_link_events(conn, params, event_count, schema, opts) do
-        :ok ->
-          Logger.debug("Linked #{event_count} event(s) to stream")
-
-          {:cont, :ok}
-
-        {:error, _error} = reply ->
-          {:halt, reply}
-      end
-    end)
-  end
-
-  defp insert_link_events(conn, params, event_count, schema, opts) do
-    statement = Statements.insert_link_events(schema, event_count)
-
-    case Postgrex.query(conn, statement, params, opts) do
-      {:ok, %Postgrex.Result{num_rows: 0}} -> {:error, :not_found}
-      {:ok, %Postgrex.Result{}} -> :ok
-      {:error, error} -> handle_error(error)
-    end
-  end
 
   # The five domain answers stay plain atoms; every other failure is classified
   # as a `Decree.Store.AppendError` (see its moduledoc for the classes).

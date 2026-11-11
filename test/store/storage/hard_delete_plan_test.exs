@@ -50,33 +50,6 @@ defmodule Decree.Store.Storage.HardDeletePlanTest do
       refute plan =~ ~r/Seq Scan on \S*event_types\b/, plan
     end
 
-    test "a hard delete locks its event rows in `event_id` order", context do
-      %{conn: conn, plan_schema: schema, stream_id: stream_id} = context
-
-      plan = explain(conn, Statements.lock_deleted_events(schema), [stream_id])
-
-      assert_event_rows_locked_in_order(plan)
-      refute plan =~ ~r/Seq Scan on \S*events\b/, plan
-    end
-
-    test "a link locks its event rows in `event_id` order, in one statement", context do
-      %{conn: conn, plan_schema: schema, stream_id: stream_id} = context
-
-      %Postgrex.Result{rows: rows} =
-        Postgrex.query!(
-          conn,
-          ~s(SELECT event_id FROM "#{schema}".stream_events WHERE stream_id = $1),
-          [stream_id]
-        )
-
-      event_ids = Enum.map(rows, &hd/1)
-
-      plan = explain(conn, Statements.lock_link_events(schema), [event_ids])
-
-      assert_event_rows_locked_in_order(plan)
-      refute plan =~ ~r/Seq Scan on \S*events\b/, plan
-    end
-
     test "`delete_stream_tags` reaches its tag rows through the position", context do
       %{conn: conn, plan_schema: schema, stream_id: stream_id} = context
 
@@ -105,14 +78,6 @@ defmodule Decree.Store.Storage.HardDeletePlanTest do
   defp assert_tag_rows_locked_in_order(plan) do
     assert plan =~
              ~r/LockRows[^\n]*\n\s*->  (?:Incremental )?Sort [^\n]*\n\s*Sort Key: \S+"position", \S+\.tag /,
-           plan
-  end
-
-  # Each side's `LockRows` over the sort, or the locks follow the scan and a link and a hard
-  # delete can cycle.
-  defp assert_event_rows_locked_in_order(plan) do
-    assert plan =~
-             ~r/LockRows[^\n]*\n\s*->  (?:Incremental )?Sort [^\n]*\n\s*Sort Key: \S*event_id/,
            plan
   end
 

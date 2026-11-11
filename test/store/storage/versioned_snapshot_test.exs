@@ -291,7 +291,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         source_uuid = stream(store)
         stream_id = StoreRows.stream_id(%{observer: observer, schema: schema}, source_uuid)
 
-        # The store's own hard delete, all six statements, held open before commit.
+        # The store's own hard delete, all five statements, held open before commit.
         eraser = LockSession.start(postgrex_config)
 
         :ok =

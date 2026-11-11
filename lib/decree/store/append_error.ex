@@ -1,9 +1,9 @@
 defmodule Decree.Store.AppendError do
   @moduledoc """
-  An append or link that the database did not accept, classified by what a
-  caller can do about it.
+  An append that the database did not accept, classified by what a caller can
+  do about it.
 
-  `append_to_stream/4` and `link_to_stream/4` return five failures of the
+  `append_to_stream/4` returns five failures of the
   appender's statements as plain atoms, because they are domain answers:
   `{:error, :wrong_expected_version}`, `{:error, :duplicate_event}`,
   `{:error, :not_found}`, `{:error, :append_condition_failed}` and (retried once
@@ -56,12 +56,12 @@ defmodule Decree.Store.AppendError do
   fresh one on every call, so a retry with `:any_version` can write the events
   twice.
 
-  A `:retryable` failure rolled back. `append_to_stream/4` and `link_to_stream/4`
-  retry `deadlock_detected` (40P01) once themselves, from their stream-info read,
-  and answer the `%AppendError{}` if it comes back. Neither retries inside a
-  caller's transaction (`:conn` given a transaction): that transaction is aborted,
-  and what happens next is the caller's decision. Every other `:retryable` failure
-  is the caller's to retry.
+  A `:retryable` failure rolled back. `append_to_stream/4` retries
+  `deadlock_detected` (40P01) once itself, from its stream-info read, and answers
+  the `%AppendError{}` if it comes back. It does not retry inside a caller's
+  transaction (`:conn` given a transaction): that transaction is aborted, and what
+  happens next is the caller's decision. Every other `:retryable` failure is the
+  caller's to retry.
 
   ## Aggregates
 
@@ -76,9 +76,9 @@ defmodule Decree.Store.AppendError do
   `Decree.Aggregates.DefaultLifespan` answers `:infinity` for it.
 
   `{:error, :duplicate_stream_uuid}` means two writers raced to create the same
-  stream. `append_to_stream/4` and `link_to_stream/4` retry it once and then
-  answer `{:error, {:already_retried_once, :duplicate_stream_uuid}}`. Neither
-  retries inside a caller's transaction, which the race aborted: each answers
+  stream. `append_to_stream/4` retries it once and then answers
+  `{:error, {:already_retried_once, :duplicate_stream_uuid}}`. It does not retry
+  inside a caller's transaction, which the race aborted: it answers
   `{:error, :duplicate_stream_uuid}`.
   """
 
