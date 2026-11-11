@@ -16,6 +16,26 @@ defmodule Decree.Store.Storage.HardDeleteIndexFactTest do
     ]
   end
 
+  # The link row is one a store still holds from before #8075 removed links:
+  # `seed_legacy_link/3` writes it.
+  describe "a stream that links a disable fact" do
+    test "is refused, and every row stays: events, links and tags", context do
+      ledger!()
+      :ok = EventStore.append_to_stream("link-stream", 0, [event(["tenant:a"])])
+
+      {:ok, [_enable, disable]} = EventStore.read_stream_forward("ledger")
+      :ok = seed_legacy_link(context, "link-stream", [disable])
+
+      before = snapshot(context)
+
+      assert {:error, :hard_delete_of_index_fact} = delete(context, "link-stream")
+
+      assert snapshot(context) == before
+      assert stream_versions(context, "link-stream") == [1, 2]
+      assert stream_versions(context, "ledger") == [1, 2]
+    end
+  end
+
   describe "a stream holding a fact of its own" do
     test "is refused, and every row stays", context do
       ledger!()

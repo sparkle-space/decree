@@ -69,6 +69,23 @@ defmodule Decree.Store.Storage.DeleteStreamTagsTest do
       assert tags(context, "a") == ["emai:x", "email_verified:x"]
     end
 
+    # The link row is one a store still holds from before #8075 removed links:
+    # `seed_legacy_link/3` writes it.
+    test "a row of an event the stream only links to stays", context do
+      append("b", ["email:b"])
+      append("a", ["email:a"])
+
+      {:ok, linked} = EventStore.read_stream_forward("b")
+      :ok = seed_legacy_link(context, "a", linked)
+
+      assert stream_versions(context, "a") == [1, 2]
+
+      assert {:ok, 1} = EventStore.delete_stream_tags("a", ["email"])
+
+      assert tags(context, "a") == []
+      assert tags(context, "b") == ["email:b"]
+    end
+
     test "the events stay, and so do their type rows", context do
       append("a", ["email:x"])
 

@@ -174,6 +174,32 @@ defmodule Decree.Store.Storage.HardDeleteTest do
     end
   end
 
+  # `link_to_stream` is gone (#8075), but a store can still hold a link row written before it
+  # was: `seed_legacy_link/3` writes one. The delete's `linked_events` CTE takes it.
+  describe "a stream holding a link row written before #8075" do
+    test "takes the linked event from everywhere, with its tags and types", context do
+      :ok = EventStore.append_to_stream("source", 0, [event(["tenant:a"])])
+      :ok = EventStore.append_to_stream("other", 0, [event(["tenant:b"])])
+
+      {:ok, [linked]} = EventStore.read_stream_forward("source")
+      :ok = seed_legacy_link(context, "link-stream", [linked])
+
+      linked_ids = [UUID.string_to_binary!(linked.event_id)]
+
+      assert stream_versions(context, "link-stream") == [1]
+      assert [[_event_id, _event_type]] = event_rows(context, linked_ids)
+
+      assert :ok = delete(context, "link-stream")
+
+      assert stream_id(context, "link-stream") == nil
+      assert stream_versions(context, "source") == []
+      assert event_rows(context, linked_ids) == []
+      assert all_positions(context) == [2]
+      assert tag_rows(context) == [[2, "tenant:b"]]
+      assert rows(context, ~s(SELECT position FROM "#{context.schema}".event_types), []) == [[2]]
+    end
+  end
+
   describe "the fence" do
     setup %{deleter: deleter} do
       :ok = EventStore.append_to_stream("stream", 0, [event(["tenant:a"])])
