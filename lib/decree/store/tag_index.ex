@@ -59,10 +59,10 @@ defmodule Decree.Store.TagIndex do
       beside the live one.
     - **Retirement.** A disable for a family and fingerprint whose key is retired. A key
       restored later has the same material, so the same fingerprint, and meets that disable.
-    - **Never deleted.** A hard delete of a stream holding or linking a fact answers
-      `{:error, :hard_delete_of_index_fact}`. A hard delete takes linked events with it, so a
-      disable gone that way would leave an earlier enable standing. A fact stays for the
-      store's life.
+    - **Never deleted.** A hard delete of a stream holding a fact, its own or through a link
+      row written before links were removed, answers `{:error, :hard_delete_of_index_fact}`.
+      A hard delete takes the stream's events from every stream, so a disable gone that way
+      would leave an earlier enable standing. A fact stays for the store's life.
   """
 
   alias Decree.Store.Query

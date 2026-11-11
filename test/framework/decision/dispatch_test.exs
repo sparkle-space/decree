@@ -1178,18 +1178,6 @@ defmodule Decree.Decision.DispatchTest do
                {:error, :plain_append_to_conditional_prefix}
     end
 
-    test "a link into a decision's stream" do
-      seed(%Released{scope: "s"}, [], App, "other-linked")
-      [event] = positioned("other-linked")
-
-      assert Decree.FrameworkEventStore.link_to_stream(
-               "claim-" <> UUID.uuid4(),
-               :any_version,
-               [event.event_id],
-               name: store()
-             ) == {:error, :link_into_conditional_prefix}
-    end
-
     test "an aggregate's function prefix landing in a decision's prefix" do
       command = %Decree.DecisionFixtures.StrayCommand{command_id: UUID.uuid4(), id: UUID.uuid4()}
 
@@ -1213,8 +1201,6 @@ defmodule Decree.Decision.DispatchTest do
       assert {:error, :undeclared_conditional_target} =
                DeletableApp.dispatch(claim())
     end
-
-    defp store, do: Module.concat([App, "FrameworkEventStore"])
   end
 
   describe "a resend, on a store that can erase tags" do

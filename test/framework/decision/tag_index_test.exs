@@ -407,27 +407,10 @@ defmodule Decree.Decision.TagIndexTest do
       [store: Module.concat([HardDeletesApp, "FrameworkEventStore"])]
     end
 
-    test "of a stream linking a disable is refused, and the decision still refuses", context do
+    test "of the stream holding a disable is refused, and the decision still refuses", context do
       %{store: store} = context
 
       disable_index!("entity")
-
-      {:ok, facts} =
-        Decree.FrameworkEventStore.read_stream_forward(TagIndexFixtures.ledger_stream(), 0, 100,
-          name: store
-        )
-
-      disable = List.last(facts)
-
-      :ok =
-        Decree.FrameworkEventStore.link_to_stream("fact-link", :any_version, [disable],
-          name: store
-        )
-
-      assert {:error, :hard_delete_of_index_fact} =
-               Decree.FrameworkEventStore.delete_stream("fact-link", :any_version, :hard,
-                 name: store
-               )
 
       assert {:error, :hard_delete_of_index_fact} =
                Decree.FrameworkEventStore.delete_stream(

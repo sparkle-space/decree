@@ -102,20 +102,6 @@ defmodule Decree.Store.Streams.SoftDeleteStreamTest do
         assert match?(%RecordedEvent{stream_uuid: ^stream_uuid}, event)
       end
     end
-
-    test "reading a stream will include linked events from deleted stream",
-         %{stream_uuid: stream1_uuid} do
-      stream2_uuid = UUID.uuid4()
-
-      {:ok, events} = EventStore.read_stream_forward(stream1_uuid)
-
-      :ok = EventStore.link_to_stream(stream2_uuid, 0, events)
-
-      :ok = EventStore.delete_stream(stream1_uuid, :any_version, :soft)
-
-      assert {:ok, events} = EventStore.read_stream_forward(stream2_uuid)
-      assert length(events) == 3
-    end
   end
 
   defp append_events_to_stream(_context) do

@@ -9,7 +9,7 @@ defmodule Decree.Decision.RuleDeclaredStreamTest do
     [:decree, :decision, :refused]
   ]
 
-  defp store(application \\ App), do: Module.concat([application, "FrameworkEventStore"])
+  defp store(application), do: Module.concat([application, "FrameworkEventStore"])
 
   setup do
     Process.register(self(), :rule_recorder)
@@ -42,23 +42,6 @@ defmodule Decree.Decision.RuleDeclaredStreamTest do
       refute_received {:telemetry, _event, _measurements, _metadata}
 
       assert [%{data: %Registered{}}, %{data: %Removed{}}] = stored(stream, App)
-    end
-
-    test "a link goes in as it would anywhere", %{user: user} do
-      seed(%Noted{id: "linked"}, [], App, "linked-source")
-
-      assert [%{event_id: event_id}] = stored("linked-source", App)
-
-      assert :ok =
-               Decree.FrameworkEventStore.link_to_stream(
-                 user_stream(user),
-                 :any_version,
-                 [event_id],
-                 name: store()
-               )
-
-      assert [%{data: %Registered{}}, %{data: %Noted{id: "linked"}}] =
-               stored(user_stream(user), App)
     end
 
     test "a snapshot is taken as on any stream" do

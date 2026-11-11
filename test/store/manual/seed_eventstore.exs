@@ -24,7 +24,9 @@ defmodule Seed do
 
   def run(opts \\ []) do
     append_events(opts)
-    link_events(opts)
+    # The committed dumps were seeded with links, by a step removed with links in
+    # sparkle-space/sparklespace#8075, and `migrated_event_store_test.exs` "read linked stream
+    # forward" reads them. A re-seed has none, so that test would then have nothing to read.
     record_snapshots(opts)
     subscribe_to_streams()
   end
@@ -46,16 +48,6 @@ defmodule Seed do
         end
 
       :ok = TestEventStore.append_to_stream("stream-#{stream_index}", 0, events)
-    end
-  end
-
-  defp link_events(opts) do
-    stream_count = Keyword.get(opts, :stream_count, 10)
-
-    for stream_index <- 1..stream_count do
-      {:ok, events} = TestEventStore.read_stream_forward("stream-#{stream_index}", 0, 1)
-
-      :ok = TestEventStore.link_to_stream("linked-stream", stream_index - 1, events)
     end
   end
 

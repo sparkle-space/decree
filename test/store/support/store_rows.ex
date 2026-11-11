@@ -119,6 +119,74 @@ defmodule Decree.Store.StoreRows do
     :ok
   end
 
+  # Stands in for a store that holds link rows from before #8075 removed links: the API can no
+  # longer write one, and the committed seed dumps hold some. The rows are what the deleted
+  # `insert_link_events` statement wrote. `stream_uuid` is created if absent, and gets one
+  # `stream_events` row per event at its next versions, carrying the event's own stream and
+  # version as `original_stream_id` and `original_stream_version`. Its `streams.stream_version`
+  # moves with them. `$all` is untouched: a link never took a position.
+  def seed_legacy_link(context, stream_uuid, recorded_events) do
+    prefix = ~s("#{context.schema}".)
+    event_ids = Enum.map(recorded_events, &Decree.Store.UUID.string_to_binary!(&1.event_id))
+    event_count = length(event_ids)
+    existing_stream_id = stream_id(context, stream_uuid)
+
+    {:ok, :ok} =
+      Postgrex.transaction(context.observer, fn tx ->
+        stream_id =
+          case existing_stream_id do
+            nil ->
+              %Postgrex.Result{rows: [[stream_id]]} =
+                Postgrex.query!(
+                  tx,
+                  "INSERT INTO #{prefix}streams (stream_uuid) VALUES ($1) RETURNING stream_id",
+                  [stream_uuid]
+                )
+
+              stream_id
+
+            stream_id ->
+              stream_id
+          end
+
+        %Postgrex.Result{num_rows: ^event_count} =
+          Postgrex.query!(
+            tx,
+            """
+            WITH
+              stream AS (
+                UPDATE #{prefix}streams
+                SET stream_version = stream_version + $2::bigint
+                WHERE stream_id = $1::bigint
+                RETURNING stream_version - $2 AS initial_stream_version
+              ),
+              linked_events (index, event_id) AS (
+                SELECT ordinality, event_id
+                FROM unnest($3::uuid[]) WITH ORDINALITY AS linked (event_id, ordinality)
+              )
+            INSERT INTO #{prefix}stream_events
+              (stream_id, stream_version, event_id, original_stream_id, original_stream_version)
+            SELECT
+              $1,
+              stream.initial_stream_version + linked_events.index,
+              linked_events.event_id,
+              original_stream_events.original_stream_id,
+              original_stream_events.stream_version
+            FROM linked_events
+            CROSS JOIN stream
+            INNER JOIN #{prefix}stream_events AS original_stream_events
+              ON original_stream_events.event_id = linked_events.event_id
+                AND original_stream_events.stream_id = original_stream_events.original_stream_id
+            """,
+            [stream_id, event_count, event_ids]
+          )
+
+        :ok
+      end)
+
+    :ok
+  end
+
   def assert_row_locked(context, stream_id) do
     assert {:error, %Postgrex.Error{postgres: %{code: :lock_not_available}}} =
              try_row_lock(context, stream_id)

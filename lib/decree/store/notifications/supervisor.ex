@@ -28,7 +28,7 @@ defmodule Decree.Store.Notifications.Supervisor do
 
     listener_name = Module.concat([event_store, Listener])
     publisher_name = Module.concat([event_store, Publisher])
-    postgrex_notifications_conn = postgrex_notifications_conn(event_store, config)
+    postgrex_notifications_conn = postgrex_notifications_conn(event_store)
 
     postgrex_notifications_config =
       Config.postgrex_notifications_opts(config, postgrex_notifications_conn)
@@ -66,18 +66,6 @@ defmodule Decree.Store.Notifications.Supervisor do
     )
   end
 
-  defp postgrex_notifications_conn(name, config) do
-    case Keyword.get(config, :shared_connection_pool) do
-      nil ->
-        Module.concat([name, Postgrex, Notifications])
-
-      shared_connection_pool when is_atom(shared_connection_pool) ->
-        Module.concat([shared_connection_pool, Postgrex, Notifications])
-
-      invalid ->
-        raise ArgumentError,
-              "Invalid `:shared_connection_pool` specified, expected an atom but got: " <>
-                inspect(invalid)
-    end
-  end
+  # Each event store instance starts its own notifications connection, named after it.
+  defp postgrex_notifications_conn(name), do: Module.concat([name, Postgrex, Notifications])
 end

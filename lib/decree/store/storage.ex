@@ -27,11 +27,6 @@ defmodule Decree.Store.Storage do
   defdelegate append_to_streams(conn, members, opts), to: Appender, as: :append_streams
 
   @doc """
-  Link the existing event ids already present in a stream to the given stream.
-  """
-  defdelegate link_to_stream(conn, stream_id, event_ids, opts), to: Appender, as: :link
-
-  @doc """
   Read events for the given stream forward from the starting version, use zero
   for all events for the stream.
   """
@@ -65,18 +60,13 @@ defmodule Decree.Store.Storage do
   defdelegate stream_info(conn, stream_uuid, opts), to: Stream
 
   @doc """
-  Get the id and version of the stream with the given `stream_uuid`.
-  """
-  defdelegate paginate_streams(conn, opts), to: Stream
-
-  @doc """
   Soft delete a stream by marking it as deleted.
   """
   defdelegate soft_delete_stream(conn, stream_id, opts), to: DeleteStream, as: :soft_delete
 
   @doc """
   Hard delete a stream by removing the stream and all its events, with their tag and type
-  rows. An event the stream holds through a link goes from every stream, as it always has.
+  rows. A link row a store still holds from before links were removed goes with its event.
   """
   defdelegate hard_delete_stream(conn, stream_id, opts), to: DeleteStream, as: :hard_delete
 

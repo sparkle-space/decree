@@ -3,30 +3,28 @@ defmodule Decree.Store.Storage.HardDeleteIndexFactTest do
 
   import Decree.Store.StoreRows
 
-  alias Decree.Store.{EventData, LockSession, Storage, TagIndex}
+  alias Decree.Store.{EventData, LockSession, TagIndex}
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
-  # A hard delete refuses a stream holding or linking a tag index fact: a disable it took with
-  # it would leave an earlier enable standing.
+  # A hard delete refuses a stream holding a tag index fact: a disable it took with it would
+  # leave an earlier enable standing.
   setup %{postgrex_config: postgrex_config} do
-    deleter = LockSession.connect(postgrex_config)
-
     [
       observer: LockSession.connect(postgrex_config),
-      deleter: deleter,
-      deleter_backend: LockSession.backend_pid(deleter),
-      linker: LockSession.connect(postgrex_config)
+      deleter: LockSession.connect(postgrex_config)
     ]
   end
 
+  # The link row is one a store still holds from before #8075 removed links:
+  # `seed_legacy_link/3` writes it.
   describe "a stream that links a disable fact" do
     test "is refused, and every row stays: events, links and tags", context do
       ledger!()
       :ok = EventStore.append_to_stream("link-stream", 0, [event(["tenant:a"])])
 
       {:ok, [_enable, disable]} = EventStore.read_stream_forward("ledger")
-      :ok = EventStore.link_to_stream("link-stream", :any_version, [disable])
+      :ok = seed_legacy_link(context, "link-stream", [disable])
 
       before = snapshot(context)
 
@@ -69,68 +67,6 @@ defmodule Decree.Store.Storage.HardDeleteIndexFactTest do
       assert stream_id(context, "plain") == nil
       assert stream_versions(context, "ledger") == [1, 2]
       assert length(tag_rows(context)) == 4
-    end
-  end
-
-  describe "against a link of a fact" do
-    setup do
-      ledger!()
-      :ok = EventStore.append_to_stream("link-stream", 0, [event(["tenant:a"])])
-
-      {:ok, [_enable, disable]} = EventStore.read_stream_forward("ledger")
-
-      [disable: disable]
-    end
-
-    test "link first: the delete waits on the stream's row, then sees the link and refuses",
-         context do
-      %{deleter_backend: deleter_backend, disable: disable, observer: observer} = context
-
-      linker = LockSession.start(context.postgrex_config)
-
-      assert :ok =
-               LockSession.run(linker, fn tx ->
-                 EventStore.link_to_stream("link-stream", :any_version, [disable], conn: tx)
-               end)
-
-      delete = Task.async(fn -> delete(context, "link-stream") end)
-      LockSession.wait_until_blocked(observer, deleter_backend, linker.backend)
-
-      assert {:ok, :ok} = LockSession.commit(linker)
-      assert {:error, :hard_delete_of_index_fact} = Task.await(delete)
-
-      assert stream_versions(context, "link-stream") == [1, 2]
-      assert stream_versions(context, "ledger") == [1, 2]
-    end
-
-    test "delete first: the link waits on the stream's row, then finds it gone", context do
-      %{disable: disable, observer: observer} = context
-
-      deleter = LockSession.start(context.postgrex_config)
-      stream_id = stream_id(context, "link-stream")
-
-      LockSession.run(deleter, fn tx ->
-        Postgrex.query!(tx, "SET LOCAL eventstore.enable_hard_deletes TO 'on'", [])
-
-        assert :ok = Storage.hard_delete_stream(tx, stream_id, schema: context.schema)
-      end)
-
-      link =
-        Task.async(fn ->
-          EventStore.link_to_stream("link-stream", :any_version, [disable], conn: context.linker)
-        end)
-
-      LockSession.wait_until_blocked(
-        observer,
-        LockSession.backend_pid(context.linker),
-        deleter.backend
-      )
-
-      assert {:ok, :ok} = LockSession.commit(deleter)
-      assert {:error, :not_found} = Task.await(link)
-
-      assert stream_id(context, "link-stream") == nil
-      assert stream_versions(context, "ledger") == [1, 2]
     end
   end
 

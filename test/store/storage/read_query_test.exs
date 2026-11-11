@@ -701,22 +701,6 @@ defmodule Decree.Store.Storage.ReadQueryTest do
     end
   end
 
-  describe "a linked event" do
-    test "comes back once, with its original stream" do
-      append("original", [event("typed", ["tag"]), event("typed", ["tag"])])
-
-      {:ok, events} = EventStore.read_stream_forward("original")
-
-      :ok = EventStore.link_to_stream("linked", 0, events)
-
-      assert {:ok, %ReadResult{after: 2, events: [first, second]}} =
-               EventStore.read_query([[tags: ["tag"]]])
-
-      assert %RecordedEvent{event_number: 1, stream_uuid: "original", stream_version: 1} = first
-      assert %RecordedEvent{event_number: 2, stream_uuid: "original", stream_version: 2} = second
-    end
-  end
-
   describe "a soft-deleted stream" do
     test "is still returned" do
       append("deleted", [event("typed", ["tag"])])

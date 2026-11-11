@@ -281,13 +281,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
     setup %{subject: subject} do
       mint!(subject)
 
-      [event_id: scalar_event_id(subject)]
-    end
-
-    defp scalar_event_id(subject) do
-      {:ok, event} = EventStore.read_stream_head(@app, @prefix <> subject)
-
-      event.event_id
+      :ok
     end
 
     test "refuses a query naming a key event's type" do
@@ -295,13 +289,6 @@ defmodule Decree.PersonalFields.KeyStreamTest do
         assert Store.read_query([[types: [type]]], name: @store) ==
                  {:error, :query_names_deletable}
       end
-    end
-
-    test "refuses a link into a key stream", %{event_id: event_id} do
-      other = @prefix <> UUID.uuid4()
-
-      assert Store.link_to_stream(other, :any_version, [event_id], name: @store) ==
-               {:error, :link_into_deletable_stream}
     end
 
     test "refuses an undeclared event type on a key stream", context do

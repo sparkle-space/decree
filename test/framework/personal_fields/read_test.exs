@@ -514,25 +514,5 @@ defmodule Decree.PersonalFields.ReadTest do
     test "a subscription on $all decrypts", context do
       source_stream_case(context, subscribe_to: :all)
     end
-
-    test "a subscription on a linked stream decrypts", context do
-      %{stream: stream, subject: subject} = context
-      linked = "linked-" <> stream
-      name = Module.concat([App, "FrameworkEventStore"])
-
-      dispatch!(stream, %Registered{user_id: subject, email: email()})
-
-      assert [%RecordedEvent{event_id: event_id}] = read(stream)
-
-      :ok =
-        Decree.FrameworkEventStore.link_to_stream(linked, :any_version, [event_id], name: name)
-
-      start_supervised!({Handler, start_from: :origin, subscribe_to: linked})
-
-      assert_receive {:handled, %Registered{email: "alice@secret.example"}, metadata}
-      assert metadata.stream_id == stream
-
-      assert {:ok, %RecordedEvent{stream_id: ^stream}} = linked |> read() |> hd() |> decrypt()
-    end
   end
 end
