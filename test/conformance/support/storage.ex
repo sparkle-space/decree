@@ -18,9 +18,6 @@ defmodule Decree.EventStore.ConformanceStorage do
 
   # The conformance application's event store config, `opts` added to it.
   def event_store_config(opts \\ []) do
-    Keyword.merge(
-      [adapter: Decree.EventStore.Adapters.EventStore, event_store: ConformanceEventStore],
-      opts
-    )
+    Keyword.merge([event_store: ConformanceEventStore], opts)
   end
 end

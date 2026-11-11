@@ -44,10 +44,7 @@ defmodule Decree.Application do
 
       # config/config.exs
       config :my_app, MyApp.Application
-        event_store: [
-          adapter: Decree.EventStore.Adapters.EventStore,
-          event_store: MyApp.EventStore
-        ],
+        event_store: [event_store: MyApp.EventStore],
         pubsub: :local,
         registry: :local
 
@@ -57,10 +54,7 @@ defmodule Decree.Application do
       defmodule MyApp.Application do
         use Decree.Application,
           otp_app: :my_app,
-          event_store: [
-            adapter: Decree.EventStore.Adapters.EventStore,
-            event_store: MyApp.EventStore
-          ],
+          event_store: [event_store: MyApp.EventStore],
           pubsub: :local,
           registry: :local
 
@@ -424,8 +418,9 @@ defmodule Decree.Application do
   def application_module(application), do: Config.get(application, :application)
 
   @doc false
-  @spec event_store_adapter(Decree.Application.t()) :: {module, map}
-  def event_store_adapter(application), do: Config.get(application, :event_store)
+  # The application's `Decree.Store` module and the name its store process runs under.
+  @spec event_store(Decree.Application.t()) :: %{event_store: module, name: atom}
+  def event_store(application), do: Config.get(application, :event_store)
 
   @doc false
   @spec pubsub_adapter(Decree.Application.t()) :: {module, map}

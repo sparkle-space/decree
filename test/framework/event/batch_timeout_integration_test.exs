@@ -13,8 +13,8 @@ defmodule Decree.Event.BatchTimeoutIntegrationTest do
   alias Decree.Helpers.EventFactory
 
   setup do
-    # Configure mock adapter once per test
-    Config.associate(self(), __MODULE__, event_store: {__MODULE__.MockAdapter, nil})
+    # Configure the acking store once per test
+    Config.associate(self(), __MODULE__, event_store: Decree.AckingStore.config())
     :ok
   end
 
@@ -305,16 +305,6 @@ defmodule Decree.Event.BatchTimeoutIntegrationTest do
   defp build_events(count) do
     for n <- 1..count do
       %CounterEvent{counter: n}
-    end
-  end
-
-  # Mock event store adapter for testing
-  defmodule MockAdapter do
-    @moduledoc false
-
-    def ack_event(nil, subscription_pid, event) do
-      send(subscription_pid, {:acked, event})
-      :ok
     end
   end
 end

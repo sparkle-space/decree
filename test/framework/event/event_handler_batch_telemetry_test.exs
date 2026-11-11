@@ -8,7 +8,6 @@ defmodule Decree.Event.EventHandlerBatchTelemetryTest do
   # Test support code
   alias Decree.Helpers.EventFactory
   alias Decree.Event.{BatchHandler, ErrorHandlingBatchHandler}
-  alias Decree.Event.EventHandlerBatchTelemetryTest.MockAdapter
   alias Decree.Event.ReplyEvent
 
   setup do
@@ -94,7 +93,7 @@ defmodule Decree.Event.EventHandlerBatchTelemetryTest do
   end
 
   defp setup_state(handler_module) do
-    Config.associate(self(), __MODULE__, event_store: {MockAdapter, nil})
+    Config.associate(self(), __MODULE__, event_store: Decree.AckingStore.config())
 
     %Handler{
       subscription:
@@ -127,12 +126,5 @@ defmodule Decree.Event.EventHandlerBatchTelemetryTest do
     on_exit(fn ->
       :telemetry.detach("test-handler")
     end)
-  end
-
-  defmodule MockAdapter do
-    def ack_event(nil, subscription_pid, event) do
-      send(subscription_pid, {:acked, event})
-      :ok
-    end
   end
 end

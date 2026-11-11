@@ -2,24 +2,9 @@ defmodule Decree.Store.Storage.StreamPersistenceTest do
   use Decree.Store.StorageCase
 
   alias Decree.Store.{EventFactory, UUID}
-  alias Decree.Store.Storage.{Appender, CreateStream, Stream}
+  alias Decree.Store.Storage.{Appender, Stream}
   alias Decree.Store.StoreRows
   alias Decree.Store.Streams.StreamInfo
-
-  test "create stream", %{conn: conn, schema: schema} do
-    stream_uuid = UUID.uuid4()
-
-    {:ok, _stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
-  end
-
-  test "create stream when already exists", %{conn: conn, schema: schema} do
-    stream_uuid = UUID.uuid4()
-
-    {:ok, _stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
-
-    assert {:error, :duplicate_stream_uuid} =
-             CreateStream.execute(conn, stream_uuid, schema: schema)
-  end
 
   test "stream info for stream with no events", %{conn: conn, schema: schema} do
     stream_uuid = UUID.uuid4()

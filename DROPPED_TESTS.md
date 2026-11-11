@@ -102,6 +102,20 @@ Test cases removed from files that stay:
 
 `test/store/manual/seed_eventstore.exs`, a script and not a test, loses its link step. The committed dumps were seeded with links before #8075, and `test/store/migrated_event_store_test.exs` "read linked stream forward" still reads them.
 
+## Deleted with the adapter layer
+
+The event store adapter layer, the global registry and `CreateStream` are deleted (#7869, founder ruling 2026-11-11). Their upstream tests go with them.
+
+Files (1):
+
+- `test/framework/registration/global_registry_test.exs` (8 tests, the shared `RegistrationTestCase` on `Decree.Registration.GlobalRegistry`): the global registry. `registry: :global` now raises at start, which `test/framework/application/application_test.exs` "should refuse the removed global registry" pins; the shared case still runs on the local registry.
+
+Test cases removed from files that stay:
+
+- `test/store/storage/stream_persistence_test.exs`: "create stream" and "create stream when already exists", the tests of `CreateStream.execute/3`, which had no caller in `lib`. The append path's `:duplicate_stream_uuid` stays pinned by `test/store/storage/append_error_test.exs`, `test/store/storage/append_function_test.exs` and `test/store/storage/append_streams_lock_order_test.exs`.
+
+Kept and rewritten: the conformance case "should implement `Decree.EventStore.Adapter` behaviour" is "should implement `Decree.Store` behaviour", of the application's store module; `test/framework/event/event_handler_batch_test.exs` pins the acked event's number, which is what a store's `ack/2` receives, where it pinned the acked event.
+
 ## Upstream test configurations not run
 
 - eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.
@@ -113,8 +127,8 @@ Test cases removed from files that stay:
 
 Not dropped; listed so the port can be audited:
 
-- Every framework and projections test application runs on `Decree.EventStore.Adapters.EventStore` over the `decree_framework_test` database (`Decree.FrameworkEventStore`), with one event store process per application instance (`Decree.FrameworkStorage.name_event_store/1`, called from each test application's `init/1`). `Decree.PostgresCase` (and `Decree.MockEventStoreCase`) empty the database before each test, as a fresh in-memory store did.
-- `application/application_test.exs`, `application/config_test.exs`: the expected adapter tuple is the Postgres adapter's.
+- Every framework and projections test application runs on the `decree_framework_test` database through its `Decree.Store` module, `Decree.FrameworkEventStore` or a test store that wraps it (`Decree.DelegatingStore`), with one event store process per application instance (`Decree.FrameworkStorage.name_event_store/1`, called from each test application's `init/1`). `Decree.PostgresCase` (and `Decree.MockEventStoreCase`) empty the database before each test, as a fresh in-memory store did.
+- `application/application_test.exs`, `application/config_test.exs`: the expected event store config is `%{event_store: Decree.FrameworkEventStore, name: ...}` (upstream's was the adapter tuple; the adapter layer went in #7869).
 - `application/dynamic_applications_test.exs`: each named instance gets its own schema (`prefix:`), so the two instances keep separate streams, as two in-memory stores did; `length/1` on a stream became `Enum.count/1`.
 - `aggregates/snapshotting_test.exs`: the Postgres store stamps `created_at` on a snapshot; the comparison ignores it.
 - `aggregates/aggregate_subscription_test.exs`: the aggregate learns of an event appended to its stream through a Postgres notification; the setup waits for it.
@@ -125,7 +139,7 @@ Not dropped; listed so the port can be audited:
 - `test/conformance`: its `TestEventStore` is `ConformanceEventStore` (the store suite has its own `TestEventStore`), on its own database.
 - `test/store/advisory_locks_test.exs`: the derived process name is `TestEventStore.Decree.Store.AdvisoryLocks`.
 - `test/store`: fixture paths moved to `test/store/fixture/`; `Decree.Store.EventFactory` reads only the serializer at compile time.
-- `test/projections`: the `projection_versions` migrations (upstream's `priv/repo/migrations`) live in `test/projections/migrations` and run from the test helper; the helper no longer defines `Decree.EventStore.Adapters.Mock` (the framework support does); `projections/runtime_config_projector_test.exs` waits for the projector's transaction to commit (it raced it).
+- `test/projections`: the `projection_versions` migrations (upstream's `priv/repo/migrations`) live in `test/projections/migrations` and run from the test helper; the helper no longer defines the event store mock, `Decree.EventStore.Mock` for `Decree.Store` (the framework support does); `projections/runtime_config_projector_test.exs` waits for the projector's transaction to commit (it raced it).
 
 Flaky upstream tests made deterministic (test changes, not drops):
 

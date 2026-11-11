@@ -165,7 +165,7 @@ defmodule Decree.Decision.Rule do
   A rule route is redacted whether or not the aggregate uses `Decree.PersonalFields.Aggregate`,
   because a read can bring in another subject's plaintext. A raise from a callback, from
   `execute/2`, `apply/2` or `before_execute`, from preparing, or from reading an event the rule
-  reads, in the store's deserializing, the adapter's mapping or an upcaster, reaches logs,
+  reads, in the store's deserializing, the mapping or an upcaster, reaches logs,
   telemetry, `after_failure` and the answer as a
   `Decree.PersonalFields.RedactedError` with a scrubbed stacktrace. An exit leaves reduced by
   `Decree.PersonalFields.RedactedError.reduce/1`. A throw is reduced the same way and leaves as
@@ -176,7 +176,7 @@ defmodule Decree.Decision.Rule do
   stands.
 
   None of these reaches the read's `[:decree, :event_store, :read_query]` span. The store's
-  deserializing and the adapter's mapping run inside it, and its exception event never fires:
+  deserializing and the mapping run inside it, and its exception event never fires:
   a failure there stops it with `error` set to its kind alone, `:error`, `:exit` or `:throw`,
   and is raised again after. The upcast runs after it stops. Each reaches the boundary above.
 
@@ -232,7 +232,7 @@ defmodule Decree.Decision.Rule do
 
   A target is compared on a conditional append and nowhere else, and everything below goes by
   a stream's prefix. So a declared aggregate's stream takes, exactly as before, plain appends
-  from its other commands, a link into it, a hard delete of it and a snapshot of it. Hard deleting
+  from its other commands, a hard delete of it and a snapshot of it. Hard deleting
   such a stream removes what a rule reads there, which is a release: a rule must not hang
   anything on those events staying.
 

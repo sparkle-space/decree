@@ -21,13 +21,11 @@ defmodule Decree.ApplicationTest do
       assert {:error, {:already_started, ^pid}} = ExampleApplication.start_link()
     end
 
-    test "should expose an event store adapter" do
-      assert Application.event_store_adapter(ExampleApplication) ==
-               {Decree.EventStore.Adapters.EventStore,
-                %{
-                  event_store: Decree.FrameworkEventStore,
-                  name: Decree.ExampleApplication.FrameworkEventStore
-                }}
+    test "should expose its event store" do
+      assert Application.event_store(ExampleApplication) == %{
+               event_store: Decree.FrameworkEventStore,
+               name: Decree.ExampleApplication.FrameworkEventStore
+             }
     end
 
     test "should expose a pubsub adapter" do
@@ -48,12 +46,10 @@ defmodule Decree.ApplicationTest do
     test "should allow application config to be provided by `init/1` callback function" do
       start_supervised!(RuntimeConfiguredApplication)
 
-      assert Application.event_store_adapter(RuntimeConfiguredApplication) ==
-               {Decree.EventStore.Adapters.EventStore,
-                %{
-                  event_store: Decree.FrameworkEventStore,
-                  name: Decree.RuntimeConfiguredApplication.FrameworkEventStore
-                }}
+      assert Application.event_store(RuntimeConfiguredApplication) == %{
+               event_store: Decree.FrameworkEventStore,
+               name: Decree.RuntimeConfiguredApplication.FrameworkEventStore
+             }
 
       assert Application.pubsub_adapter(RuntimeConfiguredApplication) ==
                {Decree.PubSub.PhoenixPubSub,
@@ -79,6 +75,32 @@ defmodule Decree.ApplicationTest do
                 }, _},
                reason
              )
+    end
+
+    test "should refuse an `adapter:` in its event store config" do
+      Process.flag(:trap_exit, true)
+
+      event_store = [adapter: SomeAdapter, event_store: Decree.FrameworkEventStore]
+
+      assert {:error, {%ArgumentError{message: message}, _stacktrace}} =
+               ExampleApplication.start_link(name: :adapter_configured, event_store: event_store)
+
+      assert message ==
+               "the :adapter option in the :event_store config of application " <>
+                 ":adapter_configured is no longer supported: the event store adapter layer " <>
+                 "was removed. Name the Decree.Store module in :event_store instead, " <>
+                 "e.g. `event_store: [event_store: MyApp.EventStore]`"
+    end
+
+    test "should refuse the removed global registry" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {%ArgumentError{message: message}, _stacktrace}} =
+               ExampleApplication.start_link(name: :globally_registered, registry: :global)
+
+      assert message ==
+               "the :global registry of application :globally_registered was removed: " <>
+                 "use `registry: :local`, or name a custom registry module"
     end
   end
 end

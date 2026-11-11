@@ -4,7 +4,6 @@ defmodule Decree.FrameworkStorage do
   # The framework and projections suites run their test applications on
   # `Decree.FrameworkEventStore`, or a test store over it, over one Postgres database.
 
-  alias Decree.EventStore.Adapters.EventStore, as: Adapter
   alias Decree.Store.Config
   alias Decree.Store.Storage.Initializer
 
@@ -28,7 +27,7 @@ defmodule Decree.FrameworkStorage do
   store in place of `Decree.FrameworkEventStore`.
   """
   def event_store_config(opts \\ []) do
-    Keyword.merge([adapter: Adapter, event_store: Decree.FrameworkEventStore], opts)
+    Keyword.merge([event_store: Decree.FrameworkEventStore], opts)
   end
 
   @doc """

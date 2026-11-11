@@ -246,7 +246,7 @@ defmodule Decree.PersonalFields.KeyStream do
   # Through the framework's own mapping, so a stored type is what `event_types/0` says, and
   # straight to the store: `Decree.Event.Append.prepare/4` would add tags a query could reach.
   # With no span, whose exception event would hold what `mint/5`'s catch has not yet reduced: a
-  # failed clause under the adapter lists the `EventData`, and the wrap's base64 with it.
+  # failed clause in the mapping lists the `EventData`, and the wrap's base64 with it.
   defp append(application, stream_uuid, expected_version, event) do
     case EventStore.append_without_span(
            application,

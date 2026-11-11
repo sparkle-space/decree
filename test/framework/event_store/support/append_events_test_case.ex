@@ -13,9 +13,11 @@ defmodule Decree.EventStore.AppendEventsTestCase do
       defstruct [:account_number, :initial_balance]
     end
 
-    describe "event store adapter" do
-      test "should implement `Decree.EventStore.Adapter` behaviour" do
-        assert_implements(Decree.EventStore.Adapters.EventStore, Decree.EventStore.Adapter)
+    describe "event store" do
+      test "should implement `Decree.Store` behaviour", %{application: application} do
+        %{event_store: event_store} = Decree.Application.event_store(application)
+
+        assert_implements(event_store, Decree.Store)
       end
     end
 

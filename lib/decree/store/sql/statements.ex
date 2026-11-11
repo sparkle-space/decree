@@ -9,7 +9,6 @@ defmodule Decree.Store.Sql.Statements do
   defdelegate reset(config), to: Reset, as: :statements
 
   for {fun, args} <- [
-        {:create_stream, [:schema]},
         {:append_events, [:schema]},
         {:soft_delete_stream, [:schema]},
         {:lock_stream, [:schema]},

@@ -11,7 +11,7 @@ Status: bootstrap (sparkle.space P2, sparkle-space/sparklespace#7498). Private.
 One OTP application, `:decree`, in two layers:
 
 - **Store** (`Decree.Store`, `Decree.Store.*`, `Mix.Decree.Store`, `Mix.Tasks.Decree.Store.*`; `lib/decree/store/`, `lib/mix/decree/`, `lib/mix/tasks/decree.store.*`): the Postgres event store. Streams, append with expected version, snapshots, persistent and transient subscriptions with acknowledgement and partitioning, schemas (prefixes), and the Mix tasks `decree.store.create`, `decree.store.init`, `decree.store.drop`, `decree.store.migrate` and `decree.store.migrations`.
-- **Framework** (`Decree`, `Decree.*` outside `Decree.Store`): applications, command routing and dispatch, aggregates, decisions (`Decree.Decision`), event handlers, middleware, the event store adapter `Decree.EventStore.Adapters.EventStore` over the store, and Ecto read-model projections (`Decree.Projections.Ecto`), and the Mix task `decree.verify.eventless` (`Mix.Tasks.Decree.Verify.Eventless` over `Decree.Verify.Eventless`).
+- **Framework** (`Decree`, `Decree.*` outside `Decree.Store`): applications, command routing and dispatch, aggregates, decisions (`Decree.Decision`), event handlers, middleware, `Decree.EventStore`, the facade an application reaches its `Decree.Store` module through (named by `event_store: [event_store: MyApp.EventStore]`), and Ecto read-model projections (`Decree.Projections.Ecto`), and the Mix task `decree.verify.eventless` (`Mix.Tasks.Decree.Verify.Eventless` over `Decree.Verify.Eventless`).
 
 `mix decree.verify.eventless --router MyApp.Router` fails on any routed handler arm that can accept a command without appending an event: an aggregate handler answering `[]`, `nil`, `:ok`, `{:ok, []}` or `{:ok, nil}`, which the aggregate accepts with no events, and a decision's `decide/2` answering those or `{:streams, []}`, which a dispatch refuses at runtime. It reads each router's registry (`__route__/1` names every routed module and function), walks their source under the project's `elixirc_paths` without compiling or loading it, and reports what it cannot classify as a finding too. It has no allow-list and no waiver; `--router` repeats, and `--no-compile` skips `mix compile`. `Decree.Verify.Eventless` documents the shapes, what the walk follows and its stated residuals.
 
@@ -45,16 +45,16 @@ The `test` alias creates and initialises every test event store (`decree.store.c
 
 | Suite | Path | Covers |
 |---|---|---|
-| framework | `test/framework` | Commanded's suite, on the Postgres adapter: applications, routing, dispatch, aggregates, snapshots, event handlers, middleware, upcasting, telemetry |
+| framework | `test/framework` | Commanded's suite, on the Postgres store: applications, routing, dispatch, aggregates, snapshots, event handlers, middleware, upcasting, telemetry |
 | store | `test/store` | EventStore's suite: storage, streams, subscriptions, notifications, advisory locks, schemas, config |
 | conformance | `test/conformance` | the store conformance suite (below) |
 | projections | `test/projections` | Commanded Ecto projections: projection versions, schema prefixes, error and after-update callbacks |
 
-Framework and projections tests run their applications on `Decree.EventStore.Adapters.EventStore` over the `decree_framework_test` database; `Decree.PostgresCase` empties it before each test. Tests tagged `:migration` (they restore old database dumps with `pg_restore` and compare schemas with `pg_dump`), `:manual`, `:ignore` and `:distributed` are excluded. CI installs the Postgres 18 client and runs `mix test --include migration`; run the same locally when a Postgres 18 `pg_restore` and `pg_dump` are on `PATH`. `DROPPED_TESTS.md` lists every upstream test not carried over, and why.
+Framework and projections tests run their applications on `Decree.FrameworkEventStore` (or a test store that wraps it) over the `decree_framework_test` database; `Decree.PostgresCase` empties it before each test. Tests tagged `:migration` (they restore old database dumps with `pg_restore` and compare schemas with `pg_dump`), `:manual`, `:ignore` and `:distributed` are excluded. CI installs the Postgres 18 client and runs `mix test --include migration`; run the same locally when a Postgres 18 `pg_restore` and `pg_dump` are on `PATH`. `DROPPED_TESTS.md` lists every upstream test not carried over, and why.
 
 ## The conformance suite
 
-`test/conformance` runs Commanded's shared event store adapter test cases (`test/framework/event_store/support/*_test_case.ex`) against `Decree.EventStore.Adapters.EventStore` on Postgres. It is the conformance suite for the one store implementation, and covers:
+`test/conformance` runs Commanded's shared event store adapter test cases (`test/framework/event_store/support/*_test_case.ex`) through the `Decree.EventStore` facade of a started application, against its `Decree.Store` module on Postgres. It is the conformance suite for the one store implementation, and covers:
 
 - append and expected version: `:any_version`, `:no_stream`, `:stream_exists` and an exact version, with the wrong-version errors; reading a stream forward, in batches, and the unknown-stream error;
 - snapshots: record, read, read when absent, delete;

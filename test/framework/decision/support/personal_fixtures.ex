@@ -98,7 +98,6 @@ defmodule Decree.DecisionFixtures.PersonalApp do
     key_source: Decree.PersonalFields.Fixtures.Keys,
     personal_metadata_keys: [:email],
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["personal-", "bare-", "tight-personal-"]]
     ],

@@ -2,7 +2,6 @@ defmodule TestApplication do
   use Decree.Application,
     otp_app: :my_app,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore
     ]
 

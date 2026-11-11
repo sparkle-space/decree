@@ -78,8 +78,8 @@ defmodule Decree.Store.StoreRows do
     |> Enum.map(&hd/1)
   end
 
-  # A bare `streams` row for `stream_uuid`, with no event, inserted as the store's own
-  # create-stream statement does. Answers `{:ok, stream_id}`. `conn` can be a transaction.
+  # A bare `streams` row for `stream_uuid`, with no event, schema-qualified as the store's
+  # statements are. Answers `{:ok, stream_id}`. `conn` can be a transaction.
   def insert_stream(conn, schema, stream_uuid) do
     %Postgrex.Result{rows: [[stream_id]]} =
       Postgrex.query!(

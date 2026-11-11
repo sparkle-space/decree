@@ -3,18 +3,12 @@ defmodule Decree.Store.Storage do
 
   alias Decree.Store.Storage.{
     Appender,
-    CreateStream,
     DeleteStream,
     Reader,
     Snapshot,
     Stream,
     Subscription
   }
-
-  @doc """
-  Create a new event stream with the given unique identifier.
-  """
-  defdelegate create_stream(conn, stream_uuid, opts), to: CreateStream, as: :execute
 
   @doc """
   Append the given list of recorded events to storage.
