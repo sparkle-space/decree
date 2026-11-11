@@ -7,14 +7,13 @@ defmodule Decree.Event.BatchTimeoutTest do
 
   use Decree.PostgresCase, async: false
 
-  alias Decree.Application.Config
   alias Decree.Event.Handler
   alias Decree.EventStore.Subscription
   alias Decree.Helpers.EventFactory
 
   setup do
-    # Configure the acking store once per test
-    Config.associate(self(), __MODULE__, event_store: Decree.AckingStore.config())
+    # The mocked store, acking, once per test
+    Decree.MockEventStoreCase.associate_acking_mock(__MODULE__)
     :ok
   end
 

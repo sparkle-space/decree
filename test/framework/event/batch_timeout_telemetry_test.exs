@@ -7,14 +7,13 @@ defmodule Decree.Event.BatchTimeoutTelemetryTest do
 
   use Decree.PostgresCase, async: false
 
-  alias Decree.Application.Config
   alias Decree.Event.Handler
   alias Decree.EventStore.Subscription
   alias Decree.Helpers.EventFactory
 
   setup do
-    # Configure the acking store
-    Config.associate(self(), __MODULE__, event_store: Decree.AckingStore.config())
+    # The mocked store, acking
+    Decree.MockEventStoreCase.associate_acking_mock(__MODULE__)
 
     # Attach telemetry handler
     ref = :telemetry_test.attach_event_handlers(self(), [[:decree, :event, :batch, :stop]])

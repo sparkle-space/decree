@@ -1,7 +1,6 @@
 defmodule Decree.Event.EventHandlerBatchTest do
   use ExUnit.Case, async: true
 
-  alias Decree.Application.Config
   alias Decree.Event.Handler
   alias Decree.EventStore.Subscription
 
@@ -89,7 +88,7 @@ defmodule Decree.Event.EventHandlerBatchTest do
   end
 
   defp setup_state(handler_module) do
-    Config.associate(self(), __MODULE__, event_store: Decree.AckingStore.config())
+    Decree.MockEventStoreCase.associate_acking_mock(__MODULE__)
 
     %Handler{
       subscription:
