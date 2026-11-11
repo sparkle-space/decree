@@ -17,7 +17,7 @@ Ecto.Migrator.up(Repo, 20_170_609_120_000, CreateProjections, log: false)
 # The `projection_versions` tables (upstream's priv/repo/migrations).
 Ecto.Migrator.run(Repo, "test/projections/migrations", :up, all: true, log: false)
 
-# Decree.EventStore.Adapters.Mock is defined once, in test/framework/support/mocks.ex.
+# Decree.EventStore.Mock is defined once, in test/framework/support/mocks.ex.
 
 ExUnit.start()
 

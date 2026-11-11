@@ -528,90 +528,43 @@ defmodule Decree.RuleFixtures.ComposedRouter do
   router Decree.RuleFixtures.PlainRouter
 end
 
-defmodule Decree.RuleFixtures.RecordingAdapter do
+defmodule Decree.RuleFixtures.RecordingStore do
   @moduledoc false
 
-  # The Postgres event store adapter, telling the process registered as `:rule_recorder` what
-  # reached it, because a failed attempt leaves no row and a plain one looks the same as any.
+  # The Postgres event store, telling the process registered as `:rule_recorder` what reached
+  # it, because a failed attempt leaves no row and a plain one looks the same as any. The opts
+  # it tells are the caller's, without the `:name` of the store process they are sent to.
 
-  @behaviour Decree.EventStore.Adapter
+  use Decree.DelegatingStore
 
-  alias Decree.EventStore.Adapters.EventStore, as: Adapter
+  alias Decree.FrameworkEventStore, as: Store
 
-  @impl Decree.EventStore.Adapter
-  def append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts \\ []) do
-    record({:append_to_stream, stream_uuid, expected_version, length(events), opts})
+  @impl Decree.Store
+  def append_to_stream(stream_uuid, expected_version, events, opts) do
+    record({:append_to_stream, stream_uuid, expected_version, length(events), callers(opts)})
 
-    Adapter.append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts)
+    Store.append_to_stream(stream_uuid, expected_version, events, opts)
   end
 
-  @impl Decree.EventStore.Adapter
-  def read_query(adapter_meta, items, opts) do
-    record({:read_query, items, opts})
+  @impl Decree.Store
+  def read_query(items, opts) do
+    record({:read_query, items, callers(opts)})
 
-    Adapter.read_query(adapter_meta, items, opts)
+    Store.read_query(items, opts)
   end
 
-  @impl Decree.EventStore.Adapter
-  def read_tags(adapter_meta, positions, opts) do
+  @impl Decree.Store
+  def read_tags(positions, opts) do
     record({:read_tags, positions})
 
-    Adapter.read_tags(adapter_meta, positions, opts)
+    Store.read_tags(positions, opts)
   end
+
+  defp callers(opts), do: Keyword.delete(opts, :name)
 
   defp record(message) do
     with pid when is_pid(pid) <- Process.whereis(:rule_recorder), do: send(pid, message)
   end
-
-  @impl Decree.EventStore.Adapter
-  defdelegate append_to_streams(adapter_meta, appends, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate subscribe(adapter_meta, stream_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate child_spec(application, config), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate stream_forward(adapter_meta, stream_uuid, start_version, read_batch_size),
-    to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_stream_head(adapter_meta, stream_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate deletable_stream_prefixes(adapter_meta), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate conditional_targets(adapter_meta), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate subscribe_to(adapter_meta, stream, name, subscriber, start_from, opts),
-    to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate ack_event(adapter_meta, subscription, event), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate unsubscribe(adapter_meta, subscription), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate delete_subscription(adapter_meta, stream, name), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid, snapshot_version), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate record_snapshot(adapter_meta, snapshot), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate delete_snapshot(adapter_meta, source_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate prune_snapshots(adapter_meta, source_type, snapshot_version), to: Adapter
 end
 
 defmodule Decree.RuleFixtures.Stores do
@@ -619,7 +572,7 @@ defmodule Decree.RuleFixtures.Stores do
 
   # A store config for a rule test's application, and the name an instance's store runs under.
 
-  alias Decree.RuleFixtures.{AdoptedAggregate, PickyAggregate, RecordingAdapter}
+  alias Decree.RuleFixtures.{AdoptedAggregate, PickyAggregate, RecordingStore}
   alias Decree.RuleFixtures.{RuledAggregate, User}
 
   @targets [User, RuledAggregate, AdoptedAggregate, PickyAggregate]
@@ -628,7 +581,7 @@ defmodule Decree.RuleFixtures.Stores do
 
   def store(opts \\ []) do
     Decree.FrameworkStorage.event_store_config(
-      [adapter: RecordingAdapter, conditional_appends: [targets: @targets]] ++ opts
+      [event_store: RecordingStore, conditional_appends: [targets: @targets]] ++ opts
     )
   end
 
@@ -663,7 +616,7 @@ defmodule Decree.RuleFixtures.PlainApp do
   use Decree.Application,
     otp_app: :decree,
     event_store:
-      Decree.FrameworkStorage.event_store_config(adapter: Decree.RuleFixtures.RecordingAdapter),
+      Decree.FrameworkStorage.event_store_config(event_store: Decree.RuleFixtures.RecordingStore),
     pubsub: :local,
     registry: :local
 

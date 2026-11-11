@@ -2,7 +2,8 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
   use Decree.Store.StorageCase
 
   alias Decree.Store.{AppendError, Config, EventData, EventFactory, LockSession, UUID}
-  alias Decree.Store.Storage.{Appender, CreateStream, Initializer, Schema}
+  alias Decree.Store.Storage.{Appender, Initializer, Schema}
+  alias Decree.Store.StoreRows
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -48,7 +49,7 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
     test "`:duplicate_event` for an event id already stored, at the right version", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       [event] = EventFactory.create_recorded_events(1, "stream")
 
       :ok = Appender.append(conn, stream_id, [event], schema: schema)
@@ -60,7 +61,7 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
     test "`:duplicate_event` before a stale expected version", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       [event] = EventFactory.create_recorded_events(1, "stream")
 
       :ok = Appender.append(conn, stream_id, [event], schema: schema)
@@ -72,7 +73,7 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
     test "`:duplicate_stream_uuid` for a new stream that exists", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, _stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, _stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       events = EventFactory.create_recorded_events(1, "stream")
 
       assert {:error, :duplicate_stream_uuid} = Appender.append(conn, nil, events, schema: schema)
@@ -248,7 +249,7 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
       init_schema(context, decoy)
 
       conn = LockSession.connect(Keyword.put(postgrex_config, :parameters, search_path: decoy))
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
 
       # Temporary tables come first in a session's search_path, unless it names them.
       for table <- ["streams", "events", "stream_events"] do
@@ -279,7 +280,7 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
       init_schema(context, schema)
 
       conn = LockSession.connect(Keyword.put(postgrex_config, :parameters, search_path: "public"))
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
 
       stale = EventFactory.create_recorded_events(1, "stream", 1, 5)
 
@@ -300,7 +301,7 @@ defmodule Decree.Store.Storage.AppendFunctionTest do
       LockSession.run(session, fn tx ->
         Postgrex.query!(tx, "SET LOCAL search_path TO pg_catalog", [])
 
-        {:ok, stream_id} = CreateStream.execute(tx, "stream", schema: schema)
+        {:ok, stream_id} = StoreRows.insert_stream(tx, schema, "stream")
         events = EventFactory.create_recorded_events(1, "stream")
 
         assert :ok = Appender.append(tx, stream_id, events, schema: schema)

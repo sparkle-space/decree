@@ -22,7 +22,7 @@ defmodule Decree.Store.Subscriptions.SingleSubscriptionFsmTest do
 
     recorded_events = EventFactory.create_recorded_events(3, stream_uuid)
 
-    {:ok, stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
+    {:ok, stream_id} = StoreRows.insert_stream(conn, schema, stream_uuid)
 
     :ok =
       Appender.append(conn, stream_id, recorded_events,

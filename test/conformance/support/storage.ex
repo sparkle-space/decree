@@ -1,4 +1,4 @@
-defmodule Decree.EventStore.Adapters.EventStore.Storage do
+defmodule Decree.EventStore.ConformanceStorage do
   alias Decree.Store.Config
   alias Decree.Store.Storage.Initializer
 
@@ -15,4 +15,12 @@ defmodule Decree.EventStore.Adapters.EventStore.Storage do
   end
 
   def reset!(conn, config), do: Initializer.reset!(conn, config)
+
+  # The conformance application's event store config, `opts` added to it.
+  def event_store_config(opts \\ []) do
+    Keyword.merge(
+      [adapter: Decree.EventStore.Adapters.EventStore, event_store: ConformanceEventStore],
+      opts
+    )
+  end
 end

@@ -119,17 +119,17 @@ defmodule Decree.PersonalFields.Fixtures.LedgerKeys do
   end
 end
 
-defmodule Decree.PersonalFields.Fixtures.FailingAdapter do
+defmodule Decree.PersonalFields.Fixtures.FailingStore do
   @moduledoc false
 
-  # The Postgres adapter, with what a test flags per stream run in place of a read or an
-  # append, so a test can have the store answer, raise, exit or throw whatever it needs.
-  # `pretend_declared/1` answers prefixes with no running store, so that a write gets as far as
-  # the append.
+  # The Postgres event store, with what a test flags per stream run in place of a head read
+  # (`read_stream_backward/4` for the last event, which `Decree.EventStore.read_stream_head/2`
+  # asks) or an append, so a test can have the store answer, raise, exit or throw whatever it
+  # needs.
 
-  @behaviour Decree.EventStore.Adapter
+  use Decree.DelegatingStore
 
-  alias Decree.EventStore.Adapters.EventStore, as: Adapter
+  alias Decree.FrameworkEventStore, as: Store
 
   def flag(stream_uuid, fun) when is_function(fun, 0) do
     :persistent_term.put(key(stream_uuid), fun)
@@ -137,21 +137,21 @@ defmodule Decree.PersonalFields.Fixtures.FailingAdapter do
 
   def unflag(stream_uuid), do: :persistent_term.erase(key(stream_uuid))
 
-  def pretend_declared(prefixes), do: :persistent_term.put(key(:prefixes), prefixes)
-  def stop_pretending, do: :persistent_term.erase(key(:prefixes))
-
-  @impl Decree.EventStore.Adapter
-  def read_stream_head(adapter_meta, stream_uuid) do
+  @impl Decree.Store
+  def read_stream_backward(stream_uuid, -1 = start_version, 1 = count, opts) do
     case :persistent_term.get(key(stream_uuid), nil) do
-      nil -> Adapter.read_stream_head(adapter_meta, stream_uuid)
+      nil -> Store.read_stream_backward(stream_uuid, start_version, count, opts)
       fun -> fun.()
     end
   end
 
-  @impl Decree.EventStore.Adapter
-  def append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts \\ []) do
+  def read_stream_backward(stream_uuid, start_version, count, opts),
+    do: Store.read_stream_backward(stream_uuid, start_version, count, opts)
+
+  @impl Decree.Store
+  def append_to_stream(stream_uuid, expected_version, events, opts) do
     case :persistent_term.get(key({:append, stream_uuid}), nil) do
-      nil -> Adapter.append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts)
+      nil -> Store.append_to_stream(stream_uuid, expected_version, events, opts)
       fun -> fun.()
     end
   end
@@ -160,64 +160,6 @@ defmodule Decree.PersonalFields.Fixtures.FailingAdapter do
     do: flag({:append, stream_uuid}, fun)
 
   def unflag_append(stream_uuid), do: unflag({:append, stream_uuid})
-
-  @impl Decree.EventStore.Adapter
-  def deletable_stream_prefixes(adapter_meta) do
-    case :persistent_term.get(key(:prefixes), nil) do
-      nil -> Adapter.deletable_stream_prefixes(adapter_meta)
-      prefixes -> prefixes
-    end
-  end
-
-  @impl Decree.EventStore.Adapter
-  defdelegate conditional_targets(adapter_meta), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate append_to_streams(adapter_meta, appends, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_query(adapter_meta, items, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_tags(adapter_meta, positions, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate child_spec(application, config), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate stream_forward(adapter_meta, stream_uuid, start_version, read_batch_size),
-    to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate subscribe(adapter_meta, stream_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate subscribe_to(adapter_meta, stream, name, subscriber, start_from, opts),
-    to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate ack_event(adapter_meta, subscription, event), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate unsubscribe(adapter_meta, subscription), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate delete_subscription(adapter_meta, stream, name), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid, snapshot_version), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate record_snapshot(adapter_meta, snapshot), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate delete_snapshot(adapter_meta, source_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate prune_snapshots(adapter_meta, source_type, snapshot_version), to: Adapter
 
   defp key(stream_uuid), do: {__MODULE__, stream_uuid}
 end
@@ -229,7 +171,7 @@ defmodule Decree.PersonalFields.Fixtures.LedgerApp do
   # pool that a test's blocked mints can all hold a connection of.
 
   alias Decree.FrameworkStorage
-  alias Decree.PersonalFields.Fixtures.{FailingAdapter, KeyStreams, LedgerKeys, Router}
+  alias Decree.PersonalFields.Fixtures.{FailingStore, KeyStreams, LedgerKeys, Router}
   alias Decree.PersonalFields.KeyStream
 
   use Decree.Application,
@@ -237,7 +179,7 @@ defmodule Decree.PersonalFields.Fixtures.LedgerApp do
     key_source: LedgerKeys,
     event_store:
       FrameworkStorage.event_store_config(
-        adapter: FailingAdapter,
+        event_store: FailingStore,
         enable_hard_deletes: true,
         pool_size: 12,
         deletable: [stream_prefixes: [KeyStreams.prefix()], event_types: KeyStream.event_types()]

@@ -3,7 +3,8 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
 
   alias Decree.Store.{Config, EventData, LockSession, Query, UUID}
   alias Decree.Store.Sql.Statements
-  alias Decree.Store.Storage.{CreateStream, Initializer, Reader, Schema}
+  alias Decree.Store.Storage.{Initializer, Reader, Schema}
+  alias Decree.Store.StoreRows
   alias Decree.Store.Streams.Stream
 
   @tables ["streams", "events", "stream_events", "event_tags", "event_types"]
@@ -84,7 +85,7 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
 
       explain_nested_statements(session)
 
-      {:ok, stream_id} = CreateStream.execute(writer, "target", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(writer, schema, "target")
       {:ok, %Query{} = query} = Query.compile([[tags: ["seed-1"]]])
 
       for _call <- 1..@warming_calls do
@@ -161,7 +162,7 @@ defmodule Decree.Store.Storage.AppendConditionPlanTest do
 
     members =
       for stream_uuid <- ["target" | others] do
-        {:ok, stream_id} = CreateStream.execute(writer, stream_uuid, schema: schema)
+        {:ok, stream_id} = StoreRows.insert_stream(writer, schema, stream_uuid)
 
         {stream_id, stream_uuid}
       end

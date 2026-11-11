@@ -3,22 +3,22 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
 
   alias Decree.MockedApp
   alias Decree.Aggregates.{Aggregate, ExecutionContext}
-  alias Decree.EventStore.RecordedEvent
+  alias Decree.Store.RecordedEvent
   alias Decree.ExampleDomain.{BankAccount, DepositMoneyHandler, OpenAccountHandler}
   alias Decree.ExampleDomain.BankAccount.Commands.{DepositMoney, OpenAccount}
   alias Decree.ExampleDomain.BankAccount.Events.MoneyDeposited
   alias Decree.UUID
 
   setup do
-    expect(MockEventStore, :subscribe_to, fn
-      _event_store_meta, stream_uuid, handler_name, handler, _subscribe_from, _opts ->
+    expect(MockEventStore, :subscribe_to_stream, fn
+      stream_uuid, handler_name, handler, _opts ->
         assert is_binary(stream_uuid)
         assert is_binary(handler_name)
 
         {:ok, handler}
     end)
 
-    expect(MockEventStore, :subscribe, fn _event_store_meta, aggregate_uuid ->
+    expect(MockEventStore, :subscribe, fn aggregate_uuid, _opts ->
       assert is_binary(aggregate_uuid)
 
       :ok
@@ -49,18 +49,18 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
 
       # Fail to append once
       expect(MockEventStore, :append_to_stream, fn
-        _event_store_meta, ^account_number, 1, _event_data, _opts ->
+        ^account_number, 1, _event_data, _opts ->
           {:error, :wrong_expected_version}
       end)
 
       # Return "missing" event
       expect(MockEventStore, :stream_forward, fn
-        _event_store_meta, ^account_number, 2, _batch_size ->
+        ^account_number, 2, _opts ->
           [
             %RecordedEvent{
               event_id: UUID.uuid4(),
               event_number: 2,
-              stream_id: account_number,
+              stream_uuid: account_number,
               stream_version: 2,
               event_type: "Elixir.Decree.ExampleDomain.BankAccount.Events.MoneyDeposited",
               data: %MoneyDeposited{
@@ -76,7 +76,7 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
 
       # Succeed on second attempt
       expect(MockEventStore, :append_to_stream, fn
-        _event_store_meta, ^account_number, 2, _event_data, _opts ->
+        ^account_number, 2, _event_data, _opts ->
           :ok
       end)
 
@@ -95,12 +95,12 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
     test "should error after too many attempts", %{account_number: account_number} do
       # Fail to append to stream
       expect(MockEventStore, :append_to_stream, 6, fn
-        _event_store_meta, ^account_number, 1, _event_data, _opts ->
+        ^account_number, 1, _event_data, _opts ->
           {:error, :wrong_expected_version}
       end)
 
       expect(MockEventStore, :stream_forward, 6, fn
-        _event_store_meta, ^account_number, 2, _batch_size ->
+        ^account_number, 2, _opts ->
           []
       end)
 
@@ -126,12 +126,12 @@ defmodule Decree.Aggregates.AggregateConcurrencyTest do
       account_number = UUID.uuid4()
 
       expect(MockEventStore, :stream_forward, fn
-        _event_store_meta, ^account_number, 1, _batch_size ->
+        ^account_number, 1, _opts ->
           []
       end)
 
       expect(MockEventStore, :append_to_stream, fn
-        _event_store_meta, ^account_number, 0, _event_data, _opts ->
+        ^account_number, 0, _event_data, _opts ->
           :ok
       end)
 

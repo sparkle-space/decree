@@ -2,7 +2,7 @@ defmodule Decree.FrameworkStorage do
   @moduledoc false
 
   # The framework and projections suites run their test applications on
-  # `Decree.EventStore.Adapters.EventStore` over one Postgres database.
+  # `Decree.FrameworkEventStore`, or a test store over it, over one Postgres database.
 
   alias Decree.EventStore.Adapters.EventStore, as: Adapter
   alias Decree.Store.Config
@@ -12,23 +12,20 @@ defmodule Decree.FrameworkStorage do
   Names the event store process after the application instance, so several
   applications, or several named instances of one, can run at once.
 
-  Called from the test applications' `init/1` callback. An event store given
-  at start (a mock adapter) is left as it is.
+  Called from the test applications' `init/1` callback. A name given in the
+  event store config is kept.
   """
   def name_event_store(config) do
     instance = Keyword.get(config, :name) || Keyword.fetch!(config, :application)
 
     Keyword.update(config, :event_store, [], fn event_store ->
-      if Keyword.get(event_store, :adapter) == Adapter do
-        Keyword.put_new(event_store, :name, Module.concat([instance, "FrameworkEventStore"]))
-      else
-        event_store
-      end
+      Keyword.put_new(event_store, :name, Module.concat([instance, "FrameworkEventStore"]))
     end)
   end
 
   @doc """
-  The Postgres event store config for an application instance.
+  The Postgres event store config for an application instance. `event_store:` names a test
+  store in place of `Decree.FrameworkEventStore`.
   """
   def event_store_config(opts \\ []) do
     Keyword.merge([adapter: Adapter, event_store: Decree.FrameworkEventStore], opts)

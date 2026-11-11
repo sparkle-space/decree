@@ -2,7 +2,8 @@ defmodule Decree.Store.Storage.ReadEventsTest do
   use Decree.Store.StorageCase
 
   alias Decree.Store.{EventFactory, RecordedEvent, Storage, UUID}
-  alias Decree.Store.Storage.{Appender, CreateStream}
+  alias Decree.Store.Storage.Appender
+  alias Decree.Store.StoreRows
 
   describe "read stream forward" do
     test "when stream does not exist", context do
@@ -159,7 +160,7 @@ defmodule Decree.Store.Storage.ReadEventsTest do
 
     stream_uuid = UUID.uuid4()
 
-    with {:ok, stream_id} <- CreateStream.execute(conn, stream_uuid, schema: schema) do
+    with {:ok, stream_id} <- StoreRows.insert_stream(conn, schema, stream_uuid) do
       {:ok, stream_uuid, stream_id}
     end
   end

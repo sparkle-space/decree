@@ -4,12 +4,11 @@ defmodule Decree.Event.HandlerAfterStartTest do
   import Mox
   import ExUnit.CaptureLog
 
-  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.Mock, as: MockEventStore
 
   setup do
-    stub(MockEventStore, :subscribe_to, fn
-      _event_store, :all, _handler_name, handler, _subscribe_from, _opts ->
-        {:ok, handler}
+    stub(MockEventStore, :subscribe_to_all_streams, fn _handler_name, handler, _opts ->
+      {:ok, handler}
     end)
 
     :ok
@@ -100,18 +99,18 @@ defmodule Decree.Event.HandlerAfterStartTest do
     end
 
     test "should be called again after a reset" do
-      stub(MockEventStore, :unsubscribe, fn _event_store, _subscription -> :ok end)
-      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
+      subscription = stub_stand_in_subscription()
+      stub(MockEventStore, :delete_subscription, fn "$all", _name, _opts -> :ok end)
 
       ref = make_ref()
       state = %{test: self(), ref: ref}
       handler = start_supervised!({AfterStartHandler, state: state})
 
-      send_subscribed(handler)
+      send_subscribed(handler, subscription)
       assert_receive {^ref, :after_start, :ok}
 
       send(handler, :reset)
-      send_subscribed(handler)
+      send_subscribed(handler, subscription)
 
       assert_receive {^ref, :after_start, :ok}
     end
@@ -197,12 +196,12 @@ defmodule Decree.Event.HandlerAfterStartTest do
     end
 
     test "should not apply events buffered before the reset" do
-      stub(MockEventStore, :unsubscribe, fn _event_store, _subscription -> :ok end)
-      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
-      stub(MockEventStore, :ack_event, fn _event_store, _subscription, _event -> :ok end)
+      subscription = stub_stand_in_subscription()
+      stub(MockEventStore, :delete_subscription, fn "$all", _name, _opts -> :ok end)
+      stub(MockEventStore, :ack, fn _subscription, _event_number -> :ok end)
 
       handler = start_supervised!(BufferingHandler)
-      send_subscribed(handler)
+      send_subscribed(handler, subscription)
 
       events =
         Decree.Helpers.EventFactory.map_to_recorded_events([%ReplayedEvent{reply_to: self()}])
@@ -212,7 +211,7 @@ defmodule Decree.Event.HandlerAfterStartTest do
       send(handler, :reset)
 
       # The reset subscription delivers the event again.
-      send_subscribed(handler)
+      send_subscribed(handler, subscription)
       send(handler, {:events, events})
       send(handler, :flush_batch_timeout)
 
@@ -221,7 +220,19 @@ defmodule Decree.Event.HandlerAfterStartTest do
     end
   end
 
-  defp send_subscribed(handler) do
-    send(handler, {:subscribed, handler})
+  defp send_subscribed(handler, subscription \\ nil) do
+    send(handler, {:subscribed, subscription || handler})
+  end
+
+  # A reset unsubscribes the handler's subscription process, so the subscription is a
+  # stand-in here rather than the handler itself, which cannot call itself.
+  defp stub_stand_in_subscription do
+    subscription = Decree.MockEventStoreCase.start_stand_in_subscription!()
+
+    stub(MockEventStore, :subscribe_to_all_streams, fn _handler_name, _handler, _opts ->
+      {:ok, subscription}
+    end)
+
+    subscription
   end
 end

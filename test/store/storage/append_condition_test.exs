@@ -15,7 +15,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
   }
 
   alias Decree.Store.Sql.Statements
-  alias Decree.Store.Storage.{Appender, CreateStream, Initializer, Schema}
+  alias Decree.Store.Storage.{Appender, Initializer, Schema}
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -219,7 +219,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
     test "answers the atom, not an `AppendError`", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "decision-direct", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "decision-direct")
       events = EventFactory.create_recorded_events(1, "decision-direct")
 
       {:ok, condition} = AppendCondition.compile(items: @tag_matcher, after: 0)
@@ -313,7 +313,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
 
       :ok = EventStore.append_to_stream("source", 0, [event("typed", ["tag"])])
 
-      {:ok, stream_id} = CreateStream.execute(conn, "plain", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "plain")
       events = EventFactory.create_recorded_events(1, "plain")
 
       assert :ok = Appender.append(conn, stream_id, events, schema: schema)
@@ -730,7 +730,7 @@ defmodule Decree.Store.Storage.AppendConditionTest do
 
       :ok = EventStore.append_to_stream("source", 0, [event("typed", ["tag"])])
 
-      {:ok, stream_id} = CreateStream.execute(conn, "decision-x", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "decision-x")
 
       {:ok, failing} = AppendCondition.compile(items: @tag_matcher, after: 0)
       {:ok, passing} = AppendCondition.compile(items: @tag_matcher, after: 1)

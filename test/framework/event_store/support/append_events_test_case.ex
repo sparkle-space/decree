@@ -4,6 +4,7 @@ defmodule Decree.EventStore.AppendEventsTestCase do
   define_tests do
     import Decree.Enumerable, only: [pluck: 2]
 
+    alias Decree.EventStore
     alias Decree.EventStore.EventData
     alias Decree.UUID
 
@@ -13,43 +14,40 @@ defmodule Decree.EventStore.AppendEventsTestCase do
     end
 
     describe "event store adapter" do
-      test "should implement `Decree.EventStore.Adapter` behaviour", %{
-        event_store: event_store
-      } do
-        assert_implements(event_store, Decree.EventStore.Adapter)
+      test "should implement `Decree.EventStore.Adapter` behaviour" do
+        assert_implements(Decree.EventStore.Adapters.EventStore, Decree.EventStore.Adapter)
       end
     end
 
     describe "append events to a stream" do
-      test "should append events", %{event_store: event_store, event_store_meta: event_store_meta} do
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 0, build_events(1))
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 1, build_events(2))
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 3, build_events(3))
+      test "should append events", %{application: application} do
+        assert :ok == EventStore.append_to_stream(application, "stream", 0, build_events(1))
+        assert :ok == EventStore.append_to_stream(application, "stream", 1, build_events(2))
+        assert :ok == EventStore.append_to_stream(application, "stream", 3, build_events(3))
       end
 
       test "should append events with `:any_version` without checking expected version", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :any_version,
                    build_events(3)
                  )
 
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :any_version,
                    build_events(2)
                  )
 
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :any_version,
                    build_events(1)
@@ -57,12 +55,11 @@ defmodule Decree.EventStore.AppendEventsTestCase do
       end
 
       test "should append events with `:no_stream` parameter", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :no_stream,
                    build_events(2)
@@ -70,20 +67,19 @@ defmodule Decree.EventStore.AppendEventsTestCase do
       end
 
       test "should fail when stream already exists with `:no_stream` parameter", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :no_stream,
                    build_events(2)
                  )
 
         assert {:error, :stream_exists} ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :no_stream,
                    build_events(1)
@@ -91,20 +87,19 @@ defmodule Decree.EventStore.AppendEventsTestCase do
       end
 
       test "should append events with `:stream_exists` parameter", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :no_stream,
                    build_events(2)
                  )
 
         assert :ok ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :stream_exists,
                    build_events(1)
@@ -112,12 +107,11 @@ defmodule Decree.EventStore.AppendEventsTestCase do
       end
 
       test "should fail with `:stream_exists` parameter when stream does not exist", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         assert {:error, :stream_not_found} ==
-                 event_store.append_to_stream(
-                   event_store_meta,
+                 EventStore.append_to_stream(
+                   application,
                    "stream",
                    :stream_exists,
                    build_events(1)
@@ -125,49 +119,47 @@ defmodule Decree.EventStore.AppendEventsTestCase do
       end
 
       test "should fail to append to a stream because of wrong expected version when no stream",
-           %{event_store: event_store, event_store_meta: event_store_meta} do
+           %{application: application} do
         assert {:error, :wrong_expected_version} ==
-                 event_store.append_to_stream(event_store_meta, "stream", 1, build_events(1))
+                 EventStore.append_to_stream(application, "stream", 1, build_events(1))
       end
 
       test "should fail to append to a stream because of wrong expected version", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 0, build_events(3))
+        assert :ok == EventStore.append_to_stream(application, "stream", 0, build_events(3))
 
         assert {:error, :wrong_expected_version} ==
-                 event_store.append_to_stream(event_store_meta, "stream", 0, build_events(1))
+                 EventStore.append_to_stream(application, "stream", 0, build_events(1))
 
         assert {:error, :wrong_expected_version} ==
-                 event_store.append_to_stream(event_store_meta, "stream", 1, build_events(1))
+                 EventStore.append_to_stream(application, "stream", 1, build_events(1))
 
         assert {:error, :wrong_expected_version} ==
-                 event_store.append_to_stream(event_store_meta, "stream", 2, build_events(1))
+                 EventStore.append_to_stream(application, "stream", 2, build_events(1))
 
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 3, build_events(1))
+        assert :ok == EventStore.append_to_stream(application, "stream", 3, build_events(1))
       end
     end
 
     describe "stream events from an unknown stream" do
       test "should return stream not found error", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         assert {:error, :stream_not_found} ==
-                 event_store.stream_forward(event_store_meta, "unknownstream")
+                 EventStore.stream_forward(application, "unknownstream")
       end
     end
 
     describe "stream events from an existing stream" do
-      test "should read events", %{event_store: event_store, event_store_meta: event_store_meta} do
+      test "should read events", %{application: application} do
         correlation_id = UUID.uuid4()
         causation_id = UUID.uuid4()
         events = build_events(4, correlation_id, causation_id)
 
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 0, events)
+        assert :ok == EventStore.append_to_stream(application, "stream", 0, events)
 
-        read_events = event_store.stream_forward(event_store_meta, "stream") |> Enum.to_list()
+        read_events = EventStore.stream_forward(application, "stream") |> Enum.to_list()
         assert length(read_events) == 4
         assert coerce(events) == coerce(read_events)
         assert pluck(read_events, :stream_version) == [1, 2, 3, 4]
@@ -181,42 +173,40 @@ defmodule Decree.EventStore.AppendEventsTestCase do
           assert %DateTime{} = event.created_at
         end)
 
-        read_events = event_store.stream_forward(event_store_meta, "stream", 3) |> Enum.to_list()
+        read_events = EventStore.stream_forward(application, "stream", 3) |> Enum.to_list()
         assert coerce(Enum.slice(events, 2, 2)) == coerce(read_events)
         assert pluck(read_events, :stream_version) == [3, 4]
       end
 
       test "should read from single stream", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         events1 = build_events(2)
         events2 = build_events(4)
 
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 0, events1)
-        assert :ok == event_store.append_to_stream(event_store_meta, "secondstream", 0, events2)
+        assert :ok == EventStore.append_to_stream(application, "stream", 0, events1)
+        assert :ok == EventStore.append_to_stream(application, "secondstream", 0, events2)
 
-        read_events = event_store.stream_forward(event_store_meta, "stream", 0) |> Enum.to_list()
+        read_events = EventStore.stream_forward(application, "stream", 0) |> Enum.to_list()
         assert 2 == length(read_events)
         assert coerce(events1) == coerce(read_events)
 
         read_events =
-          event_store.stream_forward(event_store_meta, "secondstream", 0) |> Enum.to_list()
+          EventStore.stream_forward(application, "secondstream", 0) |> Enum.to_list()
 
         assert 4 == length(read_events)
         assert coerce(events2) == coerce(read_events)
       end
 
       test "should read events in batches", %{
-        event_store: event_store,
-        event_store_meta: event_store_meta
+        application: application
       } do
         events = build_events(10)
 
-        assert :ok == event_store.append_to_stream(event_store_meta, "stream", 0, events)
+        assert :ok == EventStore.append_to_stream(application, "stream", 0, events)
 
         read_events =
-          event_store.stream_forward(event_store_meta, "stream", 0, 2) |> Enum.to_list()
+          EventStore.stream_forward(application, "stream", 0, 2) |> Enum.to_list()
 
         assert length(read_events) == 10
         assert coerce(events) == coerce(read_events)

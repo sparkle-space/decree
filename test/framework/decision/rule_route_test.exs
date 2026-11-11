@@ -224,7 +224,7 @@ defmodule Decree.Decision.RuleRouteTest do
   test "a rule route under a declared prefix is refused while its target is not declared" do
     event_store =
       FrameworkStorage.event_store_config(
-        adapter: Decree.RuleFixtures.RecordingAdapter,
+        event_store: Decree.RuleFixtures.RecordingStore,
         conditional_appends: [stream_prefixes: ["decision-"]]
       )
 
@@ -241,7 +241,7 @@ defmodule Decree.Decision.RuleRouteTest do
   test "a rule route under a declared prefix appends once its target is declared" do
     event_store =
       FrameworkStorage.event_store_config(
-        adapter: Decree.RuleFixtures.RecordingAdapter,
+        event_store: Decree.RuleFixtures.RecordingStore,
         conditional_appends: [stream_prefixes: ["decision-"], targets: [User]]
       )
 

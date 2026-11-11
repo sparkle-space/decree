@@ -1,8 +1,7 @@
 defmodule Decree.EventStore.EventStoreTestCase do
   use ExUnit.CaseTemplate
 
-  alias Decree.EventStore.Adapters.EventStore
-  alias Decree.EventStore.Adapters.EventStore.Storage
+  alias Decree.EventStore.ConformanceStorage, as: Storage
 
   setup_all do
     config = Storage.config()
@@ -13,26 +12,28 @@ defmodule Decree.EventStore.EventStoreTestCase do
   end
 
   setup %{config: config, conn: conn} do
-    {:ok, event_store_meta} = start_event_store()
+    {:ok, application} = start_event_store()
 
     on_exit(fn ->
       Storage.reset!(conn, config)
     end)
 
-    [event_store_meta: event_store_meta]
+    [application: application]
   end
 
+  # Starts an instance of the conformance application, whose event store the cases run
+  # against through `Decree.EventStore`, and answers the instance. `name:` names the instance,
+  # and its store process after it; every other option is the store's config.
   def start_event_store(config \\ []) do
-    alias Decree.EventStore.Adapters.EventStore
+    {name, config} = Keyword.pop(config, :name, EventStoreApplication)
 
-    config = Keyword.put_new(config, :event_store, ConformanceEventStore)
+    event_store =
+      config
+      |> Keyword.put_new(:name, Module.concat([name, ConformanceEventStore]))
+      |> Storage.event_store_config()
 
-    {:ok, child_spec, event_store_meta} = EventStore.child_spec(EventStoreApplication, config)
+    start_supervised!({EventStoreApplication, name: name, event_store: event_store})
 
-    for child <- child_spec do
-      start_supervised!(child)
-    end
-
-    {:ok, event_store_meta}
+    {:ok, name}
   end
 end

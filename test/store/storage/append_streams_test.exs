@@ -13,7 +13,8 @@ defmodule Decree.Store.Storage.AppendStreamsTest do
     UUID
   }
 
-  alias Decree.Store.Storage.{Appender, CreateStream}
+  alias Decree.Store.Storage.Appender
+  alias Decree.Store.StoreRows
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -43,7 +44,7 @@ defmodule Decree.Store.Storage.AppendStreamsTest do
         :ok = EventStore.append_to_stream(stream_uuid, 0, events(count))
       end
 
-      {:ok, empty} = CreateStream.execute(context.conn, "empty", schema: context.schema)
+      {:ok, empty} = StoreRows.insert_stream(context.conn, context.schema, "empty")
 
       assert :ok =
                EventStore.append_to_streams([

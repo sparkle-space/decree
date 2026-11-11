@@ -1,4 +1,4 @@
-defmodule Decree.EventStore.Adapters.EventStore.EventStoreTest do
+defmodule Decree.EventStore.EventStoreTest do
   use ExUnit.Case
 
   setup do

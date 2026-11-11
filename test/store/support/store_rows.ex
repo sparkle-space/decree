@@ -78,6 +78,19 @@ defmodule Decree.Store.StoreRows do
     |> Enum.map(&hd/1)
   end
 
+  # A bare `streams` row for `stream_uuid`, with no event, inserted as the store's own
+  # create-stream statement does. Answers `{:ok, stream_id}`. `conn` can be a transaction.
+  def insert_stream(conn, schema, stream_uuid) do
+    %Postgrex.Result{rows: [[stream_id]]} =
+      Postgrex.query!(
+        conn,
+        ~s[INSERT INTO "#{schema}".streams (stream_uuid) VALUES ($1) RETURNING stream_id],
+        [stream_uuid]
+      )
+
+    {:ok, stream_id}
+  end
+
   # Removes a stream and leaves its tag and type rows behind, with the statement a pod from
   # before store migration 1.8.0 still sends during a rollout. These rows have no `$all` row,
   # which is what the query template's live-event check is for.

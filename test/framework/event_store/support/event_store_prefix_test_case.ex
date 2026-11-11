@@ -2,6 +2,7 @@ defmodule Decree.EventStore.EventStorePrefixTestCase do
   import Decree.SharedTestCase
 
   define_tests do
+    alias Decree.EventStore
     alias Decree.EventStore.EventData
     alias Decree.UUID
 
@@ -12,23 +13,22 @@ defmodule Decree.EventStore.EventStorePrefixTestCase do
 
     describe "event store prefix" do
       setup do
-        {:ok, event_store_meta1} = start_event_store(name: :prefix1, prefix: "prefix1")
-        {:ok, event_store_meta2} = start_event_store(name: :prefix2, prefix: "prefix2")
+        {:ok, application1} = start_event_store(name: :prefix1, prefix: "prefix1")
+        {:ok, application2} = start_event_store(name: :prefix2, prefix: "prefix2")
 
-        [event_store_meta1: event_store_meta1, event_store_meta2: event_store_meta2]
+        [application1: application1, application2: application2]
       end
 
       test "should append events to named event store", %{
-        event_store: event_store,
-        event_store_meta1: event_store_meta1,
-        event_store_meta2: event_store_meta2
+        application1: application1,
+        application2: application2
       } do
         events = build_events(1)
 
-        assert :ok == event_store.append_to_stream(event_store_meta1, "stream", 0, events)
+        assert :ok == EventStore.append_to_stream(application1, "stream", 0, events)
 
         assert {:error, :stream_not_found} ==
-                 event_store.stream_forward(event_store_meta2, "stream")
+                 EventStore.stream_forward(application2, "stream")
       end
     end
 

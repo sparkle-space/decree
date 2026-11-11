@@ -2,7 +2,8 @@ defmodule Decree.Store.Subscriptions.AllStreamsSubscriptionTest do
   use Decree.Store.Subscriptions.StreamSubscriptionTestCase, stream_uuid: "$all"
 
   alias Decree.Store.{EventFactory, ProcessHelper, RecordedEvent, UUID}
-  alias Decree.Store.Storage.{Appender, CreateStream}
+  alias Decree.Store.Storage.Appender
+  alias Decree.Store.StoreRows
   alias Decree.Store.Subscriptions.SubscriptionFsm
 
   defp create_recorded_events(_context, count, initial_event_number \\ 1) do
@@ -22,7 +23,7 @@ defmodule Decree.Store.Subscriptions.AllStreamsSubscriptionTest do
     stream_uuid = UUID.uuid4()
     recorded_events = EventFactory.create_recorded_events(3, stream_uuid)
 
-    {:ok, stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
+    {:ok, stream_id} = StoreRows.insert_stream(conn, schema, stream_uuid)
 
     :ok =
       Appender.append(conn, stream_id, recorded_events,

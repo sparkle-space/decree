@@ -1,6 +1,5 @@
-defmodule Decree.EventStore.Adapters.EventStore.SubscriptionTest do
+defmodule Decree.EventStore.SubscriptionTest do
   use Decree.EventStore.EventStoreTestCase
 
-  use Decree.EventStore.SubscriptionTestCase,
-    event_store: Decree.EventStore.Adapters.EventStore
+  use Decree.EventStore.SubscriptionTestCase
 end
