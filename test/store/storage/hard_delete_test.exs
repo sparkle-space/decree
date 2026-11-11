@@ -81,6 +81,101 @@ defmodule Decree.Store.Storage.HardDeleteTest do
     end
   end
 
+  # The erasure path. A tag or type row has no foreign key, so one left behind is silent: these
+  # assertions are the only thing that sees it. They read rows by event id and by position,
+  # captured before the delete, so a count that happens to match is not enough.
+  describe "erasure" do
+    test "takes the stream's events from `$all`, with their tag and type rows, and leaves another stream's",
+         context do
+      :ok = EventStore.append_to_stream("stream", 0, [event(["tenant:a"]), event(["tenant:b"])])
+      :ok = EventStore.append_to_stream("other", 0, [event(["tenant:c"])])
+
+      {:ok, deleted} = EventStore.read_stream_forward("stream")
+      {:ok, [kept]} = EventStore.read_stream_forward("other")
+
+      deleted_ids = Enum.map(deleted, &UUID.string_to_binary!(&1.event_id))
+      kept_ids = [UUID.string_to_binary!(kept.event_id)]
+
+      deleted_positions = all_positions_of(context, deleted_ids)
+      [kept_position] = kept_positions = all_positions_of(context, kept_ids)
+
+      assert length(deleted_positions) == 2
+
+      assert tag_rows_at(context, deleted_positions) |> Enum.map(&List.last/1) ==
+               ~w(tenant:a tenant:b)
+
+      assert length(type_rows_at(context, deleted_positions)) == 2
+
+      kept_event = event_rows(context, kept_ids)
+      kept_all = all_rows(context, kept_ids)
+      kept_tags = tag_rows_at(context, kept_positions)
+      kept_types = type_rows_at(context, kept_positions)
+
+      assert [[^kept_position, "tenant:c"]] = kept_tags
+      assert [[^kept_position, _event_type]] = kept_types
+
+      assert :ok = delete(context, "stream")
+
+      assert event_rows(context, deleted_ids) == []
+      assert all_rows(context, deleted_ids) == []
+      assert stream_versions(context, "stream") == []
+      assert tag_rows_at(context, deleted_positions) == []
+      assert type_rows_at(context, deleted_positions) == []
+
+      assert event_rows(context, kept_ids) == kept_event
+      assert all_rows(context, kept_ids) == kept_all
+      assert stream_versions(context, "other") == [1]
+      assert tag_rows(context) == kept_tags
+      assert type_rows_at(context, kept_positions) == kept_types
+      assert all_positions(context) == kept_positions
+      assert count(context, "events") == 1
+      assert count(context, "event_types") == 1
+
+      assert {:ok, [read]} = EventStore.read_all_streams_forward()
+      assert read.event_id == kept.event_id
+      assert read.stream_uuid == "other"
+    end
+
+    defp event_rows(context, ids) do
+      rows(
+        context,
+        ~s(SELECT event_id, event_type FROM "#{context.schema}".events) <>
+          " WHERE event_id = ANY($1) ORDER BY event_id",
+        [ids]
+      )
+    end
+
+    defp all_rows(context, ids) do
+      rows(
+        context,
+        ~s(SELECT event_id, stream_version, original_stream_id, original_stream_version) <>
+          ~s( FROM "#{context.schema}".stream_events) <>
+          " WHERE stream_id = 0 AND event_id = ANY($1) ORDER BY stream_version",
+        [ids]
+      )
+    end
+
+    defp all_positions_of(context, ids), do: context |> all_rows(ids) |> Enum.map(&Enum.at(&1, 1))
+
+    defp tag_rows_at(context, positions) do
+      rows(
+        context,
+        ~s(SELECT position, tag FROM "#{context.schema}".event_tags) <>
+          " WHERE position = ANY($1) ORDER BY 1, 2",
+        [positions]
+      )
+    end
+
+    defp type_rows_at(context, positions) do
+      rows(
+        context,
+        ~s(SELECT position, event_type FROM "#{context.schema}".event_types) <>
+          " WHERE position = ANY($1) ORDER BY 1, 2",
+        [positions]
+      )
+    end
+  end
+
   describe "a stream holding a link" do
     test "takes the linked event from everywhere, and its tags with it", context do
       :ok = EventStore.append_to_stream("source", 0, [event(["tenant:a"])])
