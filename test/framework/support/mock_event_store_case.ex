@@ -68,9 +68,12 @@ defmodule Decree.MockEventStoreCase do
   @doc """
   Associates the mock as `application`'s event store, for a handler test that calls the handler
   in the test process and runs no application, and stubs its `ack/2` to send the subscription
-  process `{:acked, event_number}`. The stub is the test process's own (Mox's private mode).
+  process `{:acked, event_number}`. The stub is the test process's own: it sets Mox's private
+  mode, since a global owner from an earlier test may not have been released yet.
   """
   def associate_acking_mock(application) do
+    set_mox_private()
+
     Decree.Application.Config.associate(self(), application,
       event_store: %{event_store: MockEventStore, name: application}
     )
