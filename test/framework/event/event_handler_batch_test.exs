@@ -1,7 +1,6 @@
 defmodule Decree.Event.EventHandlerBatchTest do
   use ExUnit.Case, async: true
 
-  alias Decree.Application.Config
   alias Decree.Event.Handler
   alias Decree.EventStore.Subscription
 
@@ -9,7 +8,6 @@ defmodule Decree.Event.EventHandlerBatchTest do
   alias Decree.Helpers.EventFactory
   alias Decree.Event.{BatchHandler, ErrorHandlingBatchHandler}
   alias Decree.Event.ErrorAggregate.Events.ErrorEvent
-  alias Decree.Event.EventHandlerBatchTest.MockAdapter
   alias Decree.Event.ReplyEvent
 
   describe "batch handling" do
@@ -56,7 +54,9 @@ defmodule Decree.Event.EventHandlerBatchTest do
 
       Handler.handle_info({:events, recorded_events}, state)
       assert_received {:error, :skipping}
-      assert_received {:acked, ^last_recorded_event}
+      # The store's `ack/2` receives the acknowledged event's number.
+      last_event_number = last_recorded_event.event_number
+      assert_received {:acked, ^last_event_number}
     end
 
     test "should stop" do
@@ -88,7 +88,7 @@ defmodule Decree.Event.EventHandlerBatchTest do
   end
 
   defp setup_state(handler_module) do
-    Config.associate(self(), __MODULE__, event_store: {MockAdapter, nil})
+    Decree.MockEventStoreCase.associate_acking_mock(__MODULE__)
 
     %Handler{
       subscription:
@@ -102,12 +102,5 @@ defmodule Decree.Event.EventHandlerBatchTest do
       consistency: :eventual,
       last_seen_event: 0
     }
-  end
-
-  defmodule MockAdapter do
-    def ack_event(nil, subscription_pid, event) do
-      send(subscription_pid, {:acked, event})
-      :ok
-    end
   end
 end

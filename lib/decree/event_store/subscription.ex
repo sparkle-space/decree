@@ -19,9 +19,9 @@ defmodule Decree.EventStore.Subscription do
           backoff: any(),
           concurrency: pos_integer(),
           partition_by: (RecordedEvent -> any()) | nil,
-          subscribe_to: EventStore.Adapter.stream_uuid() | :all,
-          subscribe_from: EventStore.Adapter.start_from(),
-          subscription_name: EventStore.Adapter.subscription_name(),
+          subscribe_to: EventStore.stream_uuid() | :all,
+          subscribe_from: EventStore.start_from(),
+          subscription_name: EventStore.subscription_name(),
           subscription_opts: Keyword.t(),
           subscription_pid: pid() | nil,
           subscription_ref: reference() | nil

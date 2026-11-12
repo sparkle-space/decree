@@ -224,11 +224,13 @@ defmodule Decree.Event.EventHandlerRetryWaitTest do
       refute_received {:DOWN, ^ref, :process, ^handler, _reason}
     end
 
+    # A reset unsubscribes the handler's subscription process: here a stand-in, which the
+    # handler can call (see `start_retry_wait_handler/1`).
+    @tag :stand_in_subscription
     test "a reset during the wait drops the pending retry", ctx do
       %{handler: handler, ref: ref} = ctx
 
-      stub(MockEventStore, :unsubscribe, fn _event_store_meta, _subscription -> :ok end)
-      stub(MockEventStore, :delete_subscription, fn _event_store, :all, _name -> :ok end)
+      stub(MockEventStore, :delete_subscription, fn "$all", _name, _opts -> :ok end)
 
       id = deliver(handler, fail_times: 1, delay: @short_delay)
       assert_receive {:attempt, ^id, 1}, @prompt
@@ -254,6 +256,18 @@ defmodule Decree.Event.EventHandlerRetryWaitTest do
       assert_receive {:attempt, ^id, 3}, @prompt
       assert_receive {:handled, ^id}, @prompt
     end
+  end
+
+  defp start_retry_wait_handler(%{stand_in_subscription: true}) do
+    subscription = Decree.MockEventStoreCase.start_stand_in_subscription!()
+
+    stub(MockEventStore, :subscribe_to_all_streams, fn _handler_name, subscriber, _opts ->
+      send(subscriber, {:subscribed, subscription})
+
+      {:ok, subscription}
+    end)
+
+    start_handler(RetryWaitHandler)
   end
 
   defp start_retry_wait_handler(_context), do: start_handler(RetryWaitHandler)

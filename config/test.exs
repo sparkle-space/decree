@@ -93,7 +93,6 @@ config :decree,
 
 framework_app_config = [
   event_store: [
-    adapter: Decree.EventStore.Adapters.EventStore,
     event_store: Decree.FrameworkEventStore
   ],
   pubsub: :local,

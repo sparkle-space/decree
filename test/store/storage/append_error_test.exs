@@ -2,7 +2,8 @@ defmodule Decree.Store.Storage.AppendErrorTest do
   use Decree.Store.StorageCase
 
   alias Decree.Store.{AppendError, EventData, EventFactory, UUID}
-  alias Decree.Store.Storage.{Appender, CreateStream}
+  alias Decree.Store.Storage.Appender
+  alias Decree.Store.StoreRows
   alias TestEventStore, as: EventStore
 
   describe "an appender failure reaches the caller as `%AppendError{}`" do
@@ -42,7 +43,7 @@ defmodule Decree.Store.Storage.AppendErrorTest do
 
     test "`:duplicate_stream_uuid` from the appender", %{conn: conn, schema: schema} do
       stream_uuid = UUID.uuid4()
-      {:ok, _stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
+      {:ok, _stream_id} = StoreRows.insert_stream(conn, schema, stream_uuid)
 
       # No stream id: the appender's statement creates the stream, which exists.
       recorded_events = EventFactory.create_recorded_events(1, stream_uuid)
@@ -53,7 +54,7 @@ defmodule Decree.Store.Storage.AppendErrorTest do
 
     test "`:wrong_expected_version` from the appender", %{conn: conn, schema: schema} do
       stream_uuid = UUID.uuid4()
-      {:ok, stream_id} = CreateStream.execute(conn, stream_uuid, schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, stream_uuid)
 
       :ok =
         Appender.append(conn, stream_id, EventFactory.create_recorded_events(1, stream_uuid),

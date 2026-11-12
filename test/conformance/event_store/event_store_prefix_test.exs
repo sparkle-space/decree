@@ -1,8 +1,7 @@
-defmodule Decree.EventStore.Adapters.EventStore.EventStorePrefixTest do
-  use Decree.EventStore.EventStorePrefixTestCase,
-    event_store: Decree.EventStore.Adapters.EventStore
+defmodule Decree.EventStore.EventStorePrefixTest do
+  use Decree.EventStore.EventStorePrefixTestCase
 
-  alias Decree.EventStore.Adapters.EventStore.Storage
+  alias Decree.EventStore.ConformanceStorage, as: Storage
   alias Decree.EventStore.EventStoreTestCase
 
   setup_all do

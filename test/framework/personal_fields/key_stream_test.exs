@@ -14,7 +14,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
     AdmissionGranted,
     CatchAllHandler,
     DeclaredStore,
-    FailingAdapter,
+    FailingStore,
     KeyStreams,
     LedgerApp,
     LedgerKeys,
@@ -54,10 +54,9 @@ defmodule Decree.PersonalFields.KeyStreamTest do
     key_stream = @prefix <> subject
 
     on_exit(fn ->
-      FailingAdapter.unflag(key_stream)
-      FailingAdapter.unflag(KeyStreams.admission_prefix() <> subject)
-      FailingAdapter.unflag_append(key_stream)
-      FailingAdapter.stop_pretending()
+      FailingStore.unflag(key_stream)
+      FailingStore.unflag(KeyStreams.admission_prefix() <> subject)
+      FailingStore.unflag_append(key_stream)
     end)
 
     [key_stream: key_stream]
@@ -460,11 +459,11 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       assert event_count(conn) == 1
     end
 
-    defp undeclared_store, do: FrameworkStorage.event_store_config(adapter: FailingAdapter)
+    defp undeclared_store, do: FrameworkStorage.event_store_config(event_store: FailingStore)
 
     defp undeletable_store do
       FrameworkStorage.event_store_config(
-        adapter: FailingAdapter,
+        event_store: FailingStore,
         deletable: [stream_prefixes: [@prefix], event_types: KeyStream.event_types()]
       )
     end
@@ -672,7 +671,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
     test "a second loss of the store's retry answers `:stream_exists`", context do
       %{subject: subject, key_stream: stream} = context
 
-      FailingAdapter.flag_append(stream, fn ->
+      FailingStore.flag_append(stream, fn ->
         {:error, {:already_retried_once, :duplicate_stream_uuid}}
       end)
 
@@ -842,7 +841,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
 
     defp proxied_store(port) do
       FrameworkStorage.event_store_config(
-        adapter: FailingAdapter,
+        event_store: FailingStore,
         hostname: "127.0.0.1",
         port: port,
         pool_size: 2,
@@ -867,7 +866,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
           {"a term", quote(do: fn -> {:error, "down"} end)}
         ] do
       test "answers an error, for #{name}", %{subject: subject, key_stream: stream} do
-        FailingAdapter.flag(stream, unquote(failure))
+        FailingStore.flag(stream, unquote(failure))
 
         assert_failed(KeyStream.head(@app, @prefix, subject))
       end
@@ -884,7 +883,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
             fn -> {:error, @marker} end,
             fn -> {:error, %RuntimeError{message: @marker}} end
           ] do
-        FailingAdapter.flag(stream, failure)
+        FailingStore.flag(stream, failure)
 
         answer = KeyStream.head(@app, @prefix, subject)
 
@@ -1009,7 +1008,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       head = head!(subject)
 
       for class <- [:unavailable, :retryable, :rejected] do
-        FailingAdapter.flag_append(stream, fn ->
+        FailingStore.flag_append(stream, fn ->
           {:error, %AppendError{class: class, code: nil, reason: @marker}}
         end)
 
@@ -1034,7 +1033,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
             fn -> {:error, {:failed, @marker}} end,
             fn -> {:error, @marker} end
           ] do
-        FailingAdapter.flag_append(stream, failure)
+        FailingStore.flag_append(stream, failure)
 
         assert {:error, _reason} = mint = KeyStream.mint(@app, @prefix, subject, @wrap, @tag_v1)
         assert {:error, _reason} = rewrap = KeyStream.rewrap(@app, head, @wrap, @tag_v1)
@@ -1218,7 +1217,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
             fn -> raise "down" end,
             fn -> exit(:down) end
           ] do
-        FailingAdapter.flag(flagged, failure)
+        FailingStore.flag(flagged, failure)
 
         assert LedgerKeys.lookup(subject) == :unknown
 
@@ -1231,7 +1230,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
                  events: [%Registered{user_id: subject, email: email()}]
                }) == {:error, :key_unknown}
 
-        FailingAdapter.unflag(flagged)
+        FailingStore.unflag(flagged)
       end
     end
   end
@@ -1284,16 +1283,16 @@ defmodule Decree.PersonalFields.KeyStreamTest do
                 fn -> {:error, {:failed, @marker}} end,
                 fn -> {:error, %AppendError{class: :rejected, reason: @marker}} end
               ] do
-            FailingAdapter.flag(stream, failure)
-            FailingAdapter.flag_append(stream, failure)
+            FailingStore.flag(stream, failure)
+            FailingStore.flag_append(stream, failure)
 
             {:error, _reason} = KeyStream.head(@app, @prefix, subject)
             {:error, _reason} = KeyStream.mint(@app, @prefix, subject, @wrap, @tag_v1)
             {:error, _reason} = KeyStream.rewrap(@app, head, @wrap, @tag_v1)
           end
 
-          FailingAdapter.unflag(stream)
-          FailingAdapter.unflag_append(stream)
+          FailingStore.unflag(stream)
+          FailingStore.unflag_append(stream)
 
           hard_delete!(stream)
 
@@ -1321,12 +1320,14 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       refute_append_telemetry(flush_telemetry())
     end
 
-    test "telemetry, when the append raises", %{subject: subject} do
-      FailingAdapter.pretend_declared([@prefix])
+    test "telemetry, when the append raises", %{subject: subject, key_stream: stream} do
       attach_telemetry(@telemetry)
 
-      # The application stays up, and its store has gone, so the raise is the store's own.
-      :ok = Supervisor.terminate_child(LedgerApp, @store)
+      # The append reaches a store that is not running, so the raise is the store's own. The
+      # application's store stays up: its declared prefixes are read from it before the append.
+      FailingStore.flag_append(stream, fn ->
+        Store.append_to_stream(stream, :any_version, [], name: :key_stream_stopped_store)
+      end)
 
       assert {:error, _reason} = KeyStream.mint(@app, @prefix, subject, @wrap, @tag_v1)
 
@@ -1342,7 +1343,7 @@ defmodule Decree.PersonalFields.KeyStreamTest do
 
       attach_telemetry(@telemetry)
 
-      FailingAdapter.flag_append(stream, fn -> needs_a_map!({Base.encode64(@wrap), @wrap}) end)
+      FailingStore.flag_append(stream, fn -> needs_a_map!({Base.encode64(@wrap), @wrap}) end)
 
       assert KeyStream.mint(@app, @prefix, subject, @wrap, @tag_v1) ==
                {:error, :function_clause}
@@ -1410,8 +1411,8 @@ defmodule Decree.PersonalFields.KeyStreamTest do
       mint!(subject)
       head = head!(subject)
 
-      FailingAdapter.flag(stream, fn -> needs_a_map!(head) end)
-      FailingAdapter.flag_append(stream, fn -> needs_a_map!(head) end)
+      FailingStore.flag(stream, fn -> needs_a_map!(head) end)
+      FailingStore.flag_append(stream, fn -> needs_a_map!(head) end)
 
       for answer <- [
             KeyStream.head(@app, @prefix, subject),

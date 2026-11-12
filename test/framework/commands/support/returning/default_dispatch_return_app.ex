@@ -4,7 +4,6 @@ defmodule Decree.Commands.DefaultDispatchReturnApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore
     ],
     pubsub: :local,

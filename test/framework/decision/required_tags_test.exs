@@ -9,7 +9,7 @@ defmodule Decree.Decision.RequiredTagsTest do
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Event.Append
   alias Decree.EventStore
-  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.Mock, as: MockEventStore
   alias Decree.EventStore.{EventData, RecordedEvent}
   alias Decree.PersonalFields.Envelope
   alias Decree.PersonalFields.Fixtures.Keys
@@ -281,11 +281,11 @@ defmodule Decree.Decision.RequiredTagsTest do
 
       # Nothing but the facts that enable every family, their tags in the read. No `read_tags`
       # is stubbed, so a dispatch sending one fails.
-      stub(MockEventStore, :read_query, fn _meta, items, opts ->
+      stub(MockEventStore, :read_query, fn items, opts ->
         {:ok, Decree.TagIndexFixtures.mocked_read(items, opts)}
       end)
 
-      stub(MockEventStore, :append_to_streams, fn _meta, appends, _opts ->
+      stub(MockEventStore, :append_to_streams, fn appends, _opts ->
         send(test, {:appended, appends})
 
         versions = Map.new(appends, fn {stream, _version, events} -> {stream, length(events)} end)
@@ -302,7 +302,8 @@ defmodule Decree.Decision.RequiredTagsTest do
       command = deciding(Unindexed, read_nothing(), %Unopted{})
 
       assert :ok = MockedDecisionApp.dispatch(command)
-      assert_received {:appended, [{_stream, :any_version, [%EventData{} = data]}]}
+      # The store's event data: what the framework's mapping gave the store.
+      assert_received {:appended, [{_stream, :any_version, [%Decree.Store.EventData{} = data]}]}
       assert data.required_tag_kinds == Decree.Event.RequiredTags.always()
       assert data.required_tag_kinds == ["command", "command_kind"]
     end

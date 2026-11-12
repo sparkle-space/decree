@@ -1,9 +1,9 @@
 defmodule Decree.Store.Storage.AppendTagsTest do
   use Decree.Store.StorageCase
 
-  alias Decree.EventStore.Adapters.EventStore.Mapper
   alias Decree.Store.{AppendError, Config, EventData, EventFactory, LockSession}
-  alias Decree.Store.Storage.{Appender, CreateStream, Initializer, Schema}
+  alias Decree.Store.Storage.{Appender, Initializer, Schema}
+  alias Decree.Store.StoreRows
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
@@ -62,7 +62,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
     test "numbers an appender call's second batch from its own first event", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       events = EventFactory.create_recorded_events(1_001, "stream")
       tags = List.duplicate([], 1_000) ++ [["tag:last"]]
 
@@ -96,13 +96,10 @@ defmodule Decree.Store.Storage.AppendTagsTest do
       assert type_rows(context) == [[1, "typed"]]
     end
 
+    # The framework's mapping copies each field of its own event data onto the store's, the
+    # default `tags: []` included, so it builds this.
     test "is what the framework's mapper builds", context do
-      event_data =
-        Mapper.to_event_data(%Decree.EventStore.EventData{
-          event_type: "typed",
-          data: %{"key" => "value"},
-          metadata: %{}
-        })
+      event_data = %EventData{event_type: "typed", data: %{"key" => "value"}, metadata: %{}}
 
       assert %EventData{tags: []} = event_data
       assert :ok = EventStore.append_to_stream("stream", 0, [event_data])
@@ -123,7 +120,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
     test "is an appender call without the option", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       events = EventFactory.create_recorded_events(2, "stream")
 
       assert :ok = Appender.append(conn, stream_id, events, schema: schema)
@@ -333,7 +330,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
     test "through a direct appender call is refused by the table", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       events = EventFactory.create_recorded_events(1, "stream")
       tags = [[String.duplicate("a", 513)]]
 
@@ -464,7 +461,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
   test "a tag repeated on one event through a direct appender call reads as stale", context do
     %{conn: conn, schema: schema} = context
 
-    {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+    {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
     events = EventFactory.create_recorded_events(1, "stream")
 
     assert {:error, :wrong_expected_version} =
@@ -477,7 +474,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
     test "a stale one", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       stale = EventFactory.create_recorded_events(1, "stream", 1, 5)
 
       assert {:error, :wrong_expected_version} =
@@ -489,7 +486,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
     test "one that repeats an event id", context do
       %{conn: conn, schema: schema} = context
 
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
       [event] = EventFactory.create_recorded_events(1, "stream")
 
       :ok = Appender.append(conn, stream_id, [event], schema: schema)
@@ -590,7 +587,7 @@ defmodule Decree.Store.Storage.AppendTagsTest do
       init_schema(context, schema)
 
       conn = LockSession.connect(postgrex_config)
-      {:ok, stream_id} = CreateStream.execute(conn, "stream", schema: schema)
+      {:ok, stream_id} = StoreRows.insert_stream(conn, schema, "stream")
 
       for table <- ["event_tags", "event_types"] do
         Postgrex.query!(conn, ~s[CREATE TEMP TABLE #{table} (LIKE "#{schema}".#{table})], [])

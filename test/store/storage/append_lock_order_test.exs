@@ -1,7 +1,7 @@
 defmodule Decree.Store.Storage.AppendLockOrderTest do
   use Decree.Store.StorageCase
 
-  alias Decree.Store.{AppendResult, EventData, EventFactory, LockSession, UUID}
+  alias Decree.Store.{AppendResult, EventData, EventFactory, LockSession, StoreRows, UUID}
   alias Decree.Store.Storage.Appender
   alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
@@ -452,9 +452,7 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
   # A row of its own for a stream created while `$all` is held: no event, so no `$all`.
   defp create_stream_after_lock(context) do
     {:ok, stream_id} =
-      Decree.Store.Storage.CreateStream.execute(context.observer, "stream",
-        schema: context.schema
-      )
+      StoreRows.insert_stream(context.observer, context.schema, "stream")
 
     stream_id
   end

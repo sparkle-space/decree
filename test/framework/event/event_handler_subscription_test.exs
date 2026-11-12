@@ -33,8 +33,10 @@ defmodule Decree.Event.EventHandlerSubscriptionTest do
       reply_to = self()
 
       # First and second subscription attempts fail
-      expect(MockEventStore, :subscribe_to, 2, fn
-        _event_store_meta, :all, "ExampleHandler", handler, :origin, _opts ->
+      expect(MockEventStore, :subscribe_to_all_streams, 2, fn
+        "ExampleHandler", handler, opts ->
+          assert Keyword.fetch!(opts, :start_from) == :origin
+
           send(reply_to, {:subscribe_to, handler})
 
           {:error, :subscription_already_exists}
@@ -86,8 +88,10 @@ defmodule Decree.Event.EventHandlerSubscriptionTest do
   defp expect_subscribe_to(subscription) do
     reply_to = self()
 
-    expect(MockEventStore, :subscribe_to, fn
-      _event_store_meta, :all, "ExampleHandler", handler, :origin, _opts ->
+    expect(MockEventStore, :subscribe_to_all_streams, fn
+      "ExampleHandler", handler, opts ->
+        assert Keyword.fetch!(opts, :start_from) == :origin
+
         send(handler, {:subscribed, subscription})
         send(reply_to, {:subscribed, subscription})
 

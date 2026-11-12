@@ -83,7 +83,7 @@ defmodule Decree.Decision.RuleDeclaredStreamTest do
   end
 
   describe "a route with no rule" do
-    test "on a store with no declaration reaches the adapter as it always has" do
+    test "on a store with no declaration reaches the store as it always has" do
       start_supervised!(PlainApp)
 
       user = UUID.uuid4()

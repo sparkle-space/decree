@@ -85,7 +85,7 @@ defmodule Decree.Application.Supervisor do
 
         children =
           event_store_child_spec ++
-            conditional_targets_child_spec(application, config) ++
+            conditional_targets_child_spec(application, name) ++
             pubsub_child_spec ++
             registry_child_spec ++
             app_child_spec(name, config)
@@ -103,20 +103,17 @@ defmodule Decree.Application.Supervisor do
   # too, read from the routes and the definitions here at start: the router names no aggregate's
   # definition. An application with neither gets no such child, and asks its store nothing. See
   # "Two declarations" in `Decree.Decision.Rule` and "Command window" in `Decree.Aggregate`.
-  defp conditional_targets_child_spec(application, config) do
+  defp conditional_targets_child_spec(application, name) do
     case {application.__conditional_targets__(), windowed_routes(application)} do
       {[], []} ->
         []
 
       {routed, windowed} ->
-        event_store = Keyword.fetch!(config, :event_store)
-
         [
           %{
             id: {__MODULE__, :conditional_targets},
             start:
-              {__MODULE__, :check_conditional_targets,
-               [application, routed, windowed, event_store]},
+              {__MODULE__, :check_conditional_targets, [application, routed, windowed, name]},
             restart: :temporary
           }
         ]
@@ -136,10 +133,10 @@ defmodule Decree.Application.Supervisor do
   # Raises at start for a rule route's aggregate or a windowed aggregate the running store does
   # not declare, and for a windowed route whose identity gives no stream tag, and otherwise
   # starts nothing.
-  def check_conditional_targets(application, routed, windowed, {adapter, adapter_meta}) do
+  def check_conditional_targets(application, routed, windowed, name) do
     Enum.each(windowed, &check_window_identity!(application, &1))
 
-    declared = adapter.conditional_targets(adapter_meta)
+    declared = Decree.EventStore.conditional_targets(name)
 
     with [aggregate | _] <- routed -- declared do
       raise ArgumentError,
@@ -239,15 +236,68 @@ defmodule Decree.Application.Supervisor do
 
   defp warn_declared_snapshots(_name, _snapshotting), do: :ok
 
+  # The application's `Decree.Store` module, started as its child under the config's `name:`,
+  # by default the module's own. `Decree.EventStore` calls it with that name.
   defp event_store_child_spec(name, config) do
-    {adapter, adapter_config} =
-      Decree.EventStore.adapter(name, Keyword.get(config, :event_store))
+    store_config = event_store_config!(name, Keyword.get(config, :event_store))
 
-    {:ok, child_spec, adapter_meta} = adapter.child_spec(name, adapter_config)
+    {event_store, store_config} = Keyword.pop(store_config, :event_store)
 
-    config = Keyword.put(config, :event_store, {adapter, adapter_meta})
+    verify_event_store!(name, event_store)
 
-    {child_spec, config}
+    store_name = Keyword.get(store_config, :name, event_store)
+
+    # Rename `prefix` config to `schema`
+    store_config =
+      case Keyword.pop(store_config, :prefix) do
+        {nil, store_config} -> store_config
+        {prefix, store_config} -> Keyword.put(store_config, :schema, prefix)
+      end
+
+    config = Keyword.put(config, :event_store, %{event_store: event_store, name: store_name})
+
+    {[{event_store, store_config}], config}
+  end
+
+  defp event_store_config!(application, nil) do
+    raise ArgumentError, "missing :event_store config for application " <> inspect(application)
+  end
+
+  defp event_store_config!(application, config) do
+    if Keyword.has_key?(config, :adapter) do
+      raise ArgumentError,
+            "the :adapter option in the :event_store config of application " <>
+              inspect(application) <>
+              " is no longer supported: the event store adapter layer was removed. " <>
+              "Name the Decree.Store module in :event_store instead, " <>
+              "e.g. `event_store: [event_store: MyApp.EventStore]`"
+    end
+
+    config
+  end
+
+  defp verify_event_store!(application, event_store) do
+    unless event_store do
+      raise ArgumentError,
+            "missing :event_store option in the :event_store config of application " <>
+              inspect(application)
+    end
+
+    unless Code.ensure_loaded?(event_store) and implements?(event_store, Decree.Store) do
+      raise ArgumentError,
+            "module " <>
+              inspect(event_store) <>
+              " is not a Decree.Store, " <>
+              "ensure you pass an event store module to the :event_store config in application " <>
+              inspect(application)
+    end
+  end
+
+  # Returns `true` if module implements behaviour.
+  defp implements?(module, behaviour) do
+    behaviours = Keyword.take(module.__info__(:attributes), [:behaviour])
+
+    [behaviour] in Keyword.values(behaviours)
   end
 
   defp pubsub_child_spec(name, config) do

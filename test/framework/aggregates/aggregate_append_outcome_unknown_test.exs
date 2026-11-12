@@ -1,7 +1,7 @@
 defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
   use Decree.PostgresCase
 
-  alias Decree.Aggregates.{Aggregate, LostAppendAdapter, LostAppendAggregate, LostAppendApp}
+  alias Decree.Aggregates.{Aggregate, LostAppendStore, LostAppendAggregate, LostAppendApp}
   alias Decree.Aggregates.LostAppendAggregate.{Close, Open}
   alias Decree.Store.AppendError
   alias Decree.{Registration, UUID}
@@ -12,7 +12,7 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
     start_supervised!(LostAppendApp)
 
     uuid = UUID.uuid4()
-    on_exit(fn -> LostAppendAdapter.unflag(uuid) end)
+    on_exit(fn -> LostAppendStore.unflag(uuid) end)
 
     %{uuid: uuid}
   end
@@ -25,7 +25,7 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
     pid = open_aggregate(uuid)
     ref = Process.monitor(pid)
 
-    LostAppendAdapter.flag(uuid, :unavailable)
+    LostAppendStore.flag(uuid, :unavailable)
 
     assert {:error, %AppendError{class: :unavailable}} =
              LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid})
@@ -46,7 +46,7 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
   test "a command queued behind an `:unavailable` append is retried on a fresh aggregate",
        %{uuid: uuid} do
     pid = open_aggregate(uuid)
-    LostAppendAdapter.flag(uuid, :unavailable)
+    LostAppendStore.flag(uuid, :unavailable)
 
     {open, close} = queue_behind_lost_append(pid, uuid, [])
 
@@ -61,7 +61,7 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
   # failure middleware, as an exhausted `:wrong_expected_version` retry does.
   test "a queued command with no retry left answers `:too_many_attempts`", %{uuid: uuid} do
     pid = open_aggregate(uuid)
-    LostAppendAdapter.flag(uuid, :unavailable)
+    LostAppendStore.flag(uuid, :unavailable)
 
     {open, close} = queue_behind_lost_append(pid, uuid, retry_attempts: 0)
 
@@ -75,7 +75,7 @@ defmodule Decree.Aggregates.AggregateAppendOutcomeUnknownTest do
     test "a `#{class}` append error keeps the aggregate running", %{uuid: uuid} do
       pid = open_aggregate(uuid)
 
-      LostAppendAdapter.flag(uuid, unquote(class))
+      LostAppendStore.flag(uuid, unquote(class))
 
       assert {:error, %AppendError{class: unquote(class)}} =
                LostAppendApp.dispatch(%Open{command_id: UUID.uuid4(), uuid: uuid})

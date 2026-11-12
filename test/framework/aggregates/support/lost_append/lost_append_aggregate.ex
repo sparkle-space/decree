@@ -58,17 +58,15 @@ defmodule Decree.Aggregates.LostAppendApp do
   @moduledoc false
   use Decree.Application,
     otp_app: :decree,
-    event_store: [
-      adapter: Decree.Aggregates.LostAppendAdapter,
-      event_store: Decree.FrameworkEventStore
-    ],
+    event_store:
+      Decree.FrameworkStorage.event_store_config(event_store: Decree.Aggregates.LostAppendStore),
     pubsub: :local,
     registry: :local
 
   router(Decree.Aggregates.LostAppendRouter)
 
   # Its own event store process name, as `Decree.FrameworkStorage.name_event_store/1`
-  # gives the applications on the unwrapped adapter.
+  # gives the other applications.
   def init(config) do
     instance = Keyword.get(config, :name) || Keyword.fetch!(config, :application)
 

@@ -3,7 +3,8 @@ defmodule Decree.Store.Subscriptions.StreamSubscriptionTestCase do
 
   define_tests do
     alias Decree.Store.{EventFactory, ProcessHelper, RecordedEvent, SubscriptionHelpers}
-    alias Decree.Store.Storage.{Appender, CreateStream}
+    alias Decree.Store.Storage.Appender
+    alias Decree.Store.StoreRows
     alias Decree.Store.Subscriptions.SubscriptionFsm
     alias Decree.Store.Wait
 

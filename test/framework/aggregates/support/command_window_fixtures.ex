@@ -196,7 +196,7 @@ defmodule Decree.CommandWindowFixtures.Stores do
 
   def store(targets \\ [Account, PlainAccount]) do
     Decree.FrameworkStorage.event_store_config(
-      adapter: Decree.RuleFixtures.RecordingAdapter,
+      event_store: Decree.RuleFixtures.RecordingStore,
       conditional_appends: [targets: targets]
     )
   end

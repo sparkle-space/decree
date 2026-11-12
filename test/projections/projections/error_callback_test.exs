@@ -5,7 +5,7 @@ defmodule Decree.Projections.ErrorCallbackTest do
   import ExUnit.CaptureLog
   import Mox
 
-  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.Mock, as: MockEventStore
   alias Decree.EventStore.RecordedEvent
   alias Decree.Helpers.Wait
 
@@ -24,7 +24,11 @@ defmodule Decree.Projections.ErrorCallbackTest do
   setup [:set_mox_global, :stub_event_store, :verify_on_exit!]
 
   setup do
-    start_supervised!({TestApplication, event_store: [adapter: MockEventStore]})
+    start_supervised!(
+      {TestApplication,
+       event_store: Decree.FrameworkStorage.event_store_config(event_store: MockEventStore)}
+    )
+
     Ecto.Adapters.SQL.Sandbox.checkout(Repo)
   end
 
@@ -154,15 +158,12 @@ defmodule Decree.Projections.ErrorCallbackTest do
   end
 
   defp stub_event_store(_context) do
-    stub(MockEventStore, :ack_event, fn _adapter_meta, _pid, _event -> :ok end)
+    stub(MockEventStore, :ack, fn _pid, _event_number -> :ok end)
 
-    stub(MockEventStore, :child_spec, fn _application, _config ->
-      {:ok, [], %{}}
-    end)
+    Decree.MockEventStoreCase.stub_no_store_process()
 
-    stub(MockEventStore, :subscribe_to, fn
-      _event_store, :all, _handler_name, _handler, _subscribe_from, _opts ->
-        {:ok, self()}
+    stub(MockEventStore, :subscribe_to_all_streams, fn _handler_name, _handler, _opts ->
+      {:ok, self()}
     end)
 
     :ok

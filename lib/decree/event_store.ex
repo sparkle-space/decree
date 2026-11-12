@@ -1,6 +1,9 @@
 defmodule Decree.EventStore do
   @moduledoc """
-  Use the event store configured for a Decree application.
+  Use the event store configured for a Decree application: the `Decree.Store` module named by
+  `event_store: [event_store: MyApp.EventStore]` in its config, called with the store process's
+  `name:`. The framework's `Decree.EventStore.EventData`, `RecordedEvent` and `SnapshotData` are
+  mapped to the store's structs and back here.
 
   ### Telemetry Events
 
@@ -9,7 +12,6 @@ defmodule Decree.EventStore do
   `[:decree, :event_store, event]` with their spannable postfixes (`start`, `stop`, `exception`)
 
     * ack_event/3
-    * adapter/2
     * append_to_stream/4
     * append_to_streams/3
     * delete_snapshot/2
@@ -33,13 +35,36 @@ defmodule Decree.EventStore do
   """
   alias Decree.Application
   alias Decree.Event.Upcast
+  alias Decree.EventStore.{EventData, RecordedEvent, SnapshotData}
+  alias Decree.Store.Config, as: StoreConfig
   alias Decree.Store.ReadResult
 
   @type application :: Application.t()
   @type config :: Keyword.t()
+  @type stream_uuid :: String.t()
+  @type start_from :: :origin | :current | integer
+  @type expected_version :: :any_version | :no_stream | :stream_exists | non_neg_integer
+  @type subscription_name :: String.t()
+  @type subscription :: any
+  @type subscriber :: pid
+  @type source_uuid :: String.t()
+  @type error :: term
+
+  @all_stream "$all"
 
   @doc """
   Append one or more events to a stream atomically.
+
+  The store's answers come back unchanged (see `c:Decree.Store.append_to_stream/4`).
+  `{:error, :wrong_expected_version}` makes an aggregate rebuild its state and retry the
+  command while it has attempts left. A failure of the append statement other than its domain
+  answers is `{:error, %Decree.Store.AppendError{}}`, classified `:unavailable`, `:retryable`
+  or `:rejected`, and the aggregate returns it as the command's error. After an
+  `:unavailable` one the aggregate stops, so the next command rebuilds its state from the
+  stream (see `Decree.Store.AppendError`).
+
+  With `returning: :append_result` in `opts`, success answers
+  `{:ok, %Decree.Store.AppendResult{}}` instead of `:ok`.
   """
   def append_to_stream(application, stream_uuid, expected_version, events, opts \\ []) do
     meta = %{
@@ -49,7 +74,7 @@ defmodule Decree.EventStore do
     }
 
     span(:append_to_stream, meta, fn ->
-      adapter_append(application, stream_uuid, expected_version, events, opts)
+      store_append(application, stream_uuid, expected_version, events, opts)
     end)
   end
 
@@ -63,38 +88,38 @@ defmodule Decree.EventStore do
   # No `span/3`: a span's exception event holds the raised term and its stacktrace, and a
   # stacktrace's first frame can hold a call's arguments.
   def append_without_span(application, stream_uuid, expected_version, events) do
-    adapter_append(application, stream_uuid, expected_version, events, [])
+    store_append(application, stream_uuid, expected_version, events, [])
   end
 
-  defp adapter_append(application, stream_uuid, expected_version, events, opts) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+  defp store_append(application, stream_uuid, expected_version, events, opts) do
+    {event_store, name} = store(application)
 
-    if function_exported?(adapter, :append_to_stream, 5) do
-      adapter.append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts)
-    else
-      adapter.append_to_stream(
-        adapter_meta,
-        stream_uuid,
-        expected_version,
-        events
-      )
-    end
+    events = Enum.map(events, &to_event_data/1)
+
+    event_store.append_to_stream(stream_uuid, expected_version, events, with_name(opts, name))
   end
 
   @doc """
   Append events to several streams atomically, in one statement.
 
-  `appends` is a list of `{stream_uuid, expected_version, events}`.
-  See `c:Decree.Store.append_to_streams/2` for the options and answers.
+  `appends` is a list of `{stream_uuid, expected_version, events}`, one per stream. The
+  options and answers are those of `c:Decree.Store.append_to_streams/2`: with `condition:` an
+  event past its `after` matching its `items` answers `{:error, :append_condition_failed}`, and
+  with `returning: :append_result` success answers `{:ok, %Decree.Store.AppendResult{}}`.
   """
   def append_to_streams(application, appends, opts \\ []) do
     # Names the streams only: every telemetry handler sees this, and the events are plaintext.
     meta = %{application: application, stream_uuids: Enum.map(appends, &elem(&1, 0))}
 
     span(:append_to_streams, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, name} = store(application)
 
-      adapter.append_to_streams(adapter_meta, appends, opts)
+      appends =
+        Enum.map(appends, fn {stream_uuid, expected_version, events} ->
+          {stream_uuid, expected_version, Enum.map(events, &to_event_data/1)}
+        end)
+
+      event_store.append_to_streams(appends, with_name(opts, name))
     end)
   end
 
@@ -106,7 +131,7 @@ defmodule Decree.EventStore do
   events are `Decree.EventStore.RecordedEvent`s.
 
   Its span covers the store's answer, and the upcast runs after it stops. A raise, an exit or
-  a throw from either, the store's deserializing and the adapter's mapping included, reaches
+  a throw from either, the store's deserializing and the mapping included, reaches
   the caller as it was raised, and no telemetry event holds it. The span never fires its
   exception event. A failure inside it stops it with `error` in the stop metadata, the kind
   alone: `:error`, `:exit` or `:throw`. A read that answered stops with no `error`.
@@ -116,9 +141,12 @@ defmodule Decree.EventStore do
 
     read =
       contained_span(:read_query, meta, fn ->
-        {adapter, adapter_meta} = Application.event_store_adapter(application)
+        {event_store, name} = store(application)
 
-        adapter.read_query(adapter_meta, items, opts)
+        with {:ok, %ReadResult{events: events} = result} <-
+               event_store.read_query(items, with_name(opts, name)) do
+          {:ok, %ReadResult{result | events: Enum.map(events, &from_recorded_event/1)}}
+        end
       end)
 
     # Not in the span: an upcaster's failure can hold the stored event it failed on, and it
@@ -133,15 +161,16 @@ defmodule Decree.EventStore do
   @doc """
   Reads the tags of the events at the given `$all` positions, in one statement.
 
-  See `c:Decree.Store.read_tags/2` for the answers.
+  Answers as `c:Decree.Store.read_tags/2` does: a position with no row is absent, and so are
+  tags of a kind the store declares deletable and every tag of an event of a type it declares.
   """
   def read_tags(application, positions, opts \\ []) do
     meta = %{application: application, positions: positions}
 
     span(:read_tags, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, name} = store(application)
 
-      adapter.read_tags(adapter_meta, positions, opts)
+      event_store.read_tags(positions, with_name(opts, name))
     end)
   end
 
@@ -157,19 +186,18 @@ defmodule Decree.EventStore do
     }
 
     span(:stream_forward, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, name} = store(application)
 
-      case adapter.stream_forward(
-             adapter_meta,
-             stream_uuid,
-             start_version,
-             read_batch_size
-           ) do
+      opts = [name: name, read_batch_size: read_batch_size]
+
+      case event_store.stream_forward(stream_uuid, start_version, opts) do
         {:error, _error} = error ->
           error
 
         stream ->
-          Upcast.upcast_event_stream(stream, additional_metadata: %{application: application})
+          stream
+          |> Stream.map(&from_recorded_event/1)
+          |> Upcast.upcast_event_stream(additional_metadata: %{application: application})
       end
     end)
   end
@@ -186,10 +214,20 @@ defmodule Decree.EventStore do
   # No `span/3`: a span's exception event holds the raised term, and `Jason.DecodeError` holds
   # the row it failed on.
   def read_stream_head(application, stream_uuid) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {event_store, name} = store(application)
 
-    with {:ok, event} <- adapter.read_stream_head(adapter_meta, stream_uuid) do
-      {:ok, Upcast.upcast_event(event, additional_metadata: %{application: application})}
+    case event_store.read_stream_backward(stream_uuid, -1, 1, name: name) do
+      {:ok, [event]} ->
+        event = from_recorded_event(event)
+
+        {:ok, Upcast.upcast_event(event, additional_metadata: %{application: application})}
+
+      # The store reads the stream's row, then its events: a hard delete can land between them.
+      {:ok, []} ->
+        {:error, :stream_not_found}
+
+      {:error, _error} = error ->
+        error
     end
   end
 
@@ -200,9 +238,36 @@ defmodule Decree.EventStore do
   a stream there.
   """
   def deletable_stream_prefixes(application) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {_event_store, name} = store(application)
 
-    adapter.deletable_stream_prefixes(adapter_meta)
+    # `delete_stream/4` refuses a hard delete without this setting, so what a store declares
+    # could never be deleted. The config's parse makes it a boolean.
+    if StoreConfig.lookup(name, :enable_hard_deletes) do
+      case StoreConfig.lookup(name, :deletable) do
+        nil -> []
+        deletable -> Keyword.get(deletable, :stream_prefixes, [])
+      end
+    else
+      []
+    end
+  end
+
+  @doc """
+  The targets the application's running event store's `conditional_appends` declares, or `[]`
+  if it declares none.
+
+  It answers from the config the store parsed as it started, so it agrees with what the store
+  refuses. An application with a rule route or a windowed aggregate calls this as it starts,
+  right after its store has, and an application with neither never calls it. See "Two
+  declarations" in `Decree.Decision.Rule`.
+  """
+  def conditional_targets(application) do
+    {_event_store, name} = store(application)
+
+    case StoreConfig.lookup(name, :conditional_appends) do
+      nil -> []
+      conditional_appends -> Keyword.get(conditional_appends, :targets, [])
+    end
   end
 
   @doc """
@@ -215,9 +280,9 @@ defmodule Decree.EventStore do
   """
   def subscribe(application, stream_uuid) do
     span(:subscribe, %{application: application, stream_uuid: stream_uuid}, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, name} = store(application)
 
-      adapter.subscribe(adapter_meta, stream_uuid)
+      event_store.subscribe(stream(stream_uuid), name: name, mapper: &from_recorded_event/1)
     end)
   end
 
@@ -272,40 +337,34 @@ defmodule Decree.EventStore do
     }
 
     span(:subscribe_to, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, name} = store(application)
 
-      if function_exported?(adapter, :subscribe_to, 6) do
-        adapter.subscribe_to(
-          adapter_meta,
-          stream_uuid,
-          subscription_name,
-          subscriber,
-          start_from,
-          opts
-        )
-      else
-        adapter.subscribe_to(
-          adapter_meta,
-          stream_uuid,
-          subscription_name,
-          subscriber,
-          start_from
-        )
+      opts = subscription_options(name, start_from, opts)
+
+      case stream_uuid do
+        :all ->
+          event_store.subscribe_to_all_streams(subscription_name, subscriber, opts)
+
+        stream_uuid ->
+          event_store.subscribe_to_stream(stream_uuid, subscription_name, subscriber, opts)
       end
     end)
   end
 
   @doc """
   Acknowledge receipt and successful processing of the given event received from
-  a subscription to an event stream.
+  a subscription to an event stream. If the event is part of a batch, every event that
+  precedes it in the batch is acknowledged as well.
   """
-  def ack_event(application, subscription, event) do
+  def ack_event(application, subscription, %RecordedEvent{} = event) do
     meta = %{application: application, subscription: subscription, event: event}
 
     span(:ack_event, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, _name} = store(application)
 
-      adapter.ack_event(adapter_meta, subscription, event)
+      %RecordedEvent{event_number: event_number} = event
+
+      event_store.ack(subscription, event_number)
     end)
   end
 
@@ -321,9 +380,7 @@ defmodule Decree.EventStore do
   """
   def unsubscribe(application, subscription) do
     span(:unsubscribe, %{application: application, subscription: subscription}, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
-
-      adapter.unsubscribe(adapter_meta, subscription)
+      Decree.Store.Subscriptions.Subscription.unsubscribe(subscription)
     end)
   end
 
@@ -339,9 +396,9 @@ defmodule Decree.EventStore do
     meta = %{application: application, subscribe_to: subscribe_to, handler_name: handler_name}
 
     span(:delete_subscription, meta, fn ->
-      {adapter, adapter_meta} = Application.event_store_adapter(application)
+      {event_store, name} = store(application)
 
-      adapter.delete_subscription(adapter_meta, subscribe_to, handler_name)
+      event_store.delete_subscription(stream(subscribe_to), handler_name, name: name)
     end)
   end
 
@@ -352,10 +409,12 @@ defmodule Decree.EventStore do
   table, never a versioned row. `read_snapshot/3` reads a snapshot version's row.
   """
   def read_snapshot(application, source_uuid) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {event_store, name} = store(application)
 
     span(:read_snapshot, %{application: application, source_uuid: source_uuid}, fn ->
-      adapter.read_snapshot(adapter_meta, source_uuid)
+      with {:ok, snapshot} <- event_store.read_snapshot(source_uuid, name: name) do
+        {:ok, from_snapshot_data(snapshot)}
+      end
     end)
   end
 
@@ -366,7 +425,7 @@ defmodule Decree.EventStore do
   overwrites this one's. A nil `snapshot_version` reads the store's legacy one-row table.
   """
   def read_snapshot(application, source_uuid, snapshot_version) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {event_store, name} = store(application)
 
     meta = %{
       application: application,
@@ -375,7 +434,11 @@ defmodule Decree.EventStore do
     }
 
     span(:read_snapshot, meta, fn ->
-      adapter.read_snapshot(adapter_meta, source_uuid, snapshot_version)
+      opts = [name: name, snapshot_version: snapshot_version]
+
+      with {:ok, snapshot} <- event_store.read_snapshot(source_uuid, opts) do
+        {:ok, from_snapshot_data(snapshot)}
+      end
     end)
   end
 
@@ -383,10 +446,12 @@ defmodule Decree.EventStore do
   Record a snapshot of the data and metadata for a given source
   """
   def record_snapshot(application, snapshot) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {event_store, name} = store(application)
 
     span(:record_snapshot, %{application: application, snapshot: snapshot}, fn ->
-      adapter.record_snapshot(adapter_meta, snapshot)
+      snapshot
+      |> to_snapshot_data()
+      |> event_store.record_snapshot(name: name)
     end)
   end
 
@@ -394,10 +459,10 @@ defmodule Decree.EventStore do
   Delete a previously recorded snapshot for a given source, at every snapshot version.
   """
   def delete_snapshot(application, source_uuid) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {event_store, name} = store(application)
 
     span(:delete_snapshot, %{application: application, source_uuid: source_uuid}, fn ->
-      adapter.delete_snapshot(adapter_meta, source_uuid)
+      event_store.delete_snapshot(source_uuid, name: name)
     end)
   end
 
@@ -406,7 +471,7 @@ defmodule Decree.EventStore do
   See `Decree.Aggregate.prune_snapshots/2`.
   """
   def prune_snapshots(application, source_type, snapshot_version) do
-    {adapter, adapter_meta} = Application.event_store_adapter(application)
+    {event_store, name} = store(application)
 
     meta = %{
       application: application,
@@ -415,33 +480,130 @@ defmodule Decree.EventStore do
     }
 
     span(:prune_snapshots, meta, fn ->
-      adapter.prune_snapshots(adapter_meta, source_type, snapshot_version)
+      event_store.prune_snapshots(source_type, snapshot_version, name: name)
     end)
   end
 
-  @doc """
-  Get the configured event store adapter for the given application.
-  """
-  @spec adapter(application, config) :: {module, config}
-  def adapter(application, config)
+  # The application's `Decree.Store` module and the name its store process runs under.
+  defp store(application) do
+    %{event_store: event_store, name: name} = Application.event_store(application)
 
-  def adapter(application, nil) do
-    raise ArgumentError, "missing :event_store config for application " <> inspect(application)
+    {event_store, name}
   end
 
-  def adapter(application, config) do
-    {adapter, config} = Keyword.pop(config, :adapter)
+  defp with_name(opts, name), do: Keyword.put(opts, :name, name)
 
-    unless Code.ensure_loaded?(adapter) do
-      raise ArgumentError,
-            "event store adapter " <>
-              inspect(adapter) <>
-              " used by application " <>
-              inspect(application) <>
-              " was not compiled, ensure it is correct and it is included as a project dependency"
-    end
+  defp stream(:all), do: @all_stream
+  defp stream(stream_uuid), do: stream_uuid
 
-    {adapter, config}
+  defp subscription_options(name, start_from, opts) do
+    opts
+    |> Keyword.merge(name: name, start_from: start_from, mapper: &from_recorded_event/1)
+    |> Keyword.update(:partition_by, nil, fn
+      nil ->
+        nil
+
+      partition_by when is_function(partition_by, 1) ->
+        fn %Decree.Store.RecordedEvent{} = event ->
+          event |> from_recorded_event() |> partition_by.()
+        end
+    end)
+  end
+
+  # The mapping between the framework's structs and the store's.
+
+  defp to_event_data(%EventData{} = event_data) do
+    %EventData{
+      causation_id: causation_id,
+      correlation_id: correlation_id,
+      event_type: event_type,
+      data: data,
+      metadata: metadata,
+      tags: tags,
+      required_tag_kinds: required_tag_kinds
+    } = event_data
+
+    %Decree.Store.EventData{
+      causation_id: causation_id,
+      correlation_id: correlation_id,
+      event_type: event_type,
+      data: data,
+      metadata: metadata,
+      tags: tags,
+      required_tag_kinds: required_tag_kinds
+    }
+  end
+
+  defp from_recorded_event(%Decree.Store.RecordedEvent{} = event) do
+    %Decree.Store.RecordedEvent{
+      event_id: event_id,
+      event_number: event_number,
+      stream_uuid: stream_uuid,
+      stream_version: stream_version,
+      correlation_id: correlation_id,
+      causation_id: causation_id,
+      event_type: event_type,
+      data: data,
+      metadata: metadata,
+      created_at: created_at
+    } = event
+
+    %RecordedEvent{
+      event_id: event_id,
+      event_number: event_number,
+      stream_id: stream_uuid,
+      stream_version: stream_version,
+      correlation_id: correlation_id,
+      causation_id: causation_id,
+      event_type: event_type,
+      data: data,
+      metadata: metadata,
+      created_at: created_at
+    }
+  end
+
+  defp to_snapshot_data(%SnapshotData{} = snapshot) do
+    %SnapshotData{
+      source_uuid: source_uuid,
+      source_version: source_version,
+      source_type: source_type,
+      data: data,
+      metadata: metadata,
+      created_at: created_at,
+      snapshot_version: snapshot_version
+    } = snapshot
+
+    %Decree.Store.Snapshots.SnapshotData{
+      source_uuid: source_uuid,
+      source_version: source_version,
+      source_type: source_type,
+      data: data,
+      metadata: metadata,
+      created_at: created_at,
+      snapshot_version: snapshot_version
+    }
+  end
+
+  defp from_snapshot_data(%Decree.Store.Snapshots.SnapshotData{} = snapshot) do
+    %Decree.Store.Snapshots.SnapshotData{
+      source_uuid: source_uuid,
+      source_version: source_version,
+      source_type: source_type,
+      data: data,
+      metadata: metadata,
+      created_at: created_at,
+      snapshot_version: snapshot_version
+    } = snapshot
+
+    %SnapshotData{
+      source_uuid: source_uuid,
+      source_version: source_version,
+      source_type: source_type,
+      data: data,
+      metadata: metadata,
+      created_at: created_at,
+      snapshot_version: snapshot_version
+    }
   end
 
   # TODO convert to macro

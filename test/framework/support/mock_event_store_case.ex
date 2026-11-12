@@ -5,14 +5,14 @@ defmodule Decree.MockEventStoreCase do
 
   import Mox
 
-  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.Mock, as: MockEventStore
   alias Decree.MockedApp
 
   using do
     quote do
       import Mox
 
-      alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+      alias Decree.EventStore.Mock, as: MockEventStore
     end
   end
 
@@ -28,21 +28,101 @@ defmodule Decree.MockEventStoreCase do
   end
 
   def stub_event_store(_context) do
-    stub(MockEventStore, :ack_event, fn _event_store_meta, _subscription, _ack ->
+    stub_no_store_process()
+
+    stub(MockEventStore, :ack, fn _subscription, _event_number ->
       :ok
     end)
 
-    stub(MockEventStore, :child_spec, fn _application, _config ->
-      {:ok, [], %{}}
+    stub(MockEventStore, :subscribe_to_all_streams, fn
+      _handler_name, subscriber, _opts ->
+        send(subscriber, {:subscribed, self()})
+
+        {:ok, self()}
     end)
 
-    stub(MockEventStore, :subscribe_to, fn
-      _event_store_meta, _stream, _handler_name, subscriber, _subscribe_from, _opts ->
+    stub(MockEventStore, :subscribe_to_stream, fn
+      _stream, _handler_name, subscriber, _opts ->
         send(subscriber, {:subscribed, self()})
 
         {:ok, self()}
     end)
 
     :ok
+  end
+
+  @doc """
+  Has an application on the mock start no store process: the store's child answers
+  `:ignore`.
+  """
+  def stub_no_store_process do
+    stub(MockEventStore, :child_spec, fn config ->
+      %{id: MockEventStore, start: {MockEventStore, :start_link, [config]}}
+    end)
+
+    stub(MockEventStore, :start_link, fn _config -> :ignore end)
+
+    :ok
+  end
+
+  @doc """
+  Associates the mock as `application`'s event store, for a handler test that calls the handler
+  in the test process and runs no application, and stubs its `ack/2` to send the subscription
+  process `{:acked, event_number}`. The stub is the test process's own: it sets Mox's private
+  mode, since a global owner from an earlier test may not have been released yet.
+  """
+  def associate_acking_mock(application) do
+    set_mox_private()
+
+    Decree.Application.Config.associate(self(), application,
+      event_store: %{event_store: MockEventStore, name: application}
+    )
+
+    stub(MockEventStore, :ack, fn subscription_pid, event_number ->
+      send(subscription_pid, {:acked, event_number})
+
+      :ok
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Starts an instance of `Decree.MockedApp` for a test whose mock is in Mox's private mode, and
+  answers its name. Its application supervisor may call the mock, which starts no store
+  process; every expectation is the test's own.
+  """
+  def start_mocked_app! do
+    name = Module.concat(MockedApp, "Instance#{System.unique_integer([:positive])}")
+
+    allow(MockEventStore, self(), fn -> Process.whereis(name) end)
+    stub_no_store_process()
+
+    ExUnit.Callbacks.start_supervised!({MockedApp, name: name})
+
+    name
+  end
+
+  @doc """
+  Starts a stand-in for a store subscription process, which answers the unsubscribe call
+  `Decree.EventStore.unsubscribe/2` makes of it with `:ok`. A subscription the stubs above
+  hand out is its subscriber itself, which cannot call itself.
+  """
+  def start_stand_in_subscription! do
+    ExUnit.Callbacks.start_supervised!(__MODULE__.StandInSubscription)
+  end
+
+  defmodule StandInSubscription do
+    @moduledoc false
+
+    use GenServer
+
+    def start_link(_arg), do: GenServer.start_link(__MODULE__, nil)
+
+    @impl GenServer
+    def init(nil), do: {:ok, nil}
+
+    @impl GenServer
+    def handle_call({:unsubscribe, _subscriber}, _from, state), do: {:reply, :ok, state}
   end
 end

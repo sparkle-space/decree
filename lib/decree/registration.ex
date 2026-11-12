@@ -59,7 +59,10 @@ defmodule Decree.Registration do
         {Decree.Registration.LocalRegistry, []}
 
       :global ->
-        {Decree.Registration.GlobalRegistry, []}
+        raise ArgumentError,
+              "the :global registry of application " <>
+                inspect(application) <>
+                " was removed: use `registry: :local`, or name a custom registry module"
 
       adapter when is_atom(adapter) ->
         {adapter, []}

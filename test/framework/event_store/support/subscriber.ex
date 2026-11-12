@@ -1,13 +1,13 @@
 defmodule Decree.EventStore.Subscriber do
   use GenServer
 
+  alias Decree.EventStore
   alias Decree.EventStore.Subscriber
 
   defmodule State do
     defstruct [
       :subscription_opts,
-      :event_store,
-      :event_store_meta,
+      :application,
       :owner,
       :subscription,
       received_events: [],
@@ -17,10 +17,9 @@ defmodule Decree.EventStore.Subscriber do
 
   alias Subscriber.State
 
-  def start_link(event_store, event_store_meta, owner, subscription_opts \\ []) do
+  def start_link(application, owner, subscription_opts \\ []) do
     state = %State{
-      event_store: event_store,
-      event_store_meta: event_store_meta,
+      application: application,
       owner: owner,
       subscription_opts: subscription_opts
     }
@@ -30,13 +29,12 @@ defmodule Decree.EventStore.Subscriber do
 
   def init(%State{} = state) do
     %State{
-      event_store: event_store,
-      event_store_meta: event_store_meta,
+      application: application,
       owner: owner,
       subscription_opts: opts
     } = state
 
-    case event_store.subscribe_to(event_store_meta, :all, "subscriber", self(), :origin, opts) do
+    case EventStore.subscribe_to(application, :all, "subscriber", self(), :origin, opts) do
       {:ok, subscription} ->
         state = %State{state | subscription: subscription}
 
@@ -60,12 +58,11 @@ defmodule Decree.EventStore.Subscriber do
 
   def handle_call({:ack, events}, _from, %State{} = state) do
     %State{
-      event_store: event_store,
-      event_store_meta: event_store_meta,
+      application: application,
       subscription: subscription
     } = state
 
-    :ok = event_store.ack_event(event_store_meta, subscription, List.last(events))
+    :ok = EventStore.ack_event(application, subscription, List.last(events))
 
     {:reply, :ok, state}
   end

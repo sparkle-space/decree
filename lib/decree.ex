@@ -9,8 +9,8 @@ defmodule Decree do
   - Hosting and delegation to aggregates (`Decree.Aggregates.Aggregate`).
   - Event handling (`Decree.Event.Handler`).
 
-  Events persist in `Decree.Store`, the Postgres event store, through the
-  `Decree.EventStore.Adapters.EventStore` adapter.
+  Events persist in `Decree.Store`, the Postgres event store, which an application reaches
+  through `Decree.EventStore`.
   """
 
   use Application

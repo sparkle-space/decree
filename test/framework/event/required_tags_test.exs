@@ -6,8 +6,9 @@ defmodule Decree.Event.RequiredTagsTest do
   alias Decree.Event.{Append, RequiredTags, TagContext}
   alias Decree.Event.Tagging.Commands.Emit
   alias Decree.Event.Tagging.Events.{Reloaded, Unimplemented}
-  alias Decree.EventStore.Adapters.EventStore.Mapper
+  alias Decree.EventStore
   alias Decree.EventStore.EventData
+  alias Decree.EventStore.Mock, as: MockEventStore
   alias Decree.RequiredTagsFixtures.{Addressed, Digested, Forged, Malformed, Unlisted, Unopted}
 
   defmodule App do
@@ -94,8 +95,19 @@ defmodule Decree.Event.RequiredTagsTest do
     end
 
     test "the list reaches the store's event data" do
-      assert %Decree.Store.EventData{required_tag_kinds: ["a"]} =
-               Mapper.to_event_data(%EventData{data: %Unopted{}, required_tag_kinds: ["a"]})
+      application = Decree.MockEventStoreCase.start_mocked_app!()
+      test = self()
+
+      Mox.expect(MockEventStore, :append_to_stream, fn "stream-1", 0, [event_data], _opts ->
+        send(test, {:appended, event_data})
+
+        :ok
+      end)
+
+      event_data = %EventData{data: %Unopted{}, required_tag_kinds: ["a"]}
+
+      assert :ok = EventStore.append_to_stream(application, "stream-1", 0, [event_data])
+      assert_received {:appended, %Decree.Store.EventData{required_tag_kinds: ["a"]}}
     end
   end
 

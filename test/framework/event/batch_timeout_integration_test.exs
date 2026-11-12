@@ -7,14 +7,13 @@ defmodule Decree.Event.BatchTimeoutIntegrationTest do
 
   use Decree.PostgresCase, async: false
 
-  alias Decree.Application.Config
   alias Decree.Event.Handler
   alias Decree.EventStore.Subscription
   alias Decree.Helpers.EventFactory
 
   setup do
-    # Configure mock adapter once per test
-    Config.associate(self(), __MODULE__, event_store: {__MODULE__.MockAdapter, nil})
+    # The mocked store, acking, once per test
+    Decree.MockEventStoreCase.associate_acking_mock(__MODULE__)
     :ok
   end
 
@@ -305,16 +304,6 @@ defmodule Decree.Event.BatchTimeoutIntegrationTest do
   defp build_events(count) do
     for n <- 1..count do
       %CounterEvent{counter: n}
-    end
-  end
-
-  # Mock event store adapter for testing
-  defmodule MockAdapter do
-    @moduledoc false
-
-    def ack_event(nil, subscription_pid, event) do
-      send(subscription_pid, {:acked, event})
-      :ok
     end
   end
 end

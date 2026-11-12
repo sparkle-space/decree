@@ -579,7 +579,6 @@ defmodule Decree.DecisionFixtures.App do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [
         stream_prefixes: [
@@ -612,7 +611,6 @@ defmodule Decree.DecisionFixtures.DeletableApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [tag_kinds: ["secret"]]
@@ -632,7 +630,6 @@ defmodule Decree.DecisionFixtures.IndexDeletableApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexEnabled"]]
@@ -653,7 +650,6 @@ defmodule Decree.DecisionFixtures.DisableDeletableApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexDisabled"]]
@@ -674,7 +670,6 @@ defmodule Decree.DecisionFixtures.DeletableStreamsApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [
@@ -697,7 +692,6 @@ defmodule Decree.DecisionFixtures.HardDeletesApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: [
-      adapter: Decree.EventStore.Adapters.EventStore,
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["scripted-"]],
       enable_hard_deletes: true

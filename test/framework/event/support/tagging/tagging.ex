@@ -8,9 +8,9 @@ end
 defmodule Decree.Event.Tagging.Recorder do
   @moduledoc false
 
-  # What the aggregate process saw, by key. The tests start it, and an event store
-  # adapter, a `Decree.Event.Tags` implementation and a `before_execute` write to it from
-  # the aggregate process, where a test's own pid cannot be reached through metadata.
+  # What the aggregate process saw, by key. The tests start it, and an event store, a
+  # `Decree.Event.Tags` implementation and a `before_execute` write to it from the aggregate
+  # process, where a test's own pid cannot be reached through metadata.
 
   def start_link(_opts), do: Agent.start_link(fn -> %{} end, name: __MODULE__)
 
@@ -27,79 +27,23 @@ defmodule Decree.Event.Tagging.Recorder do
   def all(key), do: Agent.get(__MODULE__, &Map.get(&1, key, []))
 end
 
-defmodule Decree.Event.Tagging.Adapter do
+defmodule Decree.Event.Tagging.Store do
   @moduledoc false
 
-  # The Postgres event store adapter, recording each append it is given. A failed attempt
-  # leaves no row, so this is the only sight of what it carried.
+  # The Postgres event store, recording each append it is given, as the store's event data. A
+  # failed attempt leaves no row, so this is the only sight of what it carried.
 
-  @behaviour Decree.EventStore.Adapter
+  use Decree.DelegatingStore
 
   alias Decree.Event.Tagging.Recorder
-  alias Decree.EventStore.Adapters.EventStore, as: Adapter
+  alias Decree.FrameworkEventStore, as: Store
 
-  @impl Decree.EventStore.Adapter
-  def append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts \\ []) do
+  @impl Decree.Store
+  def append_to_stream(stream_uuid, expected_version, events, opts) do
     Recorder.record(:append, %{version: expected_version, events: events})
 
-    Adapter.append_to_stream(adapter_meta, stream_uuid, expected_version, events, opts)
+    Store.append_to_stream(stream_uuid, expected_version, events, opts)
   end
-
-  @impl Decree.EventStore.Adapter
-  defdelegate append_to_streams(adapter_meta, appends, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_query(adapter_meta, items, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_tags(adapter_meta, positions, opts), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate subscribe(adapter_meta, stream_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate child_spec(application, config), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate stream_forward(adapter_meta, stream_uuid, start_version, read_batch_size),
-    to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_stream_head(adapter_meta, stream_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate deletable_stream_prefixes(adapter_meta), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate conditional_targets(adapter_meta), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate subscribe_to(adapter_meta, stream, name, subscriber, start_from, opts),
-    to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate ack_event(adapter_meta, subscription, event), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate unsubscribe(adapter_meta, subscription), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate delete_subscription(adapter_meta, stream, name), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate read_snapshot(adapter_meta, source_uuid, snapshot_version), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate record_snapshot(adapter_meta, snapshot), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate delete_snapshot(adapter_meta, source_uuid), to: Adapter
-
-  @impl Decree.EventStore.Adapter
-  defdelegate prune_snapshots(adapter_meta, source_type, snapshot_version), to: Adapter
 end
 
 defmodule Decree.Event.Tagging.Events do
@@ -526,17 +470,15 @@ defmodule Decree.Event.Tagging.App do
   @moduledoc false
   use Decree.Application,
     otp_app: :decree,
-    event_store: [
-      adapter: Decree.Event.Tagging.Adapter,
-      event_store: Decree.FrameworkEventStore
-    ],
+    event_store:
+      Decree.FrameworkStorage.event_store_config(event_store: Decree.Event.Tagging.Store),
     pubsub: :local,
     registry: :local
 
   router(Decree.Event.Tagging.Router)
 
   # Its own event store process name, as `Decree.FrameworkStorage.name_event_store/1`
-  # gives the applications on the unwrapped adapter.
+  # gives the other applications.
   def init(config) do
     instance = Keyword.get(config, :name) || Keyword.fetch!(config, :application)
 

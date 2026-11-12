@@ -7,8 +7,9 @@ defmodule Decree.Event.AppendTest do
   alias Decree.Event.TagContext
   alias Decree.Event.Tagging.Commands.Emit
   alias Decree.Event.Tagging.Events.{Refused, Tagged, Unimplemented}
-  alias Decree.EventStore.Adapters.EventStore.Mapper
+  alias Decree.EventStore
   alias Decree.EventStore.EventData
+  alias Decree.EventStore.Mock, as: MockEventStore
   alias Decree.UUID
 
   defmodule Bare do
@@ -93,8 +94,19 @@ defmodule Decree.Event.AppendTest do
   end
 
   test "the stored tags reach the store's event data" do
-    assert %Decree.Store.EventData{tags: ["a:1"]} =
-             Mapper.to_event_data(%EventData{data: %Tagged{}, tags: ["a:1"]})
+    application = Decree.MockEventStoreCase.start_mocked_app!()
+    test = self()
+
+    Mox.expect(MockEventStore, :append_to_stream, fn "stream-1", 0, [event_data], _opts ->
+      send(test, {:appended, event_data})
+
+      :ok
+    end)
+
+    event_data = %EventData{data: %Tagged{}, tags: ["a:1"]}
+
+    assert :ok = EventStore.append_to_stream(application, "stream-1", 0, [event_data])
+    assert_received {:appended, %Decree.Store.EventData{tags: ["a:1"]}}
   end
 
   test "the first error stops and is returned as it stands" do

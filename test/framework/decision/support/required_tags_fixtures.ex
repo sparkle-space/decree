@@ -351,7 +351,7 @@ defmodule Decree.RequiredTagsFixtures.MockedDecisionApp do
   # The same decisions on a mocked store, to see what a store is asked for.
   use Decree.Application,
     otp_app: :decree,
-    event_store: [adapter: Decree.EventStore.Adapters.Mock],
+    event_store: Decree.FrameworkStorage.event_store_config(event_store: Decree.EventStore.Mock),
     pubsub: :local,
     registry: :local
 

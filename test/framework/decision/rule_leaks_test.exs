@@ -89,8 +89,9 @@ defmodule Decree.Decision.RuleLeaksTest do
     refute holds_marker?(events)
 
     # An exit or a throw took the aggregate with it, and there is nothing left to ask.
-    with pid when is_pid(pid) <- Registration.whereis_name(App, aggregate_name(command, stream)) do
-      refute holds_marker?(:sys.get_status(pid))
+    with pid when is_pid(pid) <- Registration.whereis_name(App, aggregate_name(command, stream)),
+         {:ok, status} <- status_of(pid) do
+      refute holds_marker?(status)
     end
 
     assert length(stored(stream, App)) == appended
@@ -359,5 +360,13 @@ defmodule Decree.Decision.RuleLeaksTest do
 
       assert App.dispatch(command) == {:error, {:refused, @marker}}
     end
+  end
+
+  # The process's status, or `:gone` when it stopped after the registry still named it: the
+  # registry drops a pid only once it has seen the process go. Any other exit fails the test.
+  defp status_of(pid) do
+    {:ok, :sys.get_status(pid)}
+  catch
+    :exit, {:noproc, _call} -> :gone
   end
 end

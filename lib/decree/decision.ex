@@ -383,7 +383,7 @@ defmodule Decree.Decision do
   ## Answers
 
   A raise from any callback, from a `Decree.Event.Tags` implementation, or from reading an
-  event the reads matched, in the store's deserializing, the adapter's mapping or an upcaster,
+  event the reads matched, in the store's deserializing, the mapping or an upcaster,
   is rescued, and the dispatch answers `{:error, error}`, as a raise from `execute/2` does. An
   error from a `Decree.Event.Tags` implementation is the answer as it stands. A matched event
   of a type this release does not know (one appended by a newer release) answers

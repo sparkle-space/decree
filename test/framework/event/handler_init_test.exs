@@ -5,7 +5,7 @@ defmodule Decree.Event.HandlerInitTest do
 
   alias Decree.DefaultApp
   alias Decree.Event.{EchoHandler, Handler, InitHandler, ReplyEvent, RuntimeConfigHandler}
-  alias Decree.EventStore.Adapters.Mock, as: MockEventStore
+  alias Decree.EventStore.Mock, as: MockEventStore
   alias Decree.Helpers.{EventFactory, Wait}
   alias Decree.Registration
   alias Decree.Store.Subscriptions.Subscription, as: StoreSubscription
@@ -78,8 +78,8 @@ defmodule Decree.Event.HandlerInitTest do
     setup do
       true = Process.register(self(), :test)
 
-      expect(MockEventStore, :subscribe_to, fn
-        _event_store, :all, handler_name, handler, _subscribe_from, _opts ->
+      expect(MockEventStore, :subscribe_to_all_streams, fn
+        handler_name, handler, _opts ->
           assert is_binary(handler_name)
 
           {:ok, handler}

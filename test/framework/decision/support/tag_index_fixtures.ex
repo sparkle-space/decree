@@ -148,8 +148,7 @@ defmodule Decree.TagIndexFixtures do
   # ledger aggregate that appends them, and the helpers the store-backed cases use. Decree ships
   # none of this: the events and the commands are an application's.
 
-  alias Decree.EventStore.RecordedEvent
-  alias Decree.Store.{ReadResult, TagIndex}
+  alias Decree.Store.{ReadResult, RecordedEvent, TagIndex}
   alias Decree.TagIndexFixtures.{DisableTagIndex, EnableTagIndex, Ledger, TagIndexEnabled}
   alias Decree.UUID
 
@@ -259,7 +258,7 @@ defmodule Decree.TagIndexFixtures do
   end
 
   @doc """
-  What a mocked store's `read_query/3` answers: every family enabled, each fact matching the
+  What a mocked store's `read_query/2` answers: every family enabled, each fact matching the
   index item, wherever `items` holds it, and the facts' tags when `opts`' `tag_items` names
   that item, as a store answers them.
   """

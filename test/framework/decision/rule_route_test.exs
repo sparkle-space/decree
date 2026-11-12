@@ -3,7 +3,6 @@ defmodule Decree.Decision.RuleRouteTest do
 
   import ExUnit.CaptureLog
 
-  alias Decree.EventStore.Adapters.EventStore, as: Adapter
   alias Decree.FrameworkStorage
 
   alias Decree.RuleFixtures.{
@@ -186,27 +185,23 @@ defmodule Decree.Decision.RuleRouteTest do
     end
   end
 
-  describe "the adapter's `conditional_targets/1`" do
+  describe "`Decree.EventStore.conditional_targets/1`" do
     test "reads the running store's `use` line" do
-      start_supervised!({DeclaringStore, name: :declaring_store})
+      event_store = FrameworkStorage.event_store_config(event_store: DeclaringStore)
 
-      meta = %{event_store: DeclaringStore, name: :declaring_store}
+      start_supervised!({PlainApp, name: :declaring_store, event_store: event_store})
 
-      assert Adapter.conditional_targets(meta) == [User]
+      assert EventStore.conditional_targets(:declaring_store) == [User]
     end
 
     test "reads what the application's config gave the running store" do
-      {_adapter, meta} = Decree.Application.event_store_adapter(App)
-
-      assert Enum.sort(Adapter.conditional_targets(meta)) == Enum.sort(Stores.targets())
+      assert Enum.sort(EventStore.conditional_targets(App)) == Enum.sort(Stores.targets())
     end
 
     test "answers `[]` for a running store that declares nothing" do
       start_supervised!(PlainApp)
 
-      {_adapter, meta} = Decree.Application.event_store_adapter(PlainApp)
-
-      assert Adapter.conditional_targets(meta) == []
+      assert EventStore.conditional_targets(PlainApp) == []
     end
   end
 
@@ -224,7 +219,7 @@ defmodule Decree.Decision.RuleRouteTest do
   test "a rule route under a declared prefix is refused while its target is not declared" do
     event_store =
       FrameworkStorage.event_store_config(
-        adapter: Decree.RuleFixtures.RecordingAdapter,
+        event_store: Decree.RuleFixtures.RecordingStore,
         conditional_appends: [stream_prefixes: ["decision-"]]
       )
 
@@ -241,7 +236,7 @@ defmodule Decree.Decision.RuleRouteTest do
   test "a rule route under a declared prefix appends once its target is declared" do
     event_store =
       FrameworkStorage.event_store_config(
-        adapter: Decree.RuleFixtures.RecordingAdapter,
+        event_store: Decree.RuleFixtures.RecordingStore,
         conditional_appends: [stream_prefixes: ["decision-"], targets: [User]]
       )
 
