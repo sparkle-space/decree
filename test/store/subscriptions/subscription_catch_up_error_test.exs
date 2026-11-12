@@ -358,6 +358,27 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     release(lock)
   end
 
+  test "each wait is drawn between half of and the whole capped backoff, never 0" do
+    for retry_interval <- [1, 2, 3, 200, 500, 1_000, 5_000, 60_000],
+        attempt <- 1..12 do
+      base = min(min(1_000, retry_interval) * Integer.pow(2, attempt - 1), retry_interval)
+      waits = for _sample <- 1..50, do: SubscriptionFsm.jittered_backoff(attempt, retry_interval)
+
+      for wait <- waits do
+        assert wait >= max(1, div(base, 2))
+        assert wait <= max(1, base)
+        assert wait <= retry_interval
+      end
+
+      # Only a one-millisecond backoff has a single wait; any other gives at least two,
+      # and 50 draws of two values are all equal about once in 2^49 runs.
+      if base > 1 do
+        assert length(Enum.uniq(waits)) > 1,
+               "every draw for attempt #{attempt} of #{retry_interval}ms was #{hd(waits)}ms"
+      end
+    end
+  end
+
   def handle_telemetry_event(@catch_up_error, _measurements, metadata, config) do
     %{test: test, subscription_name: subscription_name} = config
 

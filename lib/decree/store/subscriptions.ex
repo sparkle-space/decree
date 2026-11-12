@@ -82,11 +82,13 @@ defmodule Decree.Store.Subscriptions do
 
   A subscription waits this long before it retries subscribing after losing its
   advisory lock or finding it taken by another instance. It is also the cap of the
-  backoff before a subscription retries after any other failed subscribe attempt, or
-  a catch-up read that returned an error: the first wait is one second, doubling after
-  each further consecutive failure up to this interval. (Only a subscription's own
-  `retry_interval` option can be shorter than one second, which gives a flat wait of
-  that interval.)
+  backoff after any other failed subscribe attempt, or a catch-up read that returned an
+  error: the backoff is one second after the first failure, doubling after each
+  further consecutive one up to this interval. A failed subscribe attempt waits that
+  backoff as it is. A failed catch-up read waits a time drawn at random between half
+  of and the whole of it, never under one millisecond. (Only a subscription's own
+  `retry_interval` option can be shorter than one second, which caps the backoff at
+  that interval from the first failure.)
 
   The default value is one minute and the minimum allowed value is one second.
   """

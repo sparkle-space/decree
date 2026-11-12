@@ -744,11 +744,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   # Keep the cursor and the subscribers, and retry the catch-up read on a timer, never
   # with an immediate `:catch_up` cast, which bounds the read rate while the error
-  # persists. The wait is a capped exponential backoff over the consecutive failed
-  # reads: `min(1_000, retry_interval)` after the first, doubling after each further
-  # one, up to `retry_interval`. Each held read logs a warning and emits the
-  # `[:decree, :store, :subscription, :catch_up, :error]` telemetry event, with the
-  # wait it scheduled and the attempt number.
+  # persists. The wait is `jittered_backoff/2` over the consecutive failed reads: drawn
+  # between half of and the whole of a capped doubling backoff, so subscriptions held on
+  # the same error do not retry in step. It is drawn once per hold: the retry timer
+  # waits it, and the warning each held read logs and the
+  # `[:decree, :store, :subscription, :catch_up, :error]` telemetry event it emits both
+  # report it, with the attempt number.
   defp hold_catch_up(%SubscriptionState{} = data, reason) do
     %SubscriptionState{
       event_store: event_store,
@@ -759,7 +760,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     } = data
 
     attempt = catch_up_failures + 1
-    retry_interval = retry_backoff(attempt, max_retry_interval)
+    retry_interval = jittered_backoff(attempt, max_retry_interval)
 
     Logger.warning(
       describe(data) <>
@@ -792,11 +793,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     })
   end
 
-  # The wait before retrying after the `attempt`th consecutive failure of a catch-up read
-  # or a subscribe attempt. A `retry_interval` below one second gives a flat wait of
-  # `retry_interval`; only a subscription's own `retry_interval` option can be that
-  # short, since the event store's `subscription_retry_interval` is raised to at least
-  # one second.
+  # The capped doubling backoff after the `attempt`th consecutive failure:
+  # `min(1_000, retry_interval)` after the first, doubling after each further one, up to
+  # `retry_interval`. A failed subscribe attempt waits it as it is (`resubscribe_wait/1`);
+  # a failed catch-up read and a held subscription's probe wait `jittered_backoff/2`
+  # over it. A `retry_interval` below one second caps it at `retry_interval` from the
+  # first failure; only a subscription's own `retry_interval` option can be that short,
+  # since the event store's `subscription_retry_interval` is raised to at least one
+  # second.
   defp retry_backoff(attempt, retry_interval) do
     first = min(1_000, retry_interval)
 
@@ -974,17 +978,30 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   end
 
   @doc """
-  The wait before the next probe of a held subscription, after its `attempt`th alarm: an
-  equal jitter over the capped doubling of a failed catch-up read's backoff, so that
+  A wait drawn at random after the `attempt`th consecutive failure: an equal jitter over
+  the capped doubling backoff (`min(1_000, retry_interval)` after the first failure,
+  doubling after each further one, up to `retry_interval`), so that
   `max(1, div(base, 2)) <= wait <= max(1, base)`, where `base <= retry_interval` is that backoff.
-  It is never under one millisecond, so a held subscription never probes in a tight loop.
+  It is never under one millisecond, so nothing that waits it retries in a tight loop.
+
+  A failed catch-up read waits it before the next read, and a held subscription before
+  its next probe (`held_wait/2`).
   """
-  def held_wait(attempt, retry_interval) do
+  def jittered_backoff(attempt, retry_interval) do
     base = retry_backoff(attempt, retry_interval)
     half = div(base, 2)
 
     max(1, half + :rand.uniform(half + 1) - 1)
   end
+
+  @doc """
+  The wait before the next probe of a held subscription, after its `attempt`th alarm: the
+  same draw as a failed catch-up read's wait, `jittered_backoff/2`, so that
+  `max(1, div(base, 2)) <= wait <= max(1, base)`, where `base <= retry_interval` is the
+  capped doubling backoff. It is never under one millisecond, so a held subscription never
+  probes in a tight loop.
+  """
+  def held_wait(attempt, retry_interval), do: jittered_backoff(attempt, retry_interval)
 
   # The alarm of a held subscription: a warning naming the event's type and number, never
   # its data, and the `[:decree, :store, :subscription, :held]` telemetry event (documented
