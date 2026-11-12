@@ -1869,11 +1869,15 @@ defmodule Decree.Store do
 
   When a subscription's read of events from storage returns an error, such as a
   query timeout, the subscription holds: it keeps its position and its subscribers,
-  and retries the read with a capped exponential backoff. The first wait is one
-  second, doubling after each further consecutive failed read, up to the event
-  store's `subscription_retry_interval` (default one minute), or a subscription's own
-  `retry_interval` option. An interval shorter than one second gives a flat wait of
-  that interval; only the `retry_interval` option can set one, since the configured
+  and retries the read after a jittered, capped exponential backoff. The backoff is
+  one second after the first failed read, doubling after each further consecutive
+  one, up to the event store's `subscription_retry_interval` (default one minute), or
+  a subscription's own `retry_interval` option. Each wait is drawn at random between
+  half of and the whole of that backoff, and is never under one millisecond, so
+  subscriptions held on the same error do not retry in step: the first wait is
+  between half a second and a second. An interval shorter than one second caps the
+  backoff at that interval from the first read, and the wait is still drawn over it;
+  only the `retry_interval` option can set one, since the configured
   `subscription_retry_interval` is raised to at least one second. The next successful
   read resets the backoff, and so does losing the subscription's advisory lock.
 
@@ -1884,7 +1888,7 @@ defmodule Decree.Store do
   Each failed read logs a warning and emits the telemetry event
   `[:decree, :store, :subscription, :catch_up, :error]`, with the measurement
   `system_time` and the metadata `event_store`, `subscription_name`, `stream_uuid`,
-  `reason`, `retry_interval` (the wait scheduled before the next read) and
+  `reason`, `retry_interval` (the wait drawn and scheduled before the next read) and
   `attempt` (the number of consecutive failed reads). An event of a type the event
   store's serializer does not know is not a read error: see "Unknown event types"
   below. Any other event that fails to deserialize, such as a corrupt payload, raises in
@@ -1905,13 +1909,13 @@ defmodule Decree.Store do
   delivers nothing and holds no lock. A subscriber that never acknowledges an event
   before the unknown one keeps the subscription where it is.
 
-  While held, the subscription probes, without taking the lock, after a wait drawn at
-  random between half of and the whole of the backoff a failed catch-up read takes (one
-  second, doubling per probe, up to `subscription_retry_interval` or the subscription's
-  `retry_interval`). If its row has reached the held event, or is gone, another
-  instance has delivered it: the subscription waits for its lock as after losing it,
-  silently. If the event's type is known now, it takes its lock again and delivers the
-  event. Otherwise it stays held.
+  While held, the subscription probes, without taking the lock, after a wait drawn as a
+  failed catch-up read's is: at random between half of and the whole of a capped
+  doubling backoff (one second, doubling per probe, up to `subscription_retry_interval`
+  or the subscription's `retry_interval`). If its row has reached the held event, or
+  is gone, another instance has delivered it: the subscription waits for its lock as
+  after losing it, silently. If the event's type is known now, it takes its lock again
+  and delivers the event. Otherwise it stays held.
 
   Each hold, and each probe that leaves the subscription held, logs a warning naming the
   event's type and number (never its data) and emits the telemetry event
