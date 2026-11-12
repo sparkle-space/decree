@@ -3,8 +3,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
 
   # A catch-up read that returns `{:error, reason}` holds the subscription and retries
   # the read on a capped backoff timer, keeping its cursor and its subscribers, instead
-  # of crashing the subscription (sparkle-space/sparklespace#7307). A `retry_interval`
-  # below one second gives a flat wait of `retry_interval`, which the persistent,
+  # of crashing the subscription (sparkle-space/sparklespace#7307). Each wait is drawn
+  # at random between half of and the whole of a capped doubling backoff: one second
+  # after the first failed read, doubling up to `retry_interval`
+  # (sparkle-space/sparklespace#7867). A `retry_interval` below one second caps that
+  # backoff at `retry_interval` from the first read, which the persistent, jitter,
   # transient and mid-stream tests use; the backoff tests use a cap above one second.
   #
   # The read error is a real one: a second connection holds an ACCESS EXCLUSIVE lock on
@@ -57,8 +60,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     postgrex_config: postgrex_config,
     subscription_name: subscription_name
   } do
-    # A flat wait well above the read's own duration, so a retry that does not wait
-    # shows up as a gap far below it.
+    # A backoff of `retry_interval` from the first read, so every wait is at least half
+    # of it, well above the read's own duration: a retry that does not wait shows up as
+    # a gap far below it.
     retry_interval = 500
 
     lock = lock_stream_events(postgrex_config)
@@ -72,18 +76,50 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
                event_store: TestEventStore,
                subscription_name: ^subscription_name,
                stream_uuid: "$all",
-               retry_interval: ^retry_interval,
+               retry_interval: wait,
                attempt: ^attempt,
                reason: reason
              } = metadata
 
       assert is_binary(reason)
+      assert_jittered(wait, retry_interval)
     end
 
     assert_waited(held_reads)
 
     assert Process.alive?(subscription)
     refute_received {:DOWN, ^ref, :process, ^subscription, _reason}
+
+    release(lock)
+  end
+
+  test "each held read draws its own wait, between half of and the whole backoff", %{
+    postgrex_config: postgrex_config,
+    subscription_name: subscription_name
+  } do
+    # The backoff is `retry_interval` from the first read, so a wait that is not
+    # jittered is the same for every read.
+    retry_interval = 500
+
+    lock = lock_stream_events(postgrex_config)
+
+    {subscription, ref} = subscribe(subscription_name, retry_interval: retry_interval)
+
+    held_reads = for _attempt <- 1..5, do: assert_held_read(subscription, ref)
+
+    waits = Enum.map(held_reads, & &1.retry_interval)
+
+    assert Enum.map(held_reads, & &1.attempt) == [1, 2, 3, 4, 5]
+
+    for wait <- waits, do: assert_jittered(wait, retry_interval)
+
+    # Five draws from 251 values are all equal about once in four billion runs.
+    assert length(Enum.uniq(waits)) > 1,
+           "every held read waited #{hd(waits)}ms: the wait is not jittered"
+
+    assert_waited(held_reads)
+
+    assert Process.alive?(subscription)
 
     release(lock)
   end
@@ -183,7 +219,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
       EventStore.subscribe_to_all_streams(subscription_name, subscriber1,
         concurrency_limit: 2,
         timeout: @query_timeout,
-        retry_interval: 2_000
+        retry_interval: 4_000
       )
 
     assert_receive {:subscribed, ^subscription, ^subscriber1}
@@ -191,10 +227,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     ref = Process.monitor(subscription)
 
     assert %{attempt: 1} = assert_held_read(subscription, ref)
-    assert %{attempt: 2, retry_interval: 2_000} = assert_held_read(subscription, ref)
+    assert %{attempt: 2, retry_interval: wait} = assert_held_read(subscription, ref)
+    assert_jittered(wait, 2_000)
+    assert %{attempt: 3, retry_interval: wait} = assert_held_read(subscription, ref)
+    assert_jittered(wait, 4_000)
 
-    # Release the lock but stay held: the next read is two seconds away, so the
-    # append and the second subscriber both reach the subscription while it waits.
+    # Release the lock but stay held: the next read is at least two seconds away, so
+    # the append and the second subscriber both reach the subscription while it waits.
     release(lock)
 
     :ok = EventStore.append_to_stream(UUID.uuid4(), 0, EventFactory.create_events(1))
@@ -234,7 +273,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     refute_received {:DOWN, ^ref, :process, ^subscription, _reason}
   end
 
-  test "the wait between held reads doubles from one second up to the retry interval", %{
+  test "the backoff between held reads doubles from one second up to the retry interval", %{
     postgrex_config: postgrex_config,
     subscription_name: subscription_name
   } do
@@ -242,10 +281,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
 
     {subscription, ref} = subscribe(subscription_name, retry_interval: 4_000)
 
-    # The 4th read comes about four seconds after the 3rd.
+    # The 4th read comes two to four seconds after the 3rd.
     held_reads = for _attempt <- 1..4, do: assert_held_read(subscription, ref, 10_000)
 
-    assert Enum.map(held_reads, & &1.retry_interval) == [1_000, 2_000, 4_000, 4_000]
+    for {%{retry_interval: wait}, base} <- Enum.zip(held_reads, [1_000, 2_000, 4_000, 4_000]),
+        do: assert_jittered(wait, base)
+
     assert Enum.map(held_reads, & &1.attempt) == [1, 2, 3, 4]
 
     assert_waited(held_reads)
@@ -263,7 +304,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
 
     {subscription, ref} = subscribe(subscription_name, retry_interval: 2_000)
 
-    assert %{attempt: 1, retry_interval: 1_000} = assert_held_read(subscription, ref)
+    assert %{attempt: 1, retry_interval: wait} = assert_held_read(subscription, ref)
+    assert_jittered(wait, 1_000)
 
     release(lock)
 
@@ -280,7 +322,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     # Ask the subscribed subscription to catch up, with the store's own cast.
     GenServer.cast(subscription, :catch_up)
 
-    assert %{attempt: 1, retry_interval: 1_000} = assert_held_read(subscription, ref)
+    assert %{attempt: 1, retry_interval: wait} = assert_held_read(subscription, ref)
+    assert_jittered(wait, 1_000)
 
     release(lock)
   end
@@ -294,7 +337,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     {subscription, ref} = subscribe(subscription_name, retry_interval: 4_000)
 
     assert %{attempt: 1} = assert_held_read(subscription, ref)
-    assert %{attempt: 2, retry_interval: 2_000} = assert_held_read(subscription, ref)
+    assert %{attempt: 2, retry_interval: wait} = assert_held_read(subscription, ref)
+    assert_jittered(wait, 2_000)
 
     %SubscriptionFsm{data: %SubscriptionState{lock_ref: lock_ref}} = fsm(subscription)
 
@@ -308,7 +352,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     # Resubscribe now, rather than after the retry interval.
     attempt_subscribe(subscription)
 
-    assert %{attempt: 1, retry_interval: 1_000} = assert_held_read(subscription, ref)
+    assert %{attempt: 1, retry_interval: wait} = assert_held_read(subscription, ref)
+    assert_jittered(wait, 1_000)
 
     release(lock)
   end
@@ -356,6 +401,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     end
   end
 
+  # The wait a held read reports is drawn between half of and the whole of the backoff
+  # for its attempt, `base`, and is never under one millisecond.
+  defp assert_jittered(wait, base) do
+    assert is_integer(wait)
+    assert wait >= max(1, div(base, 2)), "a #{wait}ms wait is under half of the #{base}ms backoff"
+    assert wait <= max(1, base), "a #{wait}ms wait is over the #{base}ms backoff"
+  end
+
   # Each held read comes at least the wait the one before it reported after it, and
   # not much later.
   defp assert_waited(held_reads) do
@@ -386,7 +439,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionCatchUpErrorTest do
     if Enum.all?(expected, &(&1 in received)) do
       Enum.reverse(deliveries)
     else
-      assert_receive {:events, events, subscriber}, 5_000
+      # The first batch can wait out a held read's four-second backoff.
+      assert_receive {:events, events, subscriber}, 10_000
 
       %RecordedEvent{event_number: last} = List.last(events)
       :ok = Subscription.ack(subscription, last, subscriber)
