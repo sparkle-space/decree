@@ -362,10 +362,43 @@ defmodule Decree.Decision.RuleLeaksTest do
     end
   end
 
+  # A process stands in for the aggregate, so each way the call can end is reached on purpose.
+  describe "status_of/1" do
+    test "reads a process that dies inside the call as gone" do
+      pid = spawn(fn -> receive do: ({:system, _from, _request} -> exit(:died_mid_call)) end)
+
+      assert status_of(pid) == :gone
+    end
+
+    test "fails the test when a process dies inside the call with the marker in its reason" do
+      pid = spawn(fn -> receive do: ({:system, _from, _request} -> exit({:died, @marker})) end)
+
+      assert_raise ExUnit.AssertionError, fn -> status_of(pid) end
+    end
+
+    test "still exits when a live process does not answer" do
+      pid =
+        spawn(fn -> receive do: ({:system, _from, _request} -> receive(do: (:never -> :ok))) end)
+
+      assert {:timeout, {:sys, :get_status, [^pid, 100]}} = catch_exit(status_of(pid, 100))
+      assert Process.alive?(pid)
+
+      Process.exit(pid, :kill)
+    end
+
+    test "reads a process gone before the call as gone" do
+      pid = spawn(fn -> :ok end)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+
+      assert status_of(pid) == :gone
+    end
+  end
+
   # The process's status, or `:gone` when it stopped after the registry still named it: the
   # registry drops a pid only once it has seen the process go. Any other exit fails the test.
-  defp status_of(pid) do
-    {:ok, :sys.get_status(pid)}
+  defp status_of(pid, timeout \\ 5_000) do
+    {:ok, :sys.get_status(pid, timeout)}
   catch
     :exit, {:noproc, _call} -> :gone
   end
