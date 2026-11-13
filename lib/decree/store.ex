@@ -485,13 +485,15 @@ defmodule Decree.Store do
   @type persistent_subscription_options :: [persistent_subscription_option]
   @type expected_version :: :any_version | :no_stream | :stream_exists | non_neg_integer
   @type start_from :: :origin | :current | non_neg_integer
+  @typedoc "A running subscription, as `c:local_subscriptions/1` describes it."
   @type subscription_info :: %{
           subscription_name: String.t(),
           stream_uuid: String.t(),
           subscription_id: pos_integer() | nil,
           pid: pid(),
           transient: boolean(),
-          status: :subscribed | :parked | :unsubscribed
+          status: :subscribed | :parked | :unsubscribed,
+          last_seen: non_neg_integer()
         }
 
   @doc false
@@ -754,8 +756,22 @@ defmodule Decree.Store do
             |> Keyword.put_new_lazy(:retry_interval, fn ->
               Keyword.fetch!(config, :subscription_retry_interval)
             end)
+            |> Keyword.put_new_lazy(:head_check_interval, fn ->
+              Keyword.fetch!(config, :subscription_head_check_interval)
+            end)
 
-          Subscriptions.subscribe_to_stream(subscriber, opts)
+          # The event store's setting is validated at start; a subscription's own option
+          # is checked here, before a subscription process starts.
+          max_head_check_interval = Subscriptions.max_head_check_interval()
+
+          case Keyword.fetch!(opts, :head_check_interval) do
+            interval
+            when is_integer(interval) and interval > 0 and interval <= max_head_check_interval ->
+              Subscriptions.subscribe_to_stream(subscriber, opts)
+
+            _invalid ->
+              {:error, :invalid_head_check_interval}
+          end
         end
       end
 
@@ -1894,6 +1910,40 @@ defmodule Decree.Store do
   below. Any other event that fails to deserialize, such as a corrupt payload, raises in
   the read and still stops the subscription.
 
+  ## Missed wake-ups
+
+  A subscription that has caught up waits for the store to wake it when events are
+  appended to its stream. A wake-up can be lost: the store's notifications connection
+  reconnects without replaying what it missed, the read of a notification's events
+  fails, or a notification is dropped by the connection. Left alone, the subscription
+  would stay behind until the next append to its stream.
+
+  So a caught-up subscription reads its stream's head, the `stream_version` that
+  `stream_info/2` returns, every quarter to half of the event store's
+  `subscription_head_check_interval` (default one minute, at least one second), or of a
+  subscription's own `head_check_interval` option (which can be shorter than one
+  second), drawn at random per check. A `head_check_interval` that is not a positive
+  integer, in milliseconds, or is above 4_294_967_295 (about 49.7 days, the longest
+  timer `Process.send_after/3` can arm; see
+  `Decree.Store.Subscriptions.max_head_check_interval/0`), is refused with
+  `{:error, :invalid_head_check_interval}` and starts no subscription; the event store's
+  setting has the same limit. A head above the last event the subscription has
+  received is a missed wake-up only when it was seen at one check and is still above it
+  at the next, since a read can see an append before its wake-up arrives. The
+  subscription then catches up from storage, as after a gap in the events it received,
+  so a lost wake-up is repaired within the interval. Each head is repaired once: a head
+  with no event left to read under it, such as `$all`'s after a hard delete, does not
+  repair again at every check.
+
+  Each repair logs a warning and emits the telemetry event
+  `[:decree, :store, :subscription, :missed_wake_up]`, with the measurement
+  `system_time` and the metadata `event_store`, `subscription_name`, `stream_uuid`,
+  `head` (the head read now), `seen_head` (the head seen at the previous check, now
+  repaired), `last_received` (the last event number the subscription had received),
+  `last_seen` (the last event number its subscribers acknowledged) and
+  `head_check_interval`. A head read that fails is logged at debug level and retried at
+  the next check; it emits nothing and leaves the subscription as it is.
+
   ## Unknown event types
 
   An event appended by a newer release of the application can have a type this
@@ -1946,6 +1996,7 @@ defmodule Decree.Store do
               | {:error, :already_subscribed}
               | {:error, :subscription_already_exists}
               | {:error, :too_many_subscribers}
+              | {:error, :invalid_head_check_interval}
               | {:error, reason :: term}
 
   @doc """
@@ -1981,6 +2032,7 @@ defmodule Decree.Store do
               | {:error, :already_subscribed}
               | {:error, :subscription_already_exists}
               | {:error, :too_many_subscribers}
+              | {:error, :invalid_head_check_interval}
               | {:error, reason :: term}
 
   @doc """
@@ -1997,7 +2049,12 @@ defmodule Decree.Store do
     - `status`: `:subscribed` while delivering events (for a persistent
       subscription, holding its advisory lock), `:parked` while waiting to
       subscribe or to take its lock again after losing it, or while held before an
-      event of an unknown type (see `c:subscribe_to_stream/4`), or `:unsubscribed`.
+      event of an unknown type (see `c:subscribe_to_stream/4`), or `:unsubscribed`;
+    - `last_seen`, the last event number its subscribers acknowledged. It is the
+      subscription's delivery position only while `status` is `:subscribed`: a
+      parked subscription's value is stale, as another instance may be delivering.
+      Compare it with the stream's head, the `stream_version` of `stream_info/2`
+      (`stream_info(:all)` for a subscription to all streams), to read its lag.
 
   Returns `{infos, omitted}`. Each subscription is read concurrently, waiting at
   most `timeout` milliseconds (default 1,000). A subscription that does not
