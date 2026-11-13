@@ -64,10 +64,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #
   #   (any delivering state) -> held -> disconnected | (subscribe as disconnected does)
   #
-  # A subscribed subscription moves only when the publisher wakes it with events or a
-  # position notice. `Subscription` sends it a `check_head` on a timer, which reads the
-  # stream's head and, on a wake-up confirmed lost, catches up
-  # (sparkle-space/sparklespace#8066):
+  # Apart from the head check, no timer reads a subscribed subscription's stream: its
+  # position moves forward only when the publisher wakes it with events or a position
+  # notice. `Subscription` sends it a `check_head` on a timer, which reads the stream's
+  # head and, on a wake-up confirmed lost, catches up (sparkle-space/sparklespace#8066):
   #
   #   subscribed -> (check_head) -> request_catch_up
   #
@@ -228,13 +228,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       next_state(:subscribed, persist_checkpoint(data))
     end
 
-    # The head check (sparkle-space/sparklespace#8066). A subscribed subscription has no
-    # timer of its own and moves only when the publisher wakes it, and a wake-up can be
-    # lost: the notifications connection reconnects (`auto_reconnect`) and listens again
-    # with no catch-up, the publisher's read of a notification's events fails and is only
-    # logged, and Postgrex drops a notification that arrives during an idle ping
-    # (elixir-ecto/postgrex#795). Each would leave the subscription behind until the next
-    # append to its stream.
+    # The head check (sparkle-space/sparklespace#8066). No other timer reads a subscribed
+    # subscription's stream: its position moves forward only when the publisher wakes it,
+    # and a wake-up can be lost: the notifications connection reconnects
+    # (`auto_reconnect`) and listens again with no catch-up, the publisher's read of a
+    # notification's events fails and is only logged, and Postgrex drops a notification
+    # that arrives during an idle ping (elixir-ecto/postgrex#795). Each would leave the
+    # subscription behind until the next append to its stream.
     #
     # `Subscription` sends this every quarter to half of `head_check_interval`. It reads
     # the stream's head: one statement on the main pool, no lock, and no cache, as a head
@@ -249,7 +249,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     # while `last_sent != last_received` asks to catch up again, which a head with no
     # event under it would turn into a loop. Such a head exists: a hard delete removes
     # `$all`'s rows of the stream's events but never lowers `$all`'s `stream_version`.
-    # `head_repaired` instead repairs each head once, not again at every check.
+    # `head_repaired` instead repairs each head once, not again at every check. It records
+    # the head read now, not the one confirmed: the catch-up starts after this read and
+    # appends are serialised on `$all`'s row, so it reads every event committed at or
+    # below this head, and a later lost wake-up needs a head above it. Recording the
+    # confirmed head would repair again when the head rose between the two sightings
+    # with nothing readable above `last_received`.
     #
     # A failed read is retried at the next check, without a catch-up error: it is logged
     # at debug level only and leaves `head_seen` as it was.
@@ -267,7 +272,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
             next_state(:request_catch_up, %SubscriptionState{
               data
-              | head_repaired: target,
+              | head_repaired: head,
                 head_seen: head
             })
           else

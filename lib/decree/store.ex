@@ -760,7 +760,15 @@ defmodule Decree.Store do
               Keyword.fetch!(config, :subscription_head_check_interval)
             end)
 
-          Subscriptions.subscribe_to_stream(subscriber, opts)
+          # The event store's setting is validated at start; a subscription's own option
+          # is checked here, before a subscription process starts.
+          case Keyword.fetch!(opts, :head_check_interval) do
+            interval when is_integer(interval) and interval > 0 ->
+              Subscriptions.subscribe_to_stream(subscriber, opts)
+
+            _invalid ->
+              {:error, :invalid_head_check_interval}
+          end
         end
       end
 
@@ -1911,7 +1919,9 @@ defmodule Decree.Store do
   `stream_info/2` returns, every quarter to half of the event store's
   `subscription_head_check_interval` (default one minute, at least one second), or of a
   subscription's own `head_check_interval` option (which can be shorter than one
-  second), drawn at random per check. A head above the last event the subscription has
+  second), drawn at random per check. A `head_check_interval` that is not a positive
+  integer, in milliseconds, is refused with `{:error, :invalid_head_check_interval}`
+  and starts no subscription. A head above the last event the subscription has
   received is a missed wake-up only when it was seen at one check and is still above it
   at the next, since a read can see an append before its wake-up arrives. The
   subscription then catches up from storage, as after a gap in the events it received,
@@ -1980,6 +1990,7 @@ defmodule Decree.Store do
               | {:error, :already_subscribed}
               | {:error, :subscription_already_exists}
               | {:error, :too_many_subscribers}
+              | {:error, :invalid_head_check_interval}
               | {:error, reason :: term}
 
   @doc """
@@ -2015,6 +2026,7 @@ defmodule Decree.Store do
               | {:error, :already_subscribed}
               | {:error, :subscription_already_exists}
               | {:error, :too_many_subscribers}
+              | {:error, :invalid_head_check_interval}
               | {:error, reason :: term}
 
   @doc """

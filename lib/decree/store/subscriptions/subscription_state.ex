@@ -60,9 +60,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     # A head check repairs only a head seen at two checks in a row, so a wake-up still on
     # its way at the first is not taken for a lost one.
     head_seen: nil,
-    # The last head a head check repaired. A head is repaired once: one with no event
-    # left to read under it (`$all`'s after a hard delete) stays above `last_received`,
-    # which is never raised to it.
+    # The head read at the last head check that repaired, which can be above the head it
+    # confirmed. A head is repaired once: one with no event left to read under it
+    # (`$all`'s after a hard delete) stays above `last_received`, which is never raised
+    # to it.
     head_repaired: 0
   ]
 
