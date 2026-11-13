@@ -506,6 +506,19 @@ defmodule Decree.Event.Handler do
 
   `:opaque` is the only value `:personal_fields` takes, and anything else is a `CompileError`.
 
+  Every handler, `:opaque` or not, also answers `__handle_heads__/0`: each `handle/2` clause it
+  defines, in order and a `use`-injected one included, as `{line, event_pattern, guards}`, the
+  expanded first argument and its list of guards (`[]` without one). Decree's own catch-all
+  is not in it, and a `handle_batch/1` handler answers `[]`. It is for a tool that checks what
+  a handler's heads match, so it reads the compiled heads rather than the source.
+
+  The export is checked after compile: the module's final `handle/2` clauses must be the heads
+  `__handle_heads__/0` answers, followed by decree's catch-all. A `CompileError` names the
+  module when they are not, as when a module defines `__handle_heads__/0` itself, or when
+  another `use` defines or overrides `handle/2` in a `@before_compile` registered after
+  decree's. Put such a `use` before `use Decree.Event.Handler`. The check covers what macros
+  and compile hooks do, not deliberate tampering such as removing decree's `@after_compile`.
+
   A head that can't be read and isn't `:opaque` is a `CompileError` naming the module and the
   head's line.
 
@@ -807,6 +820,7 @@ defmodule Decree.Event.Handler do
   defmacro __using__(using_opts) do
     quote location: :keep do
       @before_compile unquote(__MODULE__)
+      @after_compile unquote(__MODULE__)
       @behaviour Handler
 
       # Evaluated here, not in the macro: `Decree.Projections.Ecto` passes its options as an
@@ -1040,11 +1054,15 @@ defmodule Decree.Event.Handler do
     else
       # Read before the default handlers below are defined.
       personal_fields = personal_fields!(env, has_batch)
+      handle_heads = handle_heads(env.module)
 
       # Generate default handlers
       quote generated: true do
         @doc false
         def __personal_fields__, do: unquote(Macro.escape(personal_fields))
+
+        @doc false
+        def __handle_heads__, do: unquote(Macro.escape(handle_heads))
 
         @doc false
         def handle(_event, _metadata), do: :ok
@@ -1100,6 +1118,54 @@ defmodule Decree.Event.Handler do
 
     Map.new(modules, &{&1, true})
   end
+
+  # Every `handle/2` clause the module defines, `use`-injected ones included, as
+  # `{line, event_pattern, guards}`: the expanded first argument and the list of guard
+  # expressions (`[]` without a guard). Read before the default `handle/2` below is defined,
+  # so decree's own catch-all is never one. A `handle_batch/1` module has no `handle/2`.
+  defp handle_heads(module) do
+    module |> definition_clauses({:handle, 2}) |> Enum.map(&clause_head/1)
+  end
+
+  defp clause_head({meta, [event, _metadata], guards, _body}), do: {meta[:line], event, guards}
+
+  # Checks the final state against what `__before_compile__` exported: the module's `handle/2`
+  # clauses must be exactly the heads `__handle_heads__/0` answers, followed by decree's own
+  # catch-all. A later `@before_compile` that adds, replaces or overrides a `handle/2` clause,
+  # or a module that defines `__handle_heads__/0` itself, fails it. Called with no export
+  # test, because under the compiler the module is not loaded here; a direct call loads it.
+  @doc false
+  def __after_compile__(%Macro.Env{module: module} = env, _bytecode) do
+    clauses = definition_clauses(module, {:handle, 2})
+
+    if not exported_heads?(clauses, module.__handle_heads__()) do
+      raise CompileError,
+        file: env.file,
+        line: env.line,
+        description:
+          "#{inspect(module)}: `handle/2` or `__handle_heads__/0` changed after decree read " <>
+            "the heads of `handle/2`, so `__handle_heads__/0` would not answer them. Define " <>
+            "`handle/2` in the module, or in a `use` whose own `@before_compile` is " <>
+            "registered before `use Decree.Event.Handler`, and do not define " <>
+            "`__handle_heads__/0`"
+    end
+  end
+
+  defp exported_heads?([_ | _] = clauses, heads) do
+    {user_clauses, [last]} = Enum.split(clauses, -1)
+
+    catch_all?(last) and Enum.map(user_clauses, &clause_head/1) == heads
+  end
+
+  defp exported_heads?([], _heads), do: false
+
+  # Decree's own `handle/2` from `__before_compile__`: generated here, both arguments ignored
+  # variables of this module's context, no guard, `:ok`.
+  defp catch_all?({meta, [{:_event, _, __MODULE__}, {:_metadata, _, __MODULE__}], [], :ok}) do
+    meta[:generated] == true and meta[:context] == __MODULE__
+  end
+
+  defp catch_all?(_clause), do: false
 
   defp definition_clauses(module, definition) do
     case Module.get_definition(module, definition) do
