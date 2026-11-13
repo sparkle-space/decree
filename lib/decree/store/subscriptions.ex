@@ -111,6 +111,10 @@ defmodule Decree.Store.Subscriptions do
     end
   end
 
+  # The longest timer `Process.send_after/3` can arm (2^32 - 1 ms). See
+  # `max_head_check_interval/0`.
+  @max_head_check_interval 4_294_967_295
+
   @doc """
   Get the head-check interval, in milliseconds, from the event store config
   (`subscription_head_check_interval`).
@@ -123,11 +127,14 @@ defmodule Decree.Store.Subscriptions do
   `c:Decree.Store.subscribe_to_stream/4`). A subscription's own `head_check_interval`
   option overrides it, and only that option can be shorter than one second.
 
-  The default value is one minute and the minimum allowed value is one second.
+  The default value is one minute, the minimum allowed value is one second and the
+  maximum is `max_head_check_interval/0` (4_294_967_295 ms, about 49.7 days); a larger
+  value raises an `ArgumentError`, like an invalid one.
   """
   def head_check_interval(event_store, config) do
     case Keyword.get(config, :subscription_head_check_interval) do
-      interval when is_integer(interval) and interval > 0 ->
+      interval
+      when is_integer(interval) and interval > 0 and interval <= @max_head_check_interval ->
         # Ensure interval is no less than one second
         max(interval, 1_000)
 
@@ -140,9 +147,19 @@ defmodule Decree.Store.Subscriptions do
           message:
             "Invalid `:subscription_head_check_interval` setting in " <>
               inspect(event_store) <>
-              " config. Expected an integer in milliseconds but got: " <> inspect(invalid)
+              " config. Expected a positive integer in milliseconds, at most " <>
+              Integer.to_string(@max_head_check_interval) <> ", but got: " <> inspect(invalid)
     end
   end
+
+  @doc """
+  The largest head-check interval, in milliseconds, that the event store's
+  `subscription_head_check_interval` setting or a subscription's own
+  `head_check_interval` option may take: 4_294_967_295, the longest timer
+  `Process.send_after/3` can arm. A head check waits at most half the interval, so any
+  interval up to this maximum arms.
+  """
+  def max_head_check_interval, do: @max_head_check_interval
 
   @doc """
   Get the inactivity period, in milliseconds, after which a subscription process

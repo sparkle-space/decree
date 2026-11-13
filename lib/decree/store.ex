@@ -762,8 +762,11 @@ defmodule Decree.Store do
 
           # The event store's setting is validated at start; a subscription's own option
           # is checked here, before a subscription process starts.
+          max_head_check_interval = Subscriptions.max_head_check_interval()
+
           case Keyword.fetch!(opts, :head_check_interval) do
-            interval when is_integer(interval) and interval > 0 ->
+            interval
+            when is_integer(interval) and interval > 0 and interval <= max_head_check_interval ->
               Subscriptions.subscribe_to_stream(subscriber, opts)
 
             _invalid ->
@@ -1920,8 +1923,11 @@ defmodule Decree.Store do
   `subscription_head_check_interval` (default one minute, at least one second), or of a
   subscription's own `head_check_interval` option (which can be shorter than one
   second), drawn at random per check. A `head_check_interval` that is not a positive
-  integer, in milliseconds, is refused with `{:error, :invalid_head_check_interval}`
-  and starts no subscription. A head above the last event the subscription has
+  integer, in milliseconds, or is above 4_294_967_295 (about 49.7 days, the longest
+  timer `Process.send_after/3` can arm; see
+  `Decree.Store.Subscriptions.max_head_check_interval/0`), is refused with
+  `{:error, :invalid_head_check_interval}` and starts no subscription; the event store's
+  setting has the same limit. A head above the last event the subscription has
   received is a missed wake-up only when it was seen at one check and is still above it
   at the next, since a read can see an append before its wake-up arrives. The
   subscription then catches up from storage, as after a gap in the events it received,
