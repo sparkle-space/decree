@@ -54,7 +54,7 @@ Framework and projections tests run their applications on `Decree.FrameworkEvent
 
 ## The conformance suite
 
-`test/conformance` runs Commanded's shared event store adapter test cases (`test/framework/event_store/support/*_test_case.ex`) through the `Decree.EventStore` facade of a started application, against its `Decree.Store` module on Postgres. It is the conformance suite for the one store implementation, and covers:
+`test/conformance` runs Commanded's shared event store test cases (`test/framework/event_store/support/*_test_case.ex`) through the `Decree.EventStore` facade of a started application, against its `Decree.Store` module on Postgres. It is the conformance suite for the one store implementation, and covers:
 
 - append and expected version: `:any_version`, `:no_stream`, `:stream_exists` and an exact version, with the wrong-version errors; reading a stream forward, in batches, and the unknown-stream error;
 - snapshots: record, read, read when absent, delete;
