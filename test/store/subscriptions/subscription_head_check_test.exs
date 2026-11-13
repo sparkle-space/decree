@@ -283,6 +283,34 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     end
   end
 
+  # `Process.send_after/3` takes at most 4_294_967_295 ms. The wait is at most half the
+  # interval, so any interval up to that maximum arms; a larger one is refused before a
+  # subscription starts, rather than crashing it at its first head check.
+  describe "a head_check_interval above the timer maximum" do
+    for too_long <- [4_294_967_296, 10_000_000_000] do
+      @too_long too_long
+
+      test "#{too_long} is refused and starts no subscription", %{
+        subscription_name: subscription_name
+      } do
+        assert EventStore.subscribe_to_stream("$all", subscription_name, self(),
+                 head_check_interval: @too_long
+               ) == {:error, :invalid_head_check_interval}
+
+        refute_received {:subscribed, _subscription}
+        assert local(subscription_name) == []
+        assert {[], 0} = EventStore.local_subscriptions()
+      end
+    end
+
+    test "4294967295 subscribes", %{subscription_name: subscription_name} do
+      subscription = subscribe("$all", subscription_name, head_check_interval: 4_294_967_295)
+
+      assert Map.get(fsm(subscription).data, :head_check_interval) == 4_294_967_295
+      assert Process.alive?(subscription)
+    end
+  end
+
   test "a failed head read stays subscribed and the next good read repairs", %{
     postgrex_config: postgrex_config,
     subscription_name: subscription_name
@@ -361,6 +389,20 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     config = Decree.Store.Config.lookup(TestEventStore)
 
     assert Keyword.get(config, :subscription_head_check_interval) == 60_000
+  end
+
+  test "the event store's head-check interval is at most the timer maximum" do
+    assert Subscriptions.head_check_interval(TestEventStore,
+             subscription_head_check_interval: 4_294_967_295
+           ) == 4_294_967_295
+
+    for too_long <- [4_294_967_296, 10_000_000_000] do
+      assert_raise ArgumentError, ~r/subscription_head_check_interval/, fn ->
+        Subscriptions.head_check_interval(TestEventStore,
+          subscription_head_check_interval: too_long
+        )
+      end
+    end
   end
 
   test "a subscription without the option takes the event store's interval", %{
