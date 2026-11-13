@@ -506,6 +506,12 @@ defmodule Decree.Event.Handler do
 
   `:opaque` is the only value `:personal_fields` takes, and anything else is a `CompileError`.
 
+  Every handler, `:opaque` or not, also answers `__handle_heads__/0`: each `handle/2` clause it
+  defines, in order and a `use`-injected one included, as `{line, event_pattern, guards}`, the
+  expanded first argument and its list of guards (`[]` without one). Decree's own catch-all
+  is not in it, and a `handle_batch/1` handler answers `[]`. It is for a tool that checks what
+  a handler's heads match, so it reads the compiled heads rather than the source.
+
   A head that can't be read and isn't `:opaque` is a `CompileError` naming the module and the
   head's line.
 
@@ -1040,11 +1046,15 @@ defmodule Decree.Event.Handler do
     else
       # Read before the default handlers below are defined.
       personal_fields = personal_fields!(env, has_batch)
+      handle_heads = handle_heads(env.module)
 
       # Generate default handlers
       quote generated: true do
         @doc false
         def __personal_fields__, do: unquote(Macro.escape(personal_fields))
+
+        @doc false
+        def __handle_heads__, do: unquote(Macro.escape(handle_heads))
 
         @doc false
         def handle(_event, _metadata), do: :ok
@@ -1099,6 +1109,16 @@ defmodule Decree.Event.Handler do
     end
 
     Map.new(modules, &{&1, true})
+  end
+
+  # Every `handle/2` clause the module defines, `use`-injected ones included, as
+  # `{line, event_pattern, guards}`: the expanded first argument and the list of guard
+  # expressions (`[]` without a guard). Read before the default `handle/2` below is defined,
+  # so decree's own catch-all is never one. A `handle_batch/1` module has no `handle/2`.
+  defp handle_heads(module) do
+    for {meta, [event, _metadata], guards, _body} <- definition_clauses(module, {:handle, 2}) do
+      {meta[:line], event, guards}
+    end
   end
 
   defp definition_clauses(module, definition) do
