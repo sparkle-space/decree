@@ -52,6 +52,29 @@ defmodule Decree.Event.HandleHeadsTest do
 
   defp head({meta, [event, _metadata], guards, _body}), do: {meta[:line], event, guards}
 
+  # A `use` that defines `handle/2` in a `@before_compile` of its own.
+  defp before_compile_injector do
+    injector = module_name()
+
+    compile_quietly(injector, """
+    defmodule #{injector} do
+      defmacro __using__(_options) do
+        quote do
+          @before_compile #{injector}
+        end
+      end
+
+      defmacro __before_compile__(_env) do
+        quote do
+          def handle(%#{inspect(@registered)}{} = event, _metadata), do: {:injected, event}
+        end
+      end
+    end
+    """)
+
+    injector
+  end
+
   describe "a handler's `handle/2` clauses" do
     test "come back one per clause, in source order, with their lines and guards" do
       {module, binary} =
@@ -129,6 +152,47 @@ defmodule Decree.Event.HandleHeadsTest do
       {module, _binary} = compile("use #{injector}", ", personal_fields: :opaque")
 
       assert [{_line, {:event, _, _}, []}] = module.__handle_heads__()
+    end
+
+    # A `use` can also define `handle/2` in its own `@before_compile`. Hooks run in the order
+    # they are registered, so the injector's clause is a head when its `use` comes first, and
+    # after decree's catch-all, unreachable, when it comes second.
+    test "include a clause from a `@before_compile` registered ahead of decree's" do
+      injector = before_compile_injector()
+
+      {module, _binary} =
+        compile_quietly(
+          injector <> ".First",
+          """
+          defmodule #{injector}.First do
+            use #{injector}
+            use Decree.Event.Handler, application: Decree.DefaultApp, name: "first"
+          end
+          """
+        )
+
+      assert [{_line, {:=, _, [{:%, _, [@registered, _]}, {:event, _, _}]}, []}] =
+               module.__handle_heads__()
+
+      assert module.handle(%@registered{}, %{}) == {:injected, %@registered{}}
+    end
+
+    test "leave out a clause from a `@before_compile` registered after decree's, which never runs" do
+      injector = before_compile_injector()
+
+      {module, _binary} =
+        compile_quietly(
+          injector <> ".Second",
+          """
+          defmodule #{injector}.Second do
+            use Decree.Event.Handler, application: Decree.DefaultApp, name: "second"
+            use #{injector}
+          end
+          """
+        )
+
+      assert module.__handle_heads__() == []
+      assert module.handle(%@registered{}, %{}) == :ok
     end
 
     test "include a projector's `project` clauses" do
