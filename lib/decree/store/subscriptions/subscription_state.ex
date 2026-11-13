@@ -24,6 +24,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     # token of the pending catch-up retry timer (see `SubscriptionFsm`).
     :retry_interval,
     :catch_up_retry_token,
+    # The interval of the head check of a subscribed subscription: it reads its stream's
+    # head every quarter to half of it (see `SubscriptionFsm`).
+    :head_check_interval,
     correlation_id_type: "uuid",
     causation_id_type: "uuid",
     last_received: 0,
@@ -52,7 +55,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     # While held, `%{event_number:, type:, attempt:, wait:}`: the event held before, the
     # number of the alarm (one per hold and per failed probe), and the wait drawn for
     # the next probe.
-    held: nil
+    held: nil,
+    # The stream's head read at the previous head check, `nil` until the first succeeds.
+    # A head check repairs only a head seen at two checks in a row, so a wake-up still on
+    # its way at the first is not taken for a lost one.
+    head_seen: nil,
+    # The last head a head check repaired. A head is repaired once: one with no event
+    # left to read under it (`$all`'s after a hard delete) stays above `last_received`,
+    # which is never raised to it.
+    head_repaired: 0
   ]
 
   def reset_event_tracking(%SubscriptionState{} = state) do

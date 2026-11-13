@@ -87,6 +87,7 @@ defmodule Decree.Store.RuntimeConfigTest do
         enable_hard_deletes: false,
         otp_app: :decree,
         pool: DBConnection.ConnectionPool,
+        subscription_head_check_interval: 60_000,
         subscription_hibernate_after: 15_000,
         subscription_retry_interval: 1_000,
         timeout: 15_000

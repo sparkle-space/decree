@@ -112,6 +112,39 @@ defmodule Decree.Store.Subscriptions do
   end
 
   @doc """
+  Get the head-check interval, in milliseconds, from the event store config
+  (`subscription_head_check_interval`).
+
+  A subscription that is subscribed, waiting for the store to wake it with new events,
+  reads its stream's head (its `stream_version`) every quarter to half of this interval,
+  drawn at random per check. A head above the last event it received, seen at one check
+  and still above it at the next, is a missed wake-up: the subscription catches up from
+  storage. So a lost wake-up is repaired within this interval (see "Missed wake-ups" in
+  `c:Decree.Store.subscribe_to_stream/4`). A subscription's own `head_check_interval`
+  option overrides it, and only that option can be shorter than one second.
+
+  The default value is one minute and the minimum allowed value is one second.
+  """
+  def head_check_interval(event_store, config) do
+    case Keyword.get(config, :subscription_head_check_interval) do
+      interval when is_integer(interval) and interval > 0 ->
+        # Ensure interval is no less than one second
+        max(interval, 1_000)
+
+      nil ->
+        # Default to 60 seconds when not configured
+        60_000
+
+      invalid ->
+        raise ArgumentError,
+          message:
+            "Invalid `:subscription_head_check_interval` setting in " <>
+              inspect(event_store) <>
+              " config. Expected an integer in milliseconds but got: " <> inspect(invalid)
+    end
+  end
+
+  @doc """
   Get the inactivity period, in milliseconds, after which a subscription process
   will be automatically hibernated.
 

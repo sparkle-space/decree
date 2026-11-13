@@ -21,7 +21,11 @@ defmodule Decree.Store.Subscriptions.Subscription do
     # The pending subscribe timer of a parked subscription, as `{ref, due_at, token}`
     # with `due_at` in monotonic milliseconds and `token` the one in its
     # `{:subscribe_to_stream, token}` message, or `nil`. There is at most one.
-    :subscribe_timer
+    :subscribe_timer,
+    # The pending head-check timer, as `{ref, token}` with `token` the one in its
+    # `{:check_head, token}` message, or `nil`. There is at most one (see
+    # `arm_head_check/1`).
+    :head_check_timer
   ]
 
   def start_link(opts) do
@@ -134,6 +138,31 @@ defmodule Decree.Store.Subscriptions.Subscription do
   # wait.
   @impl GenServer
   def handle_info({:subscribe_to_stream, _token}, %Subscription{} = state) do
+    {:noreply, state}
+  end
+
+  # The pending head-check timer. Its slot is cleared first; a subscribed subscription
+  # then checks its stream's head (see `SubscriptionFsm`), and the next pass through
+  # `subscribed` arms the next check. In any other state the timer only clears its slot.
+  @impl GenServer
+  def handle_info({:check_head, token}, %Subscription{head_check_timer: {_ref, token}} = state) do
+    state = %Subscription{state | head_check_timer: nil}
+
+    case state do
+      %Subscription{subscription: %SubscriptionFsm{state: :subscribed} = subscription} ->
+        subscription
+        |> SubscriptionFsm.check_head()
+        |> apply_subscription_to_state(state)
+        |> noreply()
+
+      %Subscription{} ->
+        noreply(state)
+    end
+  end
+
+  # A head-check message whose timer is no longer the pending one.
+  @impl GenServer
+  def handle_info({:check_head, _token}, %Subscription{} = state) do
     {:noreply, state}
   end
 
@@ -313,7 +342,8 @@ defmodule Decree.Store.Subscriptions.Subscription do
       subscription_id: data.subscription_id,
       pid: self(),
       transient: data.transient,
-      status: status(fsm_state)
+      status: status(fsm_state),
+      last_seen: data.last_ack
     }
 
     {:reply, info, state}
@@ -345,8 +375,31 @@ defmodule Decree.Store.Subscriptions.Subscription do
         do: state,
         else: cancel_subscribe_timer(state)
 
-    handle_subscription_state(%Subscription{state | subscription: subscription})
+    %Subscription{state | subscription: subscription}
+    |> handle_subscription_state()
+    |> arm_head_check()
   end
+
+  # A subscribed subscription with no head check pending arms one, after a wait drawn by
+  # `SubscriptionFsm.head_check_wait/1`. A pending one is never reset: this runs after
+  # every event, so resetting it would put off a busy subscription's check indefinitely.
+  defp arm_head_check(
+         %Subscription{
+           head_check_timer: nil,
+           subscription: %SubscriptionFsm{state: :subscribed, data: data}
+         } = state
+       ) do
+    %SubscriptionState{head_check_interval: interval} = data
+
+    token = make_ref()
+
+    ref =
+      Process.send_after(self(), {:check_head, token}, SubscriptionFsm.head_check_wait(interval))
+
+    %Subscription{state | head_check_timer: {ref, token}}
+  end
+
+  defp arm_head_check(%Subscription{} = state), do: state
 
   # A held transient subscription stops (see `noreply/1`); it has nothing to probe.
   defp handle_subscription_state(

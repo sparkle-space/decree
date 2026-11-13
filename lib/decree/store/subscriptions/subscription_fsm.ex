@@ -2,7 +2,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   @moduledoc false
 
   alias Decree.Store.{AdvisoryLocks, PubSub, RecordedEvent, Storage}
-  alias Decree.Store.Streams.Stream
+  alias Decree.Store.Streams.{Stream, StreamInfo}
   alias Decree.Store.Subscriptions.{SubscriptionState, Subscriber}
 
   use Decree.Store.Subscriptions.GeneratedFsm,
@@ -36,6 +36,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         # `retry_interval`); the default is that setting's default, for an FSM built
         # without one.
         retry_interval: Keyword.get(opts, :retry_interval, 60_000),
+        # The interval of the head check while subscribed. A started subscription always
+        # passes the event store's `subscription_head_check_interval` (or the caller's
+        # `head_check_interval`); the default is that setting's default.
+        head_check_interval: Keyword.get(opts, :head_check_interval, 60_000),
         max_size: opts[:max_size] || 1_000,
         transient: Keyword.get(opts, :transient, false)
       }
@@ -59,6 +63,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # this one knows its type (sparkle-space/sparklespace#7804):
   #
   #   (any delivering state) -> held -> disconnected | (subscribe as disconnected does)
+  #
+  # A subscribed subscription moves only when the publisher wakes it with events or a
+  # position notice. `Subscription` sends it a `check_head` on a timer, which reads the
+  # stream's head and, on a wake-up confirmed lost, catches up
+  # (sparkle-space/sparklespace#8066):
+  #
+  #   subscribed -> (check_head) -> request_catch_up
   #
 
   defstate initial do
@@ -215,6 +226,59 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
     defevent checkpoint(), data: %SubscriptionState{} = data do
       next_state(:subscribed, persist_checkpoint(data))
+    end
+
+    # The head check (sparkle-space/sparklespace#8066). A subscribed subscription has no
+    # timer of its own and moves only when the publisher wakes it, and a wake-up can be
+    # lost: the notifications connection reconnects (`auto_reconnect`) and listens again
+    # with no catch-up, the publisher's read of a notification's events fails and is only
+    # logged, and Postgrex drops a notification that arrives during an idle ping
+    # (elixir-ecto/postgrex#795). Each would leave the subscription behind until the next
+    # append to its stream.
+    #
+    # `Subscription` sends this every quarter to half of `head_check_interval`. It reads
+    # the stream's head: one statement on the main pool, no lock, and no cache, as a head
+    # read is a ledger read. A head is a missed wake-up only when the previous check saw
+    # it and it is still above `last_received` now: a read can see an append before its
+    # wake-up arrives, and acting on the first sighting would count a late wake-up as a
+    # lost one. So a lost wake-up is seen within one period, confirmed within the next,
+    # and repaired within `head_check_interval`, through the catch-up a gap in the events
+    # received takes.
+    #
+    # `last_received` is never raised to the head: a catch-up read that finds nothing
+    # while `last_sent != last_received` asks to catch up again, which a head with no
+    # event under it would turn into a loop. Such a head exists: a hard delete removes
+    # `$all`'s rows of the stream's events but never lowers `$all`'s `stream_version`.
+    # `head_repaired` instead repairs each head once, not again at every check.
+    #
+    # A failed read is retried at the next check, without a catch-up error: it is logged
+    # at debug level only and leaves `head_seen` as it was.
+    defevent check_head, data: %SubscriptionState{hold_pending: nil} = data do
+      case read_head(data) do
+        {:ok, head} ->
+          %SubscriptionState{
+            head_seen: target,
+            last_received: last_received,
+            head_repaired: head_repaired
+          } = data
+
+          if is_integer(target) and target > last_received and target > head_repaired do
+            missed_wake_up(data, head, target)
+
+            next_state(:request_catch_up, %SubscriptionState{
+              data
+              | head_repaired: target,
+                head_seen: head
+            })
+          else
+            next_state(:subscribed, %SubscriptionState{data | head_seen: head})
+          end
+
+        {:error, reason} ->
+          Logger.debug(describe(data) <> " head check failed due to: " <> inspect(reason))
+
+          next_state(:subscribed, data)
+      end
     end
   end
 
@@ -403,6 +467,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   # A probe timer that fired after the subscription left `held`.
   defevent probe, data: %SubscriptionState{} = data, state: state do
+    next_state(state, data)
+  end
+
+  # A head check outside `subscribed` (or with a hold pending) changes nothing.
+  defevent check_head, data: %SubscriptionState{} = data, state: state do
     next_state(state, data)
   end
 
@@ -988,7 +1057,23 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   its next probe (`held_wait/2`).
   """
   def jittered_backoff(attempt, retry_interval) do
-    base = retry_backoff(attempt, retry_interval)
+    attempt
+    |> retry_backoff(retry_interval)
+    |> equal_jitter()
+  end
+
+  @doc """
+  The wait before the next head check of a subscribed subscription: an equal jitter over
+  half of `head_check_interval`, so that
+  `max(1, div(interval, 4)) <= wait <= max(1, div(interval, 2))`. It is never under one
+  millisecond. Two checks in a row confirm a lost wake-up, so one is repaired within
+  `head_check_interval`.
+  """
+  def head_check_wait(interval), do: equal_jitter(div(interval, 2))
+
+  # The one jitter of the subscription's waits: drawn at random between half of and the
+  # whole of `base`, and never under one millisecond.
+  defp equal_jitter(base) do
     half = div(base, 2)
 
     max(1, half + :rand.uniform(half + 1) - 1)
@@ -1047,6 +1132,61 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         retry_interval: wait,
         attempt: attempt,
         transient: transient
+      }
+    )
+  end
+
+  # The stream's head, its `stream_version` as stored: a stream not yet created reads as 0.
+  # One statement, without a lock, and read raw, with no expected-version check. A read
+  # that fails, or does not answer, is `{:error, reason}`.
+  defp read_head(%SubscriptionState{} = data) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      stream_uuid: stream_uuid,
+      query_timeout: query_timeout
+    } = data
+
+    case Storage.stream_info(conn, stream_uuid, schema: schema, timeout: query_timeout) do
+      {:ok, %StreamInfo{stream_version: head}} -> {:ok, head}
+      {:error, _reason} = error -> error
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  # A head check confirmed a lost wake-up: a warning naming the positions (never any event
+  # data) and the `[:decree, :store, :subscription, :missed_wake_up]` telemetry event
+  # (documented on `c:Decree.Store.subscribe_to_stream/4`).
+  defp missed_wake_up(%SubscriptionState{} = data, head, seen_head) do
+    %SubscriptionState{
+      event_store: event_store,
+      stream_uuid: stream_uuid,
+      subscription_name: subscription_name,
+      last_received: last_received,
+      last_ack: last_seen,
+      head_check_interval: head_check_interval
+    } = data
+
+    Logger.warning(
+      describe(data) <>
+        " missed a wake-up: the stream's head was #{seen_head} at the last check and is " <>
+        "#{head} now, but the last event received is #{last_received} " <>
+        "(last acknowledged #{last_seen}), catching up"
+    )
+
+    :telemetry.execute(
+      [:decree, :store, :subscription, :missed_wake_up],
+      %{system_time: System.system_time()},
+      %{
+        event_store: event_store,
+        subscription_name: subscription_name,
+        stream_uuid: stream_uuid,
+        head: head,
+        seen_head: seen_head,
+        last_received: last_received,
+        last_seen: last_seen,
+        head_check_interval: head_check_interval
       }
     )
   end
