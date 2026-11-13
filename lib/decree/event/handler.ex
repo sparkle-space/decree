@@ -512,6 +512,14 @@ defmodule Decree.Event.Handler do
   is not in it, and a `handle_batch/1` handler answers `[]`. It is for a tool that checks what
   a handler's heads match, so it reads the compiled heads rather than the source.
 
+  Every module that uses the handler, and so every `Decree.Projections.Ecto` projector, also
+  persists the attribute `decree_event_handler: [true]`, read back as
+  `module.module_info(:attributes)[:decree_event_handler]`. It lets such a tool tell decree's
+  expansion from a module that only declares `@behaviour Decree.Event.Handler` and writes its
+  own `__handle_heads__/0`. It marks the `use`, and proves nothing more: a module that
+  registers and sets the persisted attribute by hand forges it, which is deliberate
+  tampering, as below.
+
   The export is checked after compile: the module's final `handle/2` clauses must be the heads
   `__handle_heads__/0` answers, followed by decree's catch-all. A `CompileError` names the
   module when they are not, as when a module defines `__handle_heads__/0` itself, or when
@@ -822,6 +830,11 @@ defmodule Decree.Event.Handler do
       @before_compile unquote(__MODULE__)
       @after_compile unquote(__MODULE__)
       @behaviour Handler
+
+      # Persisted, so a tool reading the compiled module tells decree's expansion from a
+      # module that only declares the behaviour (see the moduledoc).
+      Module.register_attribute(__MODULE__, :decree_event_handler, persist: true)
+      @decree_event_handler true
 
       # Evaluated here, not in the macro: `Decree.Projections.Ecto` passes its options as an
       # attribute of this module.
