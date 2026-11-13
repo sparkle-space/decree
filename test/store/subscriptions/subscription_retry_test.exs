@@ -103,7 +103,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
       {:ok, subscription} = subscribe(@proxied, UUID.uuid4(), @full_interval)
 
       # The first attempt was refused; this is a second. Its own timer can have fired as
-      # well on a host that stalled for a second.
+      # well on a host that stalled for half a second.
       attempt_subscribe(subscription)
 
       assert %SubscriptionState{subscribe_failures: failures} = failed = data(subscription)

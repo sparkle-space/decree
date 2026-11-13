@@ -43,6 +43,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     # Consecutive failed subscribe attempts other than `:lock_already_taken`, reset by
     # the next successful attempt or `:lock_already_taken`.
     subscribe_failures: 0,
+    # The wait drawn for the next subscribe attempt by the last failed one, `nil` while
+    # `subscribe_failures` is 0: set and cleared together, so failures above 0 always
+    # have a drawn wait (see `SubscriptionFsm.resubscribe_wait/1`).
+    subscribe_wait: nil,
     subscribers: %{},
     partitions: %{},
     acknowledged_event_numbers: MapSet.new(),

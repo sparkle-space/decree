@@ -1842,9 +1842,10 @@ defmodule Decree.Store do
   A subscription that finds the lock taken by another instance tries again after the
   full `subscription_retry_interval`, without logging, so idle standby instances do
   not poll. Any other failed attempt to subscribe, such as a lock connection that is
-  not up yet, is retried from about a second, doubling up to that interval; a
-  warning names the reason once per run of failures, and a successful attempt resets
-  the wait.
+  not up yet, is retried after a wait drawn at random between half of and the whole
+  of a backoff from one second, doubling up to that interval, so subscriptions that
+  failed together do not retry in step; a warning names the reason and the wait once
+  per run of failures, and a successful attempt resets the backoff.
 
   ## Example
 

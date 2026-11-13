@@ -84,7 +84,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           | last_received: last_seen,
             last_sent: last_seen,
             last_ack: last_seen,
-            subscribe_failures: 0
+            subscribe_failures: 0,
+            subscribe_wait: nil
         }
 
         notify_subscribed(data)
@@ -114,7 +115,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
             last_received: last_seen,
             last_sent: last_seen,
             last_ack: last_seen,
-            subscribe_failures: 0
+            subscribe_failures: 0,
+            subscribe_wait: nil
         }
 
         notify_subscribed(data)
@@ -353,9 +355,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # Lost the advisory lock: parked until the lock is taken again. The first attempt
   # comes after the full retry interval, as does each one that finds the lock taken
   # (`{:error, :lock_already_taken}`); after any other failed attempt the wait is the
-  # backoff of `resubscribe_wait/1`. Subscribers were sent `{:subscription_lock_lost,
-  # subscription}` on the way in, and are sent `{:subscribed, subscription}` again on
-  # the way out.
+  # jittered backoff that attempt drew (`resubscribe_wait/1`). Subscribers were sent
+  # `{:subscription_lock_lost, subscription}` on the way in, and are sent
+  # `{:subscribed, subscription}` again on the way out.
   defstate disconnected do
     # Attempt to subscribe
     defevent subscribe, data: %SubscriptionState{} = data do
@@ -385,7 +387,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     defevent probe, data: %SubscriptionState{held: %{event_number: event_number}} = data do
       case probe_held(data, event_number) do
         :delivered ->
-          next_state(:disconnected, %SubscriptionState{data | held: nil, subscribe_failures: 0})
+          next_state(:disconnected, %SubscriptionState{
+            data
+            | held: nil,
+              subscribe_failures: 0,
+              subscribe_wait: nil
+          })
 
         :known ->
           resubscribe(%SubscriptionState{data | held: nil})
@@ -575,7 +582,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # the full interval, so idle instances do not poll. The lock pool answered, so any
   # outage is over.
   defp subscribe_failed(%SubscriptionState{} = data, {:error, :lock_already_taken}) do
-    %SubscriptionState{data | subscribe_failures: 0}
+    %SubscriptionState{data | subscribe_failures: 0, subscribe_wait: nil}
   end
 
   # Any other failure takes the backoff and counts towards it, whichever step produced
@@ -584,9 +591,22 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # schema) reaches the cap after a few attempts, and `subscribe_to_events/1` cannot
   # fail, as `PubSub`'s registry has duplicate keys.
   #
+  # The wait is `jittered_backoff/2` over the consecutive failed attempts, drawn here once
+  # per failed attempt and kept in `subscribe_wait`, as a held subscription keeps its
+  # probe's wait: every pass through the parked state reads the same wait, so a later pass
+  # does not re-arm on a shorter draw, and the warning names the wait that is armed.
+  #
   # The first failure of a run logs the reason, so an outage logs once, not per attempt.
   defp subscribe_failed(%SubscriptionState{subscribe_failures: failures} = data, failure) do
-    data = %SubscriptionState{data | subscribe_failures: failures + 1}
+    %SubscriptionState{retry_interval: retry_interval} = data
+
+    attempt = failures + 1
+
+    data = %SubscriptionState{
+      data
+      | subscribe_failures: attempt,
+        subscribe_wait: jittered_backoff(attempt, retry_interval)
+    }
 
     if failures == 0 do
       Logger.warning(
@@ -602,22 +622,26 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   @doc """
   The wait before the next subscribe attempt of a parked subscription: the full
   `retry_interval` until an attempt fails with anything but `:lock_already_taken`, then
-  the capped backoff over the consecutive failed attempts. A held subscription waits the
-  wait `held_wait/2` drew for its next probe.
+  the wait the last failed attempt drew, `jittered_backoff/2` over the consecutive failed
+  attempts. A held subscription waits the wait `held_wait/2` drew for its next probe.
+
+  A failed attempt's wait is drawn once, when it fails, and every later call answers that
+  draw: `subscribe_failures` above 0 always comes with a drawn `subscribe_wait`, and 0 with
+  none. The first wait is the full `retry_interval`, never jittered: it is not a
+  backoff over failed attempts, and it is the poll cadence of a standby, whose attempts
+  find the lock taken, so jittering it would make idle instances poll sooner.
   """
   def resubscribe_wait(%SubscriptionState{held: %{wait: wait}}), do: wait
 
-  def resubscribe_wait(%SubscriptionState{subscribe_failures: 0} = data) do
+  def resubscribe_wait(%SubscriptionState{subscribe_failures: 0, subscribe_wait: nil} = data) do
     %SubscriptionState{retry_interval: retry_interval} = data
 
     retry_interval
   end
 
-  def resubscribe_wait(%SubscriptionState{} = data) do
-    %SubscriptionState{retry_interval: retry_interval, subscribe_failures: failures} = data
-
-    retry_backoff(failures, retry_interval)
-  end
+  def resubscribe_wait(%SubscriptionState{subscribe_failures: failures, subscribe_wait: wait})
+      when failures > 0 and is_integer(wait),
+      do: wait
 
   defp subscribe_to_events(%SubscriptionState{} = data) do
     %SubscriptionState{event_store: event_store, stream_uuid: stream_uuid} = data
@@ -652,7 +676,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           last_received: max(last_received, last_ack),
           last_sent: last_ack,
           last_ack: last_ack,
-          subscribe_failures: 0
+          subscribe_failures: 0,
+          subscribe_wait: nil
       }
 
       notify_subscribed(data)
@@ -869,12 +894,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   # The capped doubling backoff after the `attempt`th consecutive failure:
   # `min(1_000, retry_interval)` after the first, doubling after each further one, up to
-  # `retry_interval`. A failed subscribe attempt waits it as it is (`resubscribe_wait/1`);
-  # a failed catch-up read and a held subscription's probe wait `jittered_backoff/2`
-  # over it. A `retry_interval` below one second caps it at `retry_interval` from the
-  # first failure; only a subscription's own `retry_interval` option can be that short,
-  # since the event store's `subscription_retry_interval` is raised to at least one
-  # second.
+  # `retry_interval`. A failed subscribe attempt, a failed catch-up read and a held
+  # subscription's probe each wait `jittered_backoff/2` over it. A `retry_interval` below
+  # one second caps it at `retry_interval` from the first failure; only a subscription's
+  # own `retry_interval` option can be that short, since the event store's
+  # `subscription_retry_interval` is raised to at least one second.
   defp retry_backoff(attempt, retry_interval) do
     first = min(1_000, retry_interval)
 
@@ -1058,8 +1082,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   `max(1, div(base, 2)) <= wait <= max(1, base)`, where `base <= retry_interval` is that backoff.
   It is never under one millisecond, so nothing that waits it retries in a tight loop.
 
-  A failed catch-up read waits it before the next read, and a held subscription before
-  its next probe (`held_wait/2`).
+  A failed catch-up read waits it before the next read, a failed subscribe attempt before
+  the next attempt (`resubscribe_wait/1`), and a held subscription before its next probe
+  (`held_wait/2`).
   """
   def jittered_backoff(attempt, retry_interval) do
     attempt
