@@ -396,10 +396,18 @@ defmodule Decree.Decision.RuleLeaksTest do
   end
 
   # The process's status, or `:gone` when it stopped after the registry still named it: the
-  # registry drops a pid only once it has seen the process go. Any other exit fails the test.
+  # registry drops a pid only once it has seen the process go. The process may stop before the
+  # call or during it; either way it is gone, and the reason it stopped with must not hold the
+  # marker. An exit from a process still alive, such as a timeout, fails the test.
   defp status_of(pid, timeout \\ 5_000) do
     {:ok, :sys.get_status(pid, timeout)}
   catch
-    :exit, {:noproc, _call} -> :gone
+    :exit, {reason, _call} = exit_reason ->
+      if Process.alive?(pid) do
+        exit(exit_reason)
+      else
+        refute holds_marker?(reason)
+        :gone
+      end
   end
 end
