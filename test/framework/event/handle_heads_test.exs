@@ -75,6 +75,37 @@ defmodule Decree.Event.HandleHeadsTest do
     injector
   end
 
+  # The refusal for a module whose `handle/2` or `__handle_heads__/0` changed after decree read
+  # the heads.
+  defp changed_after_read(name),
+    do: ~r/#{Regex.escape(name)}.*changed after decree read/s
+
+  # A `use` whose own `@before_compile`, registered after decree's, replaces every `handle/2`
+  # clause.
+  defp late_redefiner do
+    redefiner = module_name()
+
+    compile_quietly(redefiner, """
+    defmodule #{redefiner} do
+      defmacro __using__(_options) do
+        quote do
+          @before_compile #{redefiner}
+        end
+      end
+
+      defmacro __before_compile__(_env) do
+        quote do
+          defoverridable handle: 2
+
+          def handle(_event, _metadata), do: :late
+        end
+      end
+    end
+    """)
+
+    redefiner
+  end
+
   describe "a handler's `handle/2` clauses" do
     test "come back one per clause, in source order, with their lines and guards" do
       {module, binary} =
@@ -155,8 +186,8 @@ defmodule Decree.Event.HandleHeadsTest do
     end
 
     # A `use` can also define `handle/2` in its own `@before_compile`. Hooks run in the order
-    # they are registered, so the injector's clause is a head when its `use` comes first, and
-    # after decree's catch-all, unreachable, when it comes second.
+    # they are registered, so the injector's clause is a head when its `use` comes first. When
+    # it comes second, `handle/2` changes after decree read the heads, which is refused.
     test "include a clause from a `@before_compile` registered ahead of decree's" do
       injector = before_compile_injector()
 
@@ -177,22 +208,18 @@ defmodule Decree.Event.HandleHeadsTest do
       assert module.handle(%@registered{}, %{}) == {:injected, %@registered{}}
     end
 
-    test "leave out a clause from a `@before_compile` registered after decree's, which never runs" do
+    test "refuse a clause from a `@before_compile` registered after decree's" do
       injector = before_compile_injector()
+      name = injector <> ".Second"
 
-      {module, _binary} =
-        compile_quietly(
-          injector <> ".Second",
-          """
-          defmodule #{injector}.Second do
-            use Decree.Event.Handler, application: Decree.DefaultApp, name: "second"
-            use #{injector}
-          end
-          """
-        )
-
-      assert module.__handle_heads__() == []
-      assert module.handle(%@registered{}, %{}) == :ok
+      assert_raise CompileError, changed_after_read(name), fn ->
+        compile_quietly(name, """
+        defmodule #{name} do
+          use Decree.Event.Handler, application: Decree.DefaultApp, name: "second"
+          use #{injector}
+        end
+        """)
+      end
     end
 
     test "include a projector's `project` clauses" do
@@ -231,6 +258,43 @@ defmodule Decree.Event.HandleHeadsTest do
 
       assert [{3, {:%, _, [@plain, _]}, []}] = module.__handle_heads__()
       assert [_user, _catch_all] = compiled_handle_clauses(module, binary)
+    end
+  end
+
+  describe "a module whose heads change after decree read them" do
+    test "is refused when it defines `__handle_heads__/0` itself" do
+      name = module_name()
+
+      assert_raise CompileError, changed_after_read(name), fn ->
+        compile_quietly(name, """
+        defmodule #{name} do
+          use Decree.Event.Handler,
+            application: Decree.DefaultApp,
+            name: "#{name}",
+            personal_fields: :opaque
+
+          def __handle_heads__, do: []
+
+          def handle(event, _metadata), do: {:ok, event}
+        end
+        """)
+      end
+    end
+
+    test "is refused when a later `@before_compile` redefines `handle/2`" do
+      redefiner = late_redefiner()
+      name = redefiner <> ".Late"
+
+      assert_raise CompileError, changed_after_read(name), fn ->
+        compile_quietly(name, """
+        defmodule #{name} do
+          use Decree.Event.Handler, application: Decree.DefaultApp, name: "late"
+          use #{redefiner}
+
+          def handle(%#{inspect(@registered)}{} = event, _metadata), do: {:ok, event}
+        end
+        """)
+      end
     end
   end
 
