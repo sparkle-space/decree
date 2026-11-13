@@ -1,8 +1,9 @@
 defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
   use Decree.Store.StorageCase
 
-  # A subscription in `subscribed` moves only when the publisher wakes it with
-  # `{:events, _}` or `{:events_pending, _}`. A wake-up can be lost (a reconnected
+  # A subscription in `subscribed` has no timer that reads its stream: its position moves
+  # forward only when the publisher wakes it with `{:events, _}` or `{:events_pending, _}`.
+  # A wake-up can be lost (a reconnected
   # notifications connection, a failed publisher read, a notification Postgrex dropped
   # during an idle ping), which left the subscription behind until the next append to its
   # stream (sparkle-space/sparklespace#8066).
@@ -21,7 +22,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
 
   alias Decree.Store.{EventFactory, RecordedEvent, UUID, Wait}
   alias Decree.Store.Subscriptions
-  alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm}
+  alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
   alias TestEventStore, as: EventStore
 
   @missed_wake_up [:decree, :store, :subscription, :missed_wake_up]
@@ -193,6 +194,93 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     # `last_received` is never raised to the head.
     assert data.last_received == 0
     assert Map.get(data, :head_repaired) == 2
+  end
+
+  # Driven through `SubscriptionFsm` directly, so the checks run when the test says and
+  # not on a timer. `$all`'s head was 1 at the previous check and is 2 at this one, and
+  # nothing is readable under either (a hard delete). The repair records the head it
+  # read, 2, so the next check does not take the second sighting for a second lost
+  # wake-up and repair again.
+  test "a head that rose between the two sightings is repaired once", %{
+    conn: conn,
+    schema: schema,
+    serializer: serializer,
+    subscription_name: subscription_name
+  } do
+    stop_supervised!(TestEventStore)
+    start_supervised!({TestEventStore, enable_hard_deletes: true})
+
+    stream_uuid = UUID.uuid4()
+    :ok = EventStore.append_to_stream(stream_uuid, 0, EventFactory.create_events(2))
+    :ok = EventStore.delete_stream(stream_uuid, :any_version, :hard)
+
+    assert {:ok, %{stream_version: 2}} = EventStore.stream_info(:all)
+    assert {:ok, []} = EventStore.read_all_streams_forward()
+
+    %SubscriptionFsm{data: %SubscriptionState{} = data} =
+      fsm =
+      SubscriptionFsm.new("$all", subscription_name,
+        conn: conn,
+        event_store: TestEventStore,
+        schema: schema,
+        serializer: serializer,
+        head_check_interval: @head_check_interval
+      )
+
+    # Subscribed with nothing received, and head 1 seen at the previous check.
+    fsm = %SubscriptionFsm{
+      fsm
+      | state: :subscribed,
+        data: %SubscriptionState{data | head_seen: 1}
+    }
+
+    # This check confirms head 1 and repairs it; three more checks follow. A check that
+    # asks to catch up is caught up, as `Subscription` does.
+    fsm =
+      Enum.reduce(1..4, fsm, fn _check, fsm ->
+        fsm = SubscriptionFsm.check_head(fsm)
+
+        case fsm.state do
+          :request_catch_up -> SubscriptionFsm.catch_up(fsm)
+          _state -> fsm
+        end
+      end)
+
+    assert %SubscriptionFsm{state: :subscribed, data: data} = fsm
+    assert data.last_received == 0
+
+    repairs = collect_missed_wake_ups()
+
+    assert length(repairs) == 1,
+           "#{length(repairs)} missed wake-ups for one lost wake-up: #{inspect(repairs)}"
+
+    assert [%{head: 2, seen_head: 1, last_received: 0}] = repairs
+  end
+
+  describe "an invalid head_check_interval option" do
+    for invalid <- [0, -1, -10, "1000", 1.5, nil] do
+      @invalid invalid
+
+      test "#{inspect(invalid)} is refused and starts no subscription", %{
+        subscription_name: subscription_name
+      } do
+        assert EventStore.subscribe_to_stream("$all", subscription_name, self(),
+                 head_check_interval: @invalid
+               ) == {:error, :invalid_head_check_interval}
+
+        refute_received {:subscribed, _subscription}
+        assert local(subscription_name) == []
+        assert {[], 0} = EventStore.local_subscriptions()
+      end
+    end
+
+    test "a positive interval under a second is allowed", %{
+      subscription_name: subscription_name
+    } do
+      subscription = subscribe("$all", subscription_name, head_check_interval: 400)
+
+      assert Map.get(fsm(subscription).data, :head_check_interval) == 400
+    end
   end
 
   test "a failed head read stays subscribed and the next good read repairs", %{
@@ -436,6 +524,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     %Subscription{subscription: %SubscriptionFsm{} = fsm} = :sys.get_state(subscription)
 
     fsm
+  end
+
+  defp collect_missed_wake_ups do
+    receive do
+      {:telemetry, @missed_wake_up, _measurements, metadata} ->
+        [metadata | collect_missed_wake_ups()]
+    after
+      0 -> []
+    end
   end
 
   defp now, do: System.monotonic_time(:millisecond)
