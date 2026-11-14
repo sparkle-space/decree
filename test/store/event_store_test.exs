@@ -427,7 +427,7 @@ defmodule Decree.Store.EventStoreTest do
   test "read a snapshot" do
     snapshot = record_snapshot()
 
-    {:ok, read_snapshot} = EventStore.read_snapshot(snapshot.source_uuid)
+    {:ok, read_snapshot} = EventStore.read_snapshot(snapshot.source_uuid, snapshot_version: 1)
 
     assert snapshot.source_uuid == read_snapshot.source_uuid
     assert snapshot.source_version == read_snapshot.source_version
@@ -440,14 +440,20 @@ defmodule Decree.Store.EventStoreTest do
 
     :ok = EventStore.delete_snapshot(snapshot.source_uuid)
 
-    assert {:error, :snapshot_not_found} == EventStore.read_snapshot(snapshot.source_uuid)
+    assert {:error, :snapshot_not_found} ==
+             EventStore.read_snapshot(snapshot.source_uuid, snapshot_version: 1)
   end
 
+  # A versioned snapshot write needs its source's stream.
   defp record_snapshot do
+    source_uuid = UUID.uuid4()
+    :ok = EventStore.append_to_stream(source_uuid, 0, EventFactory.create_events(1))
+
     snapshot = %SnapshotData{
-      source_uuid: UUID.uuid4(),
+      source_uuid: source_uuid,
       source_version: 1,
       source_type: Atom.to_string(ExampleData),
+      snapshot_version: 1,
       data: %ExampleData{data: "some data"}
     }
 

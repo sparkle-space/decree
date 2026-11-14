@@ -13,21 +13,17 @@ defmodule Event do
   defstruct [:data, version: "1"]
 end
 
-defmodule Snapshot do
-  @derive Jason.Encoder
-  defstruct [:data, version: "1"]
-end
-
 defmodule Seed do
   alias Decree.Store.{EventData, UUID}
-  alias Decree.Store.Snapshots.SnapshotData
 
   def run(opts \\ []) do
     append_events(opts)
     # The committed dumps were seeded with links, by a step removed with links in
     # sparkle-space/sparklespace#8075, and `migrated_event_store_test.exs` "read linked stream
     # forward" reads them. A re-seed has none, so that test would then have nothing to read.
-    record_snapshots(opts)
+    # They were seeded with ten rows of the one-row `snapshots` table too, by a step removed
+    # with the store's unversioned snapshot write in sparkle-space/sparklespace#8200, and
+    # `migrated_event_store_test.exs` checks the migration keeps them. A re-seed has none.
     subscribe_to_streams()
   end
 
@@ -48,21 +44,6 @@ defmodule Seed do
         end
 
       :ok = TestEventStore.append_to_stream("stream-#{stream_index}", 0, events)
-    end
-  end
-
-  defp record_snapshots(opts) do
-    snapshot_count = Keyword.get(opts, :snapshot_count, 10)
-
-    for i <- 1..snapshot_count do
-      snapshot = %SnapshotData{
-        source_uuid: "snapshot-#{i}",
-        source_version: 1,
-        source_type: "Elixir.Snapshot",
-        data: %Snapshot{data: i}
-      }
-
-      :ok = TestEventStore.record_snapshot(snapshot)
     end
   end
 
@@ -91,5 +72,5 @@ end
 
 {:ok, _pid} = TestEventStore.start_link()
 
-# Seed.run(stream_count: 1_000, event_count: 100, snapshot_count: 1_000)
+# Seed.run(stream_count: 1_000, event_count: 100)
 Seed.run()

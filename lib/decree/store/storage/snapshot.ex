@@ -6,9 +6,9 @@ defmodule Decree.Store.Storage.Snapshot do
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Sql.Statements
 
-  # A snapshot with a `snapshot_version` is a row of `versioned_snapshots`, one per source and
-  # version. One without is the one-row `snapshots` table that a pod from before store
-  # migration 1.10.0 still reads and writes: the legacy path, kept until a later release.
+  # A snapshot is a row of `versioned_snapshots`, one per source and snapshot version. A read
+  # or write with a nil or absent `snapshot_version` is refused with
+  # `{:error, :invalid_snapshot_version}`.
 
   def read_snapshot(conn, source_uuid, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
@@ -32,40 +32,12 @@ defmodule Decree.Store.Storage.Snapshot do
     end
   end
 
-  defp read_query(schema, source_uuid, nil),
-    do: {:ok, Statements.query_snapshot(schema), [source_uuid]}
-
   defp read_query(schema, source_uuid, snapshot_version)
        when is_integer(snapshot_version) and snapshot_version >= 0,
        do: {:ok, Statements.query_versioned_snapshot(schema), [source_uuid, snapshot_version]}
 
   defp read_query(_schema, _source_uuid, _snapshot_version),
     do: {:error, :invalid_snapshot_version}
-
-  def record_snapshot(conn, %SnapshotData{snapshot_version: nil} = snapshot, opts) do
-    %SnapshotData{
-      source_uuid: source_uuid,
-      source_version: source_version,
-      source_type: source_type,
-      data: data,
-      metadata: metadata
-    } = snapshot
-
-    {schema, opts} = Keyword.pop(opts, :schema)
-
-    query = Statements.insert_snapshot(schema)
-    params = [source_uuid, source_version, source_type, data, metadata]
-
-    case Postgrex.query(conn, query, params, opts) do
-      {:ok, _result} ->
-        :ok
-
-      {:error, error} = reply ->
-        log_failed_record(snapshot, error)
-
-        reply
-    end
-  end
 
   # One transaction: the stream's row FOR KEY SHARE, then the upsert. No row answers
   # `:stream_not_found` and writes nothing.
@@ -129,7 +101,7 @@ defmodule Decree.Store.Storage.Snapshot do
 
   def record_snapshot(_conn, %SnapshotData{}, _opts), do: {:error, :invalid_snapshot_version}
 
-  # Every row of the source: the legacy row and every version's.
+  # Every version's row of the source.
   def delete_snapshot(conn, source_uuid, opts) do
     {schema, opts} = Keyword.pop(opts, :schema)
 
@@ -178,24 +150,6 @@ defmodule Decree.Store.Storage.Snapshot do
       "Failed to record snapshot for source \"#{source_uuid}\" at version \"#{source_version}\" due to: " <>
         inspect(error)
     )
-  end
-
-  defp to_snapshot_from_row([
-         source_uuid,
-         source_version,
-         source_type,
-         data,
-         metadata,
-         created_at
-       ]) do
-    %SnapshotData{
-      source_uuid: source_uuid,
-      source_version: source_version,
-      source_type: source_type,
-      data: data,
-      metadata: metadata,
-      created_at: created_at
-    }
   end
 
   defp to_snapshot_from_row([

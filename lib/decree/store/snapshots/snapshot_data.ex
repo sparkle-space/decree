@@ -2,10 +2,9 @@ defmodule Decree.Store.Snapshots.SnapshotData do
   @moduledoc """
   Snapshot data.
 
-  `snapshot_version` names the row: an integer is the version of the snapshot's shape, one
-  row per source and version in `versioned_snapshots`; nil is the one-row `snapshots` table
-  that a pod from before store migration 1.10.0 reads and writes, kept until a later
-  release.
+  `snapshot_version` names the row: the version of the snapshot's shape, one row per source
+  and version in `versioned_snapshots`. A nil `snapshot_version` is refused with
+  `{:error, :invalid_snapshot_version}`.
   """
 
   alias Decree.Store.Snapshots.SnapshotData

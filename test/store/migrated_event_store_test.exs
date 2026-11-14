@@ -3,16 +3,10 @@ defmodule Event do
   defstruct [:data, version: "1"]
 end
 
-defmodule Snapshot do
-  @derive Jason.Encoder
-  defstruct [:data, version: "1"]
-end
-
 defmodule Decree.Store.MigratedEventStoreTest do
   use ExUnit.Case
 
-  alias Decree.Store.{RecordedEvent, StorageInitializer}
-  alias Decree.Store.Snapshots.SnapshotData
+  alias Decree.Store.{Config, RecordedEvent, StorageInitializer}
 
   @moduletag :migration
 
@@ -25,8 +19,9 @@ defmodule Decree.Store.MigratedEventStoreTest do
     migrate_eventstore(config)
 
     start_supervised!(TestEventStore)
+    conn = start_supervised!({Postgrex, Config.default_postgrex_opts(config)})
 
-    :ok
+    [conn: conn]
   end
 
   describe "migrated event store" do
@@ -91,21 +86,30 @@ defmodule Decree.Store.MigratedEventStoreTest do
       refute_receive {:events, _received_events}
     end
 
-    test "read a snapshot" do
+    # The dump's snapshots are rows of the one-row `snapshots` table, which the migration
+    # keeps. No code path reads that table: a read without a snapshot version is refused.
+    test "keeps the legacy snapshot rows, and an unversioned read is refused", %{conn: conn} do
+      %Postgrex.Result{rows: rows} =
+        Postgrex.query!(
+          conn,
+          ~s|SELECT source_uuid, source_version, source_type, data FROM "public".snapshots|,
+          []
+        )
+
+      expected =
+        for i <- 1..10 do
+          ["snapshot-#{i}", 1, "Elixir.Snapshot", %{"data" => i, "version" => "1"}]
+        end
+
+      assert rows
+             |> Enum.map(fn [uuid, version, type, data] ->
+               [uuid, version, type, Jason.decode!(data)]
+             end)
+             |> Enum.sort() == Enum.sort(expected)
+
       for i <- 1..10 do
-        {:ok, snapshot} = TestEventStore.read_snapshot("snapshot-#{i}")
-
-        expected_source_uuid = "snapshot-#{i}"
-
-        assert match?(
-                 %SnapshotData{
-                   source_uuid: ^expected_source_uuid,
-                   source_version: 1,
-                   source_type: "Elixir.Snapshot",
-                   data: %Snapshot{data: ^i}
-                 },
-                 snapshot
-               )
+        assert TestEventStore.read_snapshot("snapshot-#{i}") ==
+                 {:error, :invalid_snapshot_version}
       end
     end
   end

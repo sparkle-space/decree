@@ -123,6 +123,22 @@ Reached by another route, with the same assertions:
 - `test/framework/event/event_handler_subscription_test.exs` asserts the `:origin` start in the stub's body, where the adapter stub matched it in its head. A mismatch still fails the subscribing handler.
 - `test/framework/aggregates/aggregate_concurrency_test.exs` expects `subscribe_to_stream/4`, the store's callback for a single stream, where it expected `subscribe_to/6` with a binary stream.
 
+## Deleted with the unversioned snapshot path
+
+The store's unversioned snapshot read and write, and `Decree.EventStore.read_snapshot/2`, are deleted (#8200, founder ruling RD-1 2026-11-14): a snapshot is a row at a snapshot version, and a nil version answers `{:error, :invalid_snapshot_version}`. `test/store/storage/legacy_snapshot_removed_test.exs` and `test/framework/event_store/legacy_snapshot_removed_test.exs` pin the refusal.
+
+Test cases removed from files that stay:
+
+- `test/framework/event_store/telemetry_test.exs`: "emit `[:decree, :event_store, :read_snapshot, :start | :stop]` event", a `read_snapshot/2` read. The case "... event at a version" covers the same span.
+
+Kept and rewritten, with the same assertions at snapshot version 1, each source's stream appended first because a versioned write needs it:
+
+- the conformance `SnapshotTestCase` (`test/framework/event_store/support/snapshot_test_case.ex`, run by `test/conformance/event_store/snapshot_test.exs`): record, read, read when absent, delete;
+- `test/framework/event_store/telemetry_test.exs` "emit `[:decree, :event_store, :record_snapshot, :start | :stop]` event", whose span numbers follow the append's, as the `ack_event` case's do;
+- `test/store/storage/snapshot_test.exs`, `test/store/event_store_test.exs` "read a snapshot" and "delete a snapshot", and `test/store/multi_event_store_test.exs` "should record and read snapshot from multiple stores", whose second store still reads no snapshot before its own is recorded.
+
+`test/store/migrated_event_store_test.exs` "read a snapshot" is "keeps the legacy snapshot rows, and an unversioned read is refused": it reads the dump's ten rows from `snapshots` with SQL, the same source, version, type and data, and an unversioned read of each answers `{:error, :invalid_snapshot_version}`. `test/store/manual/seed_eventstore.exs`, a script and not a test, loses its snapshot step; the committed dumps keep their rows.
+
 ## Upstream test configurations not run
 
 - eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.

@@ -5,8 +5,9 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
   alias Decree.Store.Snapshots.{SnapshotData, Snapshotter}
   alias Decree.Store.Storage.{DeleteStream, Initializer}
 
-  # One row per source and snapshot version in `versioned_snapshots`, beside the one-row
-  # `snapshots` table that a pod from before store migration 1.10.0 still reads and writes.
+  # One row per source and snapshot version in `versioned_snapshots`. The one-row `snapshots`
+  # table from before store migration 1.10.0 is never read or written: a row an old pod
+  # wrote there is left as it is (`legacy_snapshot_removed_test.exs`).
 
   defmodule Snap do
     @moduledoc false
@@ -78,56 +79,24 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
                  store.read_snapshot(source_uuid, snapshot_version: 1)
       end
 
-      test "a legacy row is independent of every version", context do
-        %{store: store} = context
-        source_uuid = stream(store)
-
-        :ok = store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"}))
-        :ok = store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1}))
-        :ok = store.record_snapshot(snapshot(source_uuid, 2, %Snap{at: 2}))
-
-        assert {:ok, %SnapshotData{snapshot_version: nil, data: %Snap{at: "legacy"}}} =
-                 store.read_snapshot(source_uuid)
-
-        assert {:ok, %SnapshotData{data: %Snap{at: 1}}} =
-                 store.read_snapshot(source_uuid, snapshot_version: 1)
-
-        assert count(context, "snapshots", source_uuid) == 1
-        assert count(context, "versioned_snapshots", source_uuid) == 2
-      end
-
-      test "a legacy write needs no stream, as before", context do
-        %{store: store} = context
-        source_uuid = UUID.uuid4()
-
-        :ok = store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"}))
-
-        assert {:ok, %SnapshotData{data: %Snap{at: "legacy"}}} = store.read_snapshot(source_uuid)
-      end
-
-      test "delete_snapshot removes the legacy row and every version's", context do
+      test "delete_snapshot removes every version's row of the source and no other's",
+           context do
         %{store: store} = context
         source_uuid = stream(store)
         other_uuid = stream(store)
 
-        :ok = store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"}))
         :ok = store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1}))
         :ok = store.record_snapshot(snapshot(source_uuid, 2, %Snap{at: 2}))
-        :ok = store.record_snapshot(snapshot(other_uuid, nil, %Snap{at: "legacy"}))
         :ok = store.record_snapshot(snapshot(other_uuid, 1, %Snap{at: 1}))
 
         assert :ok = store.delete_snapshot(source_uuid)
-
-        assert {:error, :snapshot_not_found} = store.read_snapshot(source_uuid)
 
         for version <- [1, 2] do
           assert {:error, :snapshot_not_found} =
                    store.read_snapshot(source_uuid, snapshot_version: version)
         end
 
-        assert count(context, "snapshots", source_uuid) == 0
         assert count(context, "versioned_snapshots", source_uuid) == 0
-        assert count(context, "snapshots", other_uuid) == 1
         assert count(context, "versioned_snapshots", other_uuid) == 1
       end
 
@@ -197,7 +166,8 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         LockSession.rollback(appender)
       end
 
-      test "prune deletes one type's rows below a version, and no legacy row", context do
+      test "prune deletes one type's rows below a version, and leaves the legacy row",
+           context do
         %{store: store} = context
         t = stream(store)
         u = stream(store)
@@ -207,7 +177,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         end
 
         :ok = store.record_snapshot(other_type(snapshot(u, 1, %OtherSnap{})))
-        :ok = store.record_snapshot(snapshot(t, nil, %Snap{}))
+        insert_legacy_row(context, t)
 
         assert store.prune_snapshots(Atom.to_string(Snap), 3) == {:ok, 2}
 
@@ -215,7 +185,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         assert {:error, :snapshot_not_found} = store.read_snapshot(t, snapshot_version: 2)
         assert {:error, :snapshot_not_found} = store.read_snapshot(t, snapshot_version: 1)
         assert {:ok, %SnapshotData{}} = store.read_snapshot(u, snapshot_version: 1)
-        assert {:ok, %SnapshotData{}} = store.read_snapshot(t)
+        assert count(context, "snapshots", t) == 1
 
         assert store.prune_snapshots(Atom.to_string(Snap), 3) == {:ok, 0}
       end
@@ -231,21 +201,21 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         [store: store, schema: unquote(schema)]
       end
 
-      test "removes its stream's rows in both tables, at every version, and no other's",
+      test "removes its stream's rows at every version, no other's, and no legacy row",
            context do
         %{store: store} = context
         deleted = stream(store)
         kept = stream(store)
 
         for source_uuid <- [deleted, kept] do
-          :ok = store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"}))
+          insert_legacy_row(context, source_uuid)
           :ok = store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1}))
           :ok = store.record_snapshot(snapshot(source_uuid, 2, %Snap{at: 2}))
         end
 
         :ok = store.delete_stream(deleted, :any_version, :hard)
 
-        assert count(context, "snapshots", deleted) == 0
+        assert count(context, "snapshots", deleted) == 1
         assert count(context, "versioned_snapshots", deleted) == 0
         assert count(context, "snapshots", kept) == 1
         assert count(context, "versioned_snapshots", kept) == 2
@@ -257,7 +227,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
           context
 
         source_uuid = stream(store)
-        :ok = store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"}))
+        insert_legacy_row(context, source_uuid)
 
         # The store's own versioned write, its stream's row held FOR KEY SHARE and its row
         # upserted, held open before commit.
@@ -280,7 +250,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         assert Task.await(erase) == :ok
         assert StoreRows.stream_id(%{observer: observer, schema: schema}, source_uuid) == nil
         assert count(context, "versioned_snapshots", source_uuid) == 0
-        assert count(context, "snapshots", source_uuid) == 0
+        assert count(context, "snapshots", source_uuid) == 1
       end
 
       test "held before commit, makes a versioned write wait, which then finds no stream",
@@ -291,7 +261,7 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
         source_uuid = stream(store)
         stream_id = StoreRows.stream_id(%{observer: observer, schema: schema}, source_uuid)
 
-        # The store's own hard delete, all five statements, held open before commit.
+        # The store's own hard delete, all four statements, held open before commit.
         eraser = LockSession.start(postgrex_config)
 
         :ok =
@@ -319,6 +289,27 @@ defmodule Decree.Store.Storage.VersionedSnapshotTest do
     :ok = store.append_to_stream(stream_uuid, 0, EventFactory.create_events(1))
 
     stream_uuid
+  end
+
+  # The row a pod from before store migration 1.10.0 writes to the one-row `snapshots` table.
+  defp insert_legacy_row(context, source_uuid) do
+    %{conn: conn, schema: schema, serializer: serializer} = context
+
+    Postgrex.query!(
+      conn,
+      ~s|INSERT INTO "#{schema}".snapshots | <>
+        "(source_uuid, source_version, source_type, data, metadata) " <>
+        "VALUES ($1, $2, $3, $4, $5)",
+      [
+        source_uuid,
+        1,
+        Atom.to_string(Snap),
+        serializer.serialize(%Snap{at: "legacy"}),
+        serializer.serialize(%{})
+      ]
+    )
+
+    :ok
   end
 
   defp snapshot(source_uuid, snapshot_version, data) do

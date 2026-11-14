@@ -31,8 +31,7 @@ defmodule Decree.Store.Snapshots.Snapshotter do
   end
 
   @doc """
-  Delete a previously recorded snapshot for a given source: its legacy row and every
-  version's.
+  Delete a previously recorded snapshot for a given source: every version's row.
 
   Returns `:ok` on success.
   """
