@@ -5,6 +5,9 @@ defmodule Decree.Store.Storage.SnapshotTest do
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Storage.Snapshot
 
+  # A snapshot is a row at a snapshot version, and a write needs its source's stream.
+  @snapshot_version 1
+
   describe "read snapshot" do
     test "should error when none exists", context do
       source_uuid = UUID.uuid4()
@@ -13,7 +16,7 @@ defmodule Decree.Store.Storage.SnapshotTest do
     end
 
     test "should read successfully when present", context do
-      source_uuid = UUID.uuid4()
+      source_uuid = stream()
       source_version = 1
       recorded_event = hd(EventFactory.create_recorded_events(1, source_uuid))
 
@@ -38,7 +41,7 @@ defmodule Decree.Store.Storage.SnapshotTest do
 
   describe "record snapshot" do
     test "should record snapshot when none exists", context do
-      source_uuid = UUID.uuid4()
+      source_uuid = stream()
       source_version = 1
       recorded_event = hd(EventFactory.create_recorded_events(1, source_uuid))
 
@@ -53,7 +56,7 @@ defmodule Decree.Store.Storage.SnapshotTest do
     end
 
     test "should modify snapshot when already exists", context do
-      source_uuid = UUID.uuid4()
+      source_uuid = stream()
       [recorded_event1, recorded_event2] = EventFactory.create_recorded_events(2, source_uuid)
 
       :ok =
@@ -83,7 +86,7 @@ defmodule Decree.Store.Storage.SnapshotTest do
   end
 
   test "record snapshot when present should update existing", context do
-    source_uuid = UUID.uuid4()
+    source_uuid = stream()
     initial_recorded_event = hd(EventFactory.create_recorded_events(1, source_uuid))
     updated_recorded_event = hd(EventFactory.create_recorded_events(1, source_uuid, 2))
 
@@ -116,7 +119,7 @@ defmodule Decree.Store.Storage.SnapshotTest do
 
   describe "delete snapshot" do
     test "should delete existing snapshot", context do
-      source_uuid = UUID.uuid4()
+      source_uuid = stream()
       source_version = 1
       recorded_event = hd(EventFactory.create_recorded_events(1, source_uuid))
 
@@ -141,14 +144,27 @@ defmodule Decree.Store.Storage.SnapshotTest do
     end
   end
 
+  defp stream do
+    source_uuid = UUID.uuid4()
+
+    :ok = TestEventStore.append_to_stream(source_uuid, 0, EventFactory.create_events(1))
+
+    source_uuid
+  end
+
   defp read_snapshot(context, source_uuid) do
     %{conn: conn, schema: schema} = context
 
-    Snapshot.read_snapshot(conn, source_uuid, schema: schema)
+    Snapshot.read_snapshot(conn, source_uuid,
+      schema: schema,
+      snapshot_version: @snapshot_version
+    )
   end
 
   defp record_snapshot(context, %SnapshotData{} = snapshot) do
     %{conn: conn, schema: schema} = context
+
+    snapshot = %SnapshotData{snapshot | snapshot_version: @snapshot_version}
 
     Snapshot.record_snapshot(conn, snapshot, schema: schema)
   end

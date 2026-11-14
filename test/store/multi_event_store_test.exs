@@ -101,10 +101,14 @@ defmodule Decree.Store.MultiEventStoreTest do
     test "should record and read snapshot from multiple stores" do
       source_uuid = UUID.uuid4()
 
-      assert {:error, :snapshot_not_found} == TestEventStore.read_snapshot(source_uuid)
+      assert {:error, :snapshot_not_found} ==
+               TestEventStore.read_snapshot(source_uuid, snapshot_version: 1)
+
       snapshot1 = record_snapshot(TestEventStore, source_uuid)
 
-      assert {:error, :snapshot_not_found} == SecondEventStore.read_snapshot(source_uuid)
+      assert {:error, :snapshot_not_found} ==
+               SecondEventStore.read_snapshot(source_uuid, snapshot_version: 1)
+
       snapshot2 = record_snapshot(SecondEventStore, source_uuid)
 
       assert_snapshot(TestEventStore, snapshot1)
@@ -113,7 +117,7 @@ defmodule Decree.Store.MultiEventStoreTest do
   end
 
   defp assert_snapshot(event_store, snapshot) do
-    {:ok, read_snapshot} = event_store.read_snapshot(snapshot.source_uuid)
+    {:ok, read_snapshot} = event_store.read_snapshot(snapshot.source_uuid, snapshot_version: 1)
 
     assert snapshot.source_uuid == read_snapshot.source_uuid
     assert snapshot.source_version == read_snapshot.source_version
@@ -178,11 +182,15 @@ defmodule Decree.Store.MultiEventStoreTest do
     assert uuid |> UUID.string_to_binary!() |> is_binary()
   end
 
+  # A versioned snapshot write needs its source's stream, in the store it is written to.
   defp record_snapshot(event_store, source_uuid) do
+    :ok = event_store.append_to_stream(source_uuid, 0, EventFactory.create_events(1))
+
     snapshot = %SnapshotData{
       source_uuid: source_uuid,
       source_version: 1,
       source_type: Atom.to_string(ExampleData),
+      snapshot_version: 1,
       data: %ExampleData{data: "some data"}
     }
 

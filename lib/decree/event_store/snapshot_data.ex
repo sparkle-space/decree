@@ -3,7 +3,8 @@ defmodule Decree.EventStore.SnapshotData do
   Snapshot data
 
   `snapshot_version` is the version of the snapshot's shape, and with the source names its
-  row: code at two versions keeps two rows. nil is the store's legacy one-row table.
+  row: code at two versions keeps two rows. A nil `snapshot_version` is refused with
+  `{:error, :invalid_snapshot_version}`.
   """
 
   @type t :: %Decree.EventStore.SnapshotData{

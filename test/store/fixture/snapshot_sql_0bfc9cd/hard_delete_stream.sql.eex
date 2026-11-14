@@ -1,0 +1,55 @@
+<%!--
+  The third of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Its snapshot
+  starts after the stream's row is locked, so it sees everything an append committed while
+  that was held, and with the row held nothing can add a `stream_events` row of these events:
+  no link exists or can be made. The tag and type rows go here, with the events, because a
+  tag row has no foreign key to answer for it: `$all`'s `stream_events` rows are the only
+  record of an event's position, so they are what this statement finds them by.
+
+  `linked_events` deletes every other `stream_events` row of these events: `$all`'s, and any
+  link row a store still holds from before links were removed. It also deletes the stream's
+  own rows, and may or may not return them, because `deleted_stream_events` reached them
+  first in this statement. That is why it is read for `stream_id = 0` only: `$all`'s rows are
+  in that CTE and no other.
+
+  `event_tags` rows are locked by `position, tag`, the order `delete_stream_tags` locks them
+  in. The two meet on tag rows only through such a stored link row, with no common lock: this
+  one holds the linking stream's row and that one the subject's. One order means no cycle. A
+  row the other took first is skipped: it is gone, as this statement wants it.
+--%>
+WITH deleted_stream_events AS (
+  DELETE FROM "<%= schema %>".stream_events
+  WHERE stream_id = $1
+  RETURNING event_id
+),
+linked_events AS (
+  DELETE FROM "<%= schema %>".stream_events
+  WHERE event_id IN (SELECT event_id FROM deleted_stream_events)
+  RETURNING event_id, stream_id, stream_version
+),
+events AS (
+  DELETE FROM "<%= schema %>".events
+  WHERE event_id IN (SELECT event_id FROM deleted_stream_events)
+  RETURNING event_id, event_type
+),
+locked_event_tags AS (
+  SELECT tag, position
+  FROM "<%= schema %>".event_tags
+  WHERE position IN (SELECT stream_version FROM linked_events WHERE stream_id = 0)
+  ORDER BY position, tag
+  FOR UPDATE
+),
+deleted_event_tags AS (
+  DELETE FROM "<%= schema %>".event_tags t
+  USING locked_event_tags locked
+  WHERE t.tag = locked.tag AND t.position = locked.position
+),
+deleted_event_types AS (
+  DELETE FROM "<%= schema %>".event_types t
+  USING linked_events all_link
+  JOIN events ON events.event_id = all_link.event_id
+  WHERE all_link.stream_id = 0
+    AND t.event_type = events.event_type COLLATE "C"
+    AND t.position = all_link.stream_version
+)
+SELECT 1;

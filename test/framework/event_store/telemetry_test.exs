@@ -36,28 +36,25 @@ defmodule Decree.EventStore.TelemetryTest do
 
   describe "snapshotting telemetry events" do
     test "emit `[:decree, :event_store, :record_snapshot, :start | :stop]` event" do
+      # A versioned snapshot write needs its source's stream.
+      uuid = UUID.uuid4()
+      event_data = %EventData{event_type: "Elixir.Decree.Event.ReplyEvent", data: %{}}
+      :ok = EventStore.append_to_stream(DefaultApp, uuid, 0, [event_data])
+
       snapshot = %SnapshotData{
-        source_uuid: UUID.uuid4(),
+        source_uuid: uuid,
         source_version: 1,
         source_type: "Elixir.Decree.Aggregates.ExampleAggregate",
+        snapshot_version: 1,
         data: %{},
         metadata: %{}
       }
 
       assert :ok = EventStore.record_snapshot(DefaultApp, snapshot)
 
-      assert_receive {[:decree, :event_store, :record_snapshot, :start], 1, _meas, _meta}
-      assert_receive {[:decree, :event_store, :record_snapshot, :stop], 2, _meas, meta}
+      assert_receive {[:decree, :event_store, :record_snapshot, :start], 3, _meas, _meta}
+      assert_receive {[:decree, :event_store, :record_snapshot, :stop], 4, _meas, meta}
       assert %{application: DefaultApp, snapshot: ^snapshot} = meta
-    end
-
-    test "emit `[:decree, :event_store, :read_snapshot, :start | :stop]` event" do
-      uuid = UUID.uuid4()
-      assert {:error, :snapshot_not_found} = EventStore.read_snapshot(DefaultApp, uuid)
-
-      assert_receive {[:decree, :event_store, :read_snapshot, :start], 1, _meas, _meta}
-      assert_receive {[:decree, :event_store, :read_snapshot, :stop], 2, _meas, meta}
-      assert %{application: DefaultApp, source_uuid: ^uuid} = meta
     end
 
     test "emit `[:decree, :event_store, :read_snapshot, :start | :stop]` event at a version" do

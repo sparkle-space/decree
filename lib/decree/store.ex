@@ -1512,11 +1512,10 @@ defmodule Decree.Store do
   expected version, and is deleted with the rest under `:any_version` or `:stream_exists`.
   An append into the stream waiting on that lock answers `{:error, :not_found}`.
 
-  Last, the stream's snapshots go: its row in the legacy `snapshots` table and its row at
-  every version in `versioned_snapshots`, by the stream's `stream_uuid`. A versioned
-  snapshot write takes the stream's row first (see `c:record_snapshot/2`), so one that
-  commits before the delete is deleted with the rest, and one that comes after it finds no
-  stream and writes nothing.
+  Last, the stream's row goes, and its snapshot rows at every version in
+  `versioned_snapshots` go with it, by their foreign key's cascade. A snapshot write takes
+  the stream's row first (see `c:record_snapshot/2`), so one that commits before the delete
+  is deleted with the rest, and one that comes after it finds no stream and writes nothing.
 
   After being hard deleted, a stream can later be appended to and read as if it
   had never existed.
@@ -2177,36 +2176,39 @@ defmodule Decree.Store do
   @doc """
   Read a snapshot, if available, for a given source.
 
-  With `snapshot_version: version` (a non-negative integer) in `opts`, reads that version's
-  row of `versioned_snapshots`, where a source has one row per version. Without it, reads
-  the one-row `snapshots` table that a pod from before store migration 1.10.0 reads and
-  writes: the legacy path, kept until a later release.
+  `snapshot_version: version` (a non-negative integer) in `opts` is required: reads that
+  version's row of `versioned_snapshots`, where a source has one row per version. A nil,
+  absent or invalid `snapshot_version` is refused with `{:error, :invalid_snapshot_version}`.
 
   Returns `{:ok, %Decree.Store.Snapshots.SnapshotData{}}` on success, or
   `{:error, :snapshot_not_found}` when unavailable.
   """
   @callback read_snapshot(source_uuid :: String.t(), opts :: options) ::
-              {:ok, SnapshotData.t()} | {:error, :snapshot_not_found}
+              {:ok, SnapshotData.t()}
+              | {:error, :snapshot_not_found}
+              | {:error, :invalid_snapshot_version}
 
   @doc """
   Record a snapshot of the data and metadata for a given source.
 
-  A snapshot whose `snapshot_version` is an integer is recorded as that version's row of
-  `versioned_snapshots`, replacing only that version's. It is written in one transaction
-  that first takes the row of the stream named `source_uuid`: with no such stream it
-  answers `{:error, :stream_not_found}` and writes nothing. The row's foreign key to its
-  stream cascades the stream's hard delete, by this release or an older one, so a snapshot
-  never outlives its stream. One whose `snapshot_version` is nil is the legacy one-row
-  `snapshots` table, written as before, with no stream needed.
+  The snapshot is recorded as its `snapshot_version`'s row of `versioned_snapshots`,
+  replacing only that version's. It is written in one transaction that first takes the row
+  of the stream named `source_uuid`: with no such stream it answers
+  `{:error, :stream_not_found}` and writes nothing. The row's foreign key to its stream
+  cascades the stream's hard delete, so a snapshot never outlives its stream. A snapshot
+  whose `snapshot_version` is nil or not a non-negative integer is refused with
+  `{:error, :invalid_snapshot_version}` and writes nothing.
 
   Returns `:ok` on success.
   """
   @callback record_snapshot(snapshot :: SnapshotData.t(), opts :: options) ::
-              :ok | {:error, :stream_not_found} | {:error, reason :: term}
+              :ok
+              | {:error, :stream_not_found}
+              | {:error, :invalid_snapshot_version}
+              | {:error, reason :: term}
 
   @doc """
-  Delete a previously recorded snapshop for a given source: the legacy row and every
-  version's row.
+  Delete a previously recorded snapshot for a given source: every version's row.
 
   Returns `:ok` on success, or when the snapshot does not exist.
   """
@@ -2215,16 +2217,20 @@ defmodule Decree.Store do
 
   @doc """
   Delete the rows of `versioned_snapshots` with the given `source_type` whose
-  `snapshot_version` is below the given one. The legacy `snapshots` table is never touched.
-  For an operator, once no running code reads an older version.
+  `snapshot_version` is below the given one. For an operator, once no running code reads an
+  older version.
 
-  Returns `{:ok, count}`, the number of rows deleted.
+  Returns `{:ok, count}`, the number of rows deleted, or `{:error, :invalid_snapshot_version}`
+  when `snapshot_version` is not a non-negative integer.
   """
   @callback prune_snapshots(
               source_type :: String.t(),
               snapshot_version :: non_neg_integer,
               opts :: options
-            ) :: {:ok, non_neg_integer} | {:error, reason :: term}
+            ) ::
+              {:ok, non_neg_integer}
+              | {:error, :invalid_snapshot_version}
+              | {:error, reason :: term}
 
   @doc """
   Returns all running Decree.Store instances.
