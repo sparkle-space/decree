@@ -413,8 +413,9 @@ defmodule Decree.Store.Subscriptions.Subscription do
   # Attempt to subscribe to an initial or disconnected subscription, or probe a held one,
   # after the wait the FSM gives. Every pass through a parked state comes here (a
   # subscriber connecting, an ack, events), so a timer is armed only when none is pending
-  # or when it is due sooner. A held subscription's wait is drawn once per hold or probe
-  # and kept in its state, so a later pass does not shorten it.
+  # or when it is due sooner. A held subscription's wait is drawn once per hold or probe,
+  # and a failed subscribe attempt's once per attempt, and kept in its state, so a later
+  # pass does not shorten it.
   defp handle_subscription_state(
          %Subscription{subscription: %SubscriptionFsm{state: fsm, data: data}} = state
        )

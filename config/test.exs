@@ -61,7 +61,7 @@ config :decree, TestEventStore, store_config
 config :decree, SecondEventStore, Keyword.put(store_config, :database, db.("eventstore_test_2"))
 config :decree, SchemaEventStore, store_config
 
-# Conformance suite (test/conformance): the framework adapter over the store.
+# Conformance suite (test/conformance): the `Decree.EventStore` facade over the store.
 config :decree,
        ConformanceEventStore,
        pg ++

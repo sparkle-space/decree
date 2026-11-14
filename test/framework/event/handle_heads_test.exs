@@ -332,4 +332,41 @@ defmodule Decree.Event.HandleHeadsTest do
                module |> compiled_handle_clauses(binary) |> Enum.drop(-1) |> Enum.map(&head/1)
     end
   end
+
+  # A tool trusts `__handle_heads__/0` only from a module decree expanded, which it tells by
+  # the persisted `decree_event_handler` attribute (sparkle-space/sparklespace#8243).
+  describe "the `use` marker" do
+    test "is persisted by a module that uses the handler" do
+      {module, _binary} = compile("  def handle(%#{inspect(@plain)}{}, _metadata), do: :ok")
+
+      assert marker(module) == [true]
+    end
+
+    test "is persisted by a projector" do
+      assert marker(ErrorProjector) == [true]
+    end
+
+    test "is not carried by a module that only declares the behaviour" do
+      name = module_name()
+
+      {module, _binary} =
+        compile_quietly(name, """
+        defmodule #{name} do
+          @behaviour Decree.Event.Handler
+
+          def handle(%#{inspect(@registered)}{} = event, _metadata), do: {:ok, event}
+
+          def __handle_heads__, do: []
+        end
+        """)
+
+      behaviours = module.module_info(:attributes) |> Keyword.get_values(:behaviour)
+
+      assert Decree.Event.Handler in List.flatten(behaviours)
+
+      assert marker(module) == nil
+    end
+  end
+
+  defp marker(module), do: module.module_info(:attributes)[:decree_event_handler]
 end

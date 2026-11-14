@@ -1,7 +1,8 @@
 defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
-  # A failed subscribe attempt is retried from about a second, doubling up to the retry
-  # interval, while a lock that another instance holds keeps the full interval, silently
-  # (sparkle-space/sparklespace#7591).
+  # A failed subscribe attempt is retried after a wait drawn between half of and the whole
+  # of a backoff from a second, doubling up to the retry interval, while a lock that another
+  # instance holds keeps the full interval, silently (sparkle-space/sparklespace#7591,
+  # the jitter sparkle-space/sparklespace#8154).
   #
   # The lock connection goes through a TCP proxy, and the main pool connects directly, so
   # the subscription row is created whatever the proxy does. A store does not finish
@@ -37,6 +38,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
   @early_tolerance 50
 
   @proxied :retry_proxied
+
+  # An event store with no lock pool running.
+  @no_lock_pool __MODULE__.NoLockPool
 
   describe "a lock pool that connects late at boot" do
     # The lock pool is the first of the store's two connections through the proxy, and
@@ -83,7 +87,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
           first = assert_attempt(subscription)
           second = assert_attempt(subscription)
 
-          assert to_ms(second - first) >= 2_000 - @early_tolerance
+          # The wait after the second failure is drawn over a two-second backoff, so it is
+          # at least half of it.
+          assert to_ms(second - first) >= 1_000 - @early_tolerance
 
           assert %SubscriptionState{subscribe_failures: failures} = data(subscription)
           assert failures >= 3
@@ -97,12 +103,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
       {:ok, subscription} = subscribe(@proxied, UUID.uuid4(), @full_interval)
 
       # The first attempt was refused; this is a second. Its own timer can have fired as
-      # well on a host that stalled for a second.
+      # well on a host that stalled for half a second.
       attempt_subscribe(subscription)
 
       assert %SubscriptionState{subscribe_failures: failures} = failed = data(subscription)
       assert failures >= 2
-      assert SubscriptionFsm.resubscribe_wait(failed) >= 2_000
+      # Drawn over a backoff of at least two seconds, so at least half of it.
+      assert SubscriptionFsm.resubscribe_wait(failed) >= 1_000
 
       :ok = TcpProxy.forward(proxy)
 
@@ -117,7 +124,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
       attempt_subscribe(subscription)
 
       assert %SubscriptionState{subscribe_failures: 1} = failed = data(subscription)
-      assert SubscriptionFsm.resubscribe_wait(failed) == 1_000
+      # Drawn over the shortest backoff, a second, so between half of it and all of it.
+      assert SubscriptionFsm.resubscribe_wait(failed) in 500..1_000
     end
   end
 
@@ -375,29 +383,87 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
   end
 
   describe "resubscribe_wait/1" do
-    test "is the full interval until an attempt failed, then doubles from a second" do
-      waits =
-        for failures <- [0, 1, 2, 3, 6, 7, 100] do
-          SubscriptionFsm.resubscribe_wait(%SubscriptionState{
-            retry_interval: @full_interval,
-            subscribe_failures: failures
-          })
-        end
+    # Every attempt here fails for real: its row is created, and its lock call finds no lock
+    # pool running for its event store (`failing_fsm/2`), a failed attempt like any other.
+    test "is the full interval until an attempt failed", context do
+      for retry_interval <- [@full_interval, 200] do
+        data = failing_fsm(context, retry_interval).data
 
-      assert waits == [60_000, 1_000, 2_000, 4_000, 32_000, 60_000, 60_000]
+        assert SubscriptionFsm.resubscribe_wait(data) == retry_interval
+      end
     end
 
-    test "is flat for an interval below a second" do
-      waits =
-        for failures <- [0, 1, 2] do
-          SubscriptionFsm.resubscribe_wait(%SubscriptionState{
-            retry_interval: 200,
-            subscribe_failures: failures
-          })
-        end
+    test "after the nth failed attempt, is drawn between half of and the whole capped backoff",
+         context do
+      # A sub-second interval caps the backoff at itself from the first failure, and the
+      # wait is drawn over it all the same.
+      for retry_interval <- [1, 200, 1_000, @full_interval] do
+        runs = for _run <- 1..30, do: failed_waits(context, retry_interval, 8)
 
-      assert waits == [200, 200, 200]
+        for {waits, attempt} <- Enum.with_index(Enum.zip_with(runs, & &1), 1) do
+          base = min(min(1_000, retry_interval) * Integer.pow(2, attempt - 1), retry_interval)
+
+          for wait <- waits do
+            assert wait >= max(1, div(base, 2)),
+                   "a #{wait}ms wait after failure #{attempt} is under half of #{base}ms"
+
+            assert wait <= max(1, base),
+                   "a #{wait}ms wait after failure #{attempt} is over #{base}ms"
+          end
+
+          # Only a one-millisecond backoff has a single wait; any other gives at least two,
+          # and 30 draws of two values are all equal about once in 2^29 runs.
+          if base > 1 do
+            assert length(Enum.uniq(waits)) > 1,
+                   "every wait after failure #{attempt} of #{retry_interval}ms was " <>
+                     "#{hd(waits)}ms: the wait is not jittered"
+          end
+        end
+      end
     end
+
+    test "is the wait the warning names, on every pass until the next attempt", context do
+      fsm = failing_fsm(context, @full_interval)
+
+      {fsm, log} = with_log([level: :warning], fn -> SubscriptionFsm.subscribe(fsm) end)
+
+      assert %SubscriptionFsm{data: %SubscriptionState{subscribe_failures: 1} = data} = fsm
+      assert [_line, logged] = Regex.run(~r/retrying in (\d+)ms/, log)
+
+      wait = SubscriptionFsm.resubscribe_wait(data)
+
+      assert String.to_integer(logged) == wait
+      assert SubscriptionFsm.resubscribe_wait(data) == wait
+    end
+  end
+
+  # A new subscription FSM for `$all` whose every subscribe attempt fails.
+  defp failing_fsm(context, retry_interval) do
+    %{conn: conn, schema: schema, serializer: serializer} = context
+
+    SubscriptionFsm.new("$all", UUID.uuid4(),
+      conn: conn,
+      event_store: @no_lock_pool,
+      serializer: serializer,
+      schema: schema,
+      retry_interval: retry_interval
+    )
+  end
+
+  # The wait after each of `attempts` consecutive failed attempts of one subscription.
+  defp failed_waits(context, retry_interval, attempts) do
+    fsm = failing_fsm(context, retry_interval)
+
+    {{waits, _fsm}, _log} =
+      with_log([level: :warning], fn ->
+        Enum.map_reduce(1..attempts, fsm, fn _attempt, fsm ->
+          %SubscriptionFsm{state: :initial, data: data} = fsm = SubscriptionFsm.subscribe(fsm)
+
+          {SubscriptionFsm.resubscribe_wait(data), fsm}
+        end)
+      end)
+
+    waits
   end
 
   defp start_proxy(config) do
