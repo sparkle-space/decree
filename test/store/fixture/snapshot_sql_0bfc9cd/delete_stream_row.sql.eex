@@ -1,0 +1,10 @@
+<%!--
+  The fourth of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Its DELETE
+  cascades to the stream's `versioned_snapshots` rows, and conflicts with the KEY SHARE a
+  versioned snapshot write takes on this row, which orders such a write before it or after
+  the commit. The fifth, `delete_snapshot`, deletes the legacy row by the `stream_uuid` this
+  returns.
+--%>
+DELETE FROM "<%= schema %>".streams
+WHERE stream_id = $1
+RETURNING stream_id, stream_uuid;

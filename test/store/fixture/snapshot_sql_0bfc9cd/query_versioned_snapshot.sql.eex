@@ -1,0 +1,10 @@
+SELECT
+  source_uuid,
+  source_version,
+  source_type,
+  data,
+  metadata,
+  created_at,
+  snapshot_version
+FROM "<%= schema %>".versioned_snapshots
+WHERE source_uuid = $1 AND snapshot_version = $2;
