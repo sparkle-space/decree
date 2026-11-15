@@ -80,15 +80,19 @@ defmodule Decree.Store.Notifications.Publisher do
   # from storage, where it holds; an aggregate stops on the gap; a plain `subscribe/2`
   # subscriber checks continuity itself.
   #
-  # Any other event that fails to deserialize, such as a corrupt payload, raises in the
-  # serializer. Events are deserialized one at a time, in order, and a raise is caught around
-  # each event's deserialize only: the batch is cut at that event, as at an unknown type, and
-  # the events before it are broadcast. Whichever of the two cuts comes first wins. The cut is
-  # logged at `:error` by the exception's module, the event's number and the stream's suffix,
-  # never the message, which can carry the payload's bytes: a raise would crash the publisher,
-  # restart the notifications tree (`one_for_all`) and, past its restart intensity, the
-  # store's whole tree (sparkle-space/sparklespace#8349). No position notice is sent: a
-  # subscription process would take it for an unknown type and hold.
+  # A type provider that crashes while asked whether it knows a type, with an exception other
+  # than the ones it reads as an unknown type, is not an unknown type: the crash raises, as
+  # decree 772c21f ruled, and the publisher goes down. The question is asked outside any rescue.
+  #
+  # Any other event of a known type that fails to deserialize, such as a corrupt payload,
+  # raises in the serializer. Events are deserialized one at a time, in order, and a raise is
+  # caught around each known event's deserialize only: the batch is cut at that event, as at
+  # an unknown type, and the events before it are broadcast. Whichever of the two cuts comes
+  # first wins. The cut is logged at `:error` by the exception's module, the event's number
+  # and the stream's suffix, never the message, which can carry the payload's bytes: a raise
+  # would crash the publisher, restart the notifications tree (`one_for_all`) and, past its
+  # restart intensity, the store's whole tree (sparkle-space/sparklespace#8349). No position
+  # notice is sent: a subscription process would take it for an unknown type and hold.
   #
   # A subscription recovers the rest from storage: its next notification shows a gap
   # (`last_received + 1`), and while `subscribed` a head its head check saw and still has not
@@ -149,27 +153,31 @@ defmodule Decree.Store.Notifications.Publisher do
     end
   end
 
-  # `RecordedEvent.deserialize_known/2` one event at a time, so a raise is the cut at that
-  # event and the events before it stand.
+  # One event at a time: an unknown type is the cut at that event, with its position notice,
+  # and so is a raise in a known event's deserialize; the events before it stand. Whether the
+  # type is known is asked outside the rescue, so a type provider's crash raises.
   defp deserialize([], _stream_uuid, _serializer, acc), do: {Enum.reverse(acc), nil}
 
   defp deserialize([event | events], stream_uuid, serializer, acc) do
-    case deserialize_one(event, serializer) do
-      {:ok, {[deserialized], nil}} ->
-        deserialize(events, stream_uuid, serializer, [deserialized | acc])
+    %RecordedEvent{event_number: event_number, event_type: event_type} = event
 
-      {:ok, {[], pending}} ->
-        {Enum.reverse(acc), pending}
+    if RecordedEvent.known_type?(serializer, event_type) do
+      case deserialize_one(event, serializer) do
+        {:ok, deserialized} ->
+          deserialize(events, stream_uuid, serializer, [deserialized | acc])
 
-      {:raised, exception} ->
-        failed_to_deserialize(stream_uuid, event, exception)
+        {:raised, exception} ->
+          failed_to_deserialize(stream_uuid, event, exception)
 
-        {Enum.reverse(acc), nil}
+          {Enum.reverse(acc), nil}
+      end
+    else
+      {Enum.reverse(acc), {event_number, event_type}}
     end
   end
 
   defp deserialize_one(event, serializer) do
-    {:ok, RecordedEvent.deserialize_known([event], serializer)}
+    {:ok, RecordedEvent.deserialize(event, serializer)}
   rescue
     exception -> {:raised, exception}
   end
