@@ -47,15 +47,21 @@ defmodule Decree.Store.LogTerms do
 
   @doc """
   A stream id as a log line may show it: its last eight characters after `...`. `$all` is not
-  an id and is shown whole; a term that is not a string shows `...(none)`.
+  an id and is shown whole; a binary that is not valid UTF-8 shows `...(not utf-8)`, since
+  `String.length/1` raises on some such binaries; a term that is not a string shows
+  `...(none)`.
   """
   @spec suffix(term) :: String.t()
   def suffix("$all"), do: "$all"
 
   def suffix(id) when is_binary(id) do
-    length = String.length(id)
+    if String.valid?(id) do
+      length = String.length(id)
 
-    "..." <> String.slice(id, max(length - 8, 0), 8)
+      "..." <> String.slice(id, max(length - 8, 0), 8)
+    else
+      "...(not utf-8)"
+    end
   end
 
   def suffix(_id), do: "...(none)"
