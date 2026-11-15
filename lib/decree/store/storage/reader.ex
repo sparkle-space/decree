@@ -39,7 +39,8 @@ defmodule Decree.Store.Storage.Reader do
 
   @doc """
   Read the events matching a compiled query, with the `$all` head of the same snapshot, and
-  the tags of the matches any of `tag_items` matched.
+  the tags of the matches any of `tag_items` matched. A match only `opts`' `position_items`
+  matched comes with no event.
   """
   def read_query(conn, query, direction, bound, count, command_tag, tag_items, opts) do
     {correlation_id_type, opts} = Keyword.pop(opts, :correlation_id_type, "uuid")
@@ -79,11 +80,16 @@ defmodule Decree.Store.Storage.Reader do
 
   # Rows are `[head, read_at, items, command_row_found, stamp, tags | event columns]`. An
   # empty match is one row with `nil` in every column after `read_at`, and `tags` is `nil` for
-  # a match with no tag to answer.
+  # a match with no tag to answer. A bare match, one only `position_items` matched, has its
+  # position and `nil` in every other event column, so it is a match with no event.
   defp map_rows_to_read_result([[head, read_at | _row] | _rows] = rows, correlation, causation) do
     matches = Enum.filter(rows, fn [_head, _read_at, items | _row] -> items end)
 
-    event_rows = Enum.map(matches, &Enum.drop(&1, 6))
+    event_rows =
+      for [_head, _read_at, _items, _found, _stamp, _tags | [_position, event_id | _] = event] <-
+            matches,
+          event_id,
+          do: event
 
     %ReadResult{
       events: Reader.EventAdapter.to_event_data(event_rows, correlation, causation),
@@ -208,6 +214,7 @@ defmodule Decree.Store.Storage.Reader do
 
     def read_query(conn, query, direction, bound, count, command_tag, tag_items, opts) do
       {schema, opts} = Keyword.pop(opts, :schema)
+      {position_items, opts} = Keyword.pop(opts, :position_items, [])
 
       deletable = Keyword.get(opts, :deletable, [])
       tag_kinds = Keyword.get(deletable, :tag_kinds, [])
@@ -235,10 +242,20 @@ defmodule Decree.Store.Storage.Reader do
         event_types
       ]
 
-      do_query(conn, read_query_statement(schema, direction), params, opts)
+      case position_items do
+        [] ->
+          do_query(conn, read_query_statement(schema, direction), params, opts)
+
+        _items ->
+          statement = read_query_statement(schema, direction, true)
+
+          do_query(conn, statement, params ++ [position_items], opts)
+      end
     end
 
-    def read_query_statement(schema, direction) do
+    # `positioned` renders the `position_items` form, with them as `$12`. With none the text is
+    # the plain read's, so a read naming none plans as it always did.
+    def read_query_statement(schema, direction, positioned \\ false) do
       {op, order} = bound_and_order(direction)
 
       positions =
@@ -250,13 +267,19 @@ defmodule Decree.Store.Storage.Reader do
           "$4::bigint[]",
           "$5::text[]",
           "$6::bigint",
-          "$7::bigint",
+          probe_limit(positioned),
           op,
           order
         )
 
-      Statements.read_query(schema, positions, order)
+      Statements.read_query(schema, positions, order, positioned)
     end
+
+    # `LIMIT NULL` is `LIMIT ALL`: a position item's probe is never cut.
+    defp probe_limit(false), do: "$7::bigint"
+
+    defp probe_limit(true),
+      do: "CASE WHEN probe.item = ANY($12::bigint[]) THEN NULL ELSE $7::bigint END"
 
     def read_tags(conn, positions, tag_kinds, event_types, opts) do
       {schema, opts} = Keyword.pop(opts, :schema)

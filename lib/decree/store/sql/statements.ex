@@ -48,7 +48,7 @@ defmodule Decree.Store.Sql.Statements do
         {:query_stream_events_backward, [:schema]},
         {:query_stream_events_forward, [:schema]},
         {:query_subscription, [:schema]},
-        {:read_query, [:schema, :positions, :order]},
+        {:read_query, [:schema, :positions, :order, :positioned]},
         {:read_tags, [:schema]}
       ] do
     file = Path.expand("statements/#{fun}.sql.eex", __DIR__)

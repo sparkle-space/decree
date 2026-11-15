@@ -547,16 +547,21 @@ defmodule Decree.Decision.Dispatch do
   defp activation_items(_bounds), do: []
 
   # Each read answers the tags of the positions its own framework items matched, in its own
-  # statement, by those items' indexes in that read.
+  # statement, by those items' indexes in that read. The index item is its `position_items`:
+  # a fact only it matched comes as a position and its tags, with no event, so the facts are
+  # neither cut by `count` nor counted by `max_events`, and every one of them reaches step 3.
+  # The command and activation items are not, so their matches are events, and counted.
   #
   # A matched event of a type this release does not know refuses the dispatch with
-  # `{:error, :unknown_event_type}`: nothing is decided on a read that cannot be folded.
+  # `{:error, :unknown_event_type}`: nothing is decided on a read that cannot be folded. A fact
+  # only the index item matched has no body to deserialize, so its type never refuses.
   defp read_query(%__MODULE__{command_tag: nil} = dispatch, %Read{items: items} = read) do
     %__MODULE__{application: application, bounds: bounds} = dispatch
 
     EventStore.read_query(application, items,
       count: bounds.max_events + 1,
-      tag_items: read.framework_indexes
+      tag_items: read.framework_indexes,
+      position_items: List.wrap(read.index_index)
     )
   rescue
     _error in UnknownEventTypeError -> {:error, :unknown_event_type}
@@ -568,7 +573,8 @@ defmodule Decree.Decision.Dispatch do
     EventStore.read_query(application, items,
       count: bounds.max_events + 1,
       command_tag: command_tag,
-      tag_items: read.framework_indexes
+      tag_items: read.framework_indexes,
+      position_items: List.wrap(read.index_index)
     )
   rescue
     _error in UnknownEventTypeError -> {:error, :unknown_event_type}

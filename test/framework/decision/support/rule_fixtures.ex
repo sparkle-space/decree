@@ -340,7 +340,8 @@ end
 
 defmodule Decree.RuleFixtures.TightRule do
   @moduledoc false
-  # Three events of its own past the store-backed cases' nine facts.
+  # The facts are read by position and are no matched events, so `max_events` counts the rule's
+  # own matches alone.
   use Decree.RuleFixtures.Scripting, max_events: 12, max_batch_events: 2
 end
 

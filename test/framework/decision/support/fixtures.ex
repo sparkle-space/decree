@@ -264,8 +264,9 @@ end
 defmodule Decree.DecisionFixtures.TightDecision do
   @moduledoc false
 
-  # Three of its own past the framework's: the index item is one item and one probe, and the
-  # store-backed cases' nine facts are nine matched events.
+  # The index item is one item and one probe, so `max_items` and `max_probes` count it. Its
+  # facts are read by position and are no matched events, so `max_events` counts the decision's
+  # own matches and command matches alone.
   use Decree.DecisionFixtures.Scripting,
     max_items: 4,
     max_probes: 5,

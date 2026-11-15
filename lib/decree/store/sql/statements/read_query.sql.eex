@@ -15,13 +15,114 @@
   small store it would hash the whole of `stream_events`, and on the smallest `events` and
   `streams` too, which a read on every decision and rule dispatch must never do. With it, each
   hit probes `stream_events` by its own position.
+
+  `positioned` renders the `position_items` form; without it the text is the plain read's,
+  unchanged. `$12` is then the position items. A position only they matched is bare: it is
+  answered with its items, stamp and tags and no event, and `$7` neither counts nor cuts it.
+  A position another item matched too is bodied, and answered and counted exactly as with no
+  `position_items`. The host passes the position items' probes a `LIMIT` of `NULL`, which is
+  `LIMIT ALL`, and every other probe `$7`. A bodied position is matched by a probe `$7` cuts,
+  so the per-probe limit's argument in `query_positions.sql.eex` holds for the top `$7` bodied
+  positions. A position past that cut which a position item matched too comes back bare, with
+  the items whose probes reached it; such a read answered `$7` events, so it is partial anyway.
+
+  A bare position has no fetch. It gets the fetch's check instead: the fetch drops a hit whose
+  `$all` row has no `original_stream_id`, by its inner join to `streams`, and the check drops
+  the same rows. `original_stream_id` references `streams`, so where it is not `NULL` the
+  join's row exists, and `events` is reached by a `NOT NULL` key that references it too. The
+  check is one `ix_stream_events` probe per bare hit, fenced by `OFFSET 0` as the fetch is.
+
+  The positioned form reads a hit's tags in a lateral of its own, its filter and aggregate
+  `hit_tags`'s word for word, one `ix_event_tags_position` probe per tagged hit. It has no
+  `hit_tags` to join: a store's facts make thousands of hits, and a join the planner takes for
+  small runs as a nested loop that scans every hit's tags once per hit.
 --%>
 WITH head AS MATERIALIZED (
   SELECT stream_version AS position, clock_timestamp() AS read_at
   FROM "<%= schema %>".streams
   WHERE stream_id = 0
 ),
+<%= if positioned do %>grouped AS (
+  SELECT
+    hit_rows.position,
+    array_agg(hit_rows.item) AS items,
+    bool_and(hit_rows.item = ANY($12::bigint[])) AS bare
+  FROM (
+<%= positions %>
+  ) AS hit_rows
+  GROUP BY hit_rows.position
+),
 hits AS (
+  (
+    SELECT grouped.position, grouped.items, grouped.bare
+    FROM grouped
+    WHERE NOT grouped.bare
+    ORDER BY grouped.position <%= order %>
+    LIMIT $7::bigint
+  )
+  UNION ALL
+  SELECT grouped.position, grouped.items, grouped.bare
+  FROM grouped
+  WHERE grouped.bare
+),
+matches AS (
+  SELECT
+    m.position,
+    m.items,
+    c.position IS NOT NULL AS command_row_found,
+    c.stamped_at,
+    t.tags,
+    m.event_id,
+    m.stream_uuid,
+    m.original_stream_version,
+    m.event_type,
+    m.correlation_id,
+    m.causation_id,
+    m.data,
+    m.metadata,
+    m.created_at
+  FROM (
+    SELECT hits.position, hits.items, f.*
+    FROM hits
+    CROSS JOIN LATERAL (
+      SELECT e.event_id, s.stream_uuid, se.original_stream_version, e.event_type,
+        e.correlation_id, e.causation_id, e.data, e.metadata, e.created_at
+      FROM "<%= schema %>".stream_events se
+      INNER JOIN "<%= schema %>".streams s ON s.stream_id = se.original_stream_id
+      INNER JOIN "<%= schema %>".events e ON e.event_id = se.event_id
+      WHERE se.stream_id = 0 AND se.stream_version = hits.position
+      OFFSET 0
+    ) AS f
+    WHERE NOT hits.bare
+    UNION ALL
+    SELECT hits.position, hits.items, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+    FROM hits
+    WHERE hits.bare
+      AND EXISTS (
+        SELECT 1
+        FROM "<%= schema %>".stream_events se
+        WHERE se.stream_id = 0 AND se.stream_version = hits.position
+          AND se.original_stream_id IS NOT NULL
+        OFFSET 0
+      )
+  ) AS m
+  LEFT JOIN LATERAL (
+    SELECT c.position, c.stamped_at
+    FROM "<%= schema %>".event_tags c
+    WHERE c.tag = $8::text COLLATE "C" AND c.position = m.position
+    OFFSET 0
+  ) AS c ON true
+  LEFT JOIN LATERAL (
+    SELECT array_agg(tag ORDER BY tag) AS tags
+    FROM "<%= schema %>".event_tags
+    WHERE m.items && $9::bigint[]
+      AND position = m.position
+      AND NOT (split_part(tag, ':', 1) = ANY($10::text[]))
+      AND NOT (event_type = ANY($11::text[]))
+    OFFSET 0
+  ) AS t ON true
+)
+<% else %>hits AS (
   SELECT hit_rows.position, array_agg(hit_rows.item) AS items
   FROM (
 <%= positions %>
@@ -72,7 +173,7 @@ matches AS (
   ) AS c ON true
   LEFT JOIN hit_tags ON hit_tags.position = hits.position
 )
-SELECT
+<% end %>SELECT
   head.position,
   head.read_at,
   matches.items,

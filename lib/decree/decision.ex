@@ -98,7 +98,8 @@ defmodule Decree.Decision do
        Refuse an item naming no types or a malformed `replay: true` item. Refuse more
        condition items than `max_items` and more probes than `max_probes`. Read the items
        with the command item, the index item and any activation item, and in the same
-       statement the tags of the events a framework item matched.
+       statement the tags of the events a framework item matched. A fact only the index item
+       matched comes as its position and tags, with no event.
     2. Call `c:followup_query/3` if it is defined, with the events the first read's own
        items matched, those the decision lists decrypted. Check both bounds again across both
        reads, and read the items with the framework's. A command match the first read did
@@ -275,7 +276,11 @@ defmodule Decree.Decision do
   Whether they are is a fact on the ledger, in events the application appends in the grammar
   of `Decree.Store.TagIndex`. Decree ships no such event. The dispatch reads the facts with its
   own items: the index item, `[tags: ["tag_index:fact"]]`, is a framework item of every read,
-  in the condition, and never folded.
+  in the condition, and never folded. It is the read's `position_items:` (see
+  `c:Decree.Store.read_query/2`), so a fact only it matched comes as its position and tags,
+  with no event body: every fact is read, however many the store holds, none is cut by the
+  read's `count` and none counts against `max_events`. A fact one of the reads' own items
+  matches too is an event to that read, and counted.
 
   What the reads require comes from their own items, both reads', a create's fact item and
   replay items included:
@@ -388,7 +393,8 @@ defmodule Decree.Decision do
   error from a `Decree.Event.Tags` implementation is the answer as it stands. A matched event
   of a type this release does not know (one appended by a newer release) answers
   `{:error, :unknown_event_type}`, with nothing appended and no retry: only an instance that
-  knows the type can decide on it.
+  knows the type can decide on it. A fact only the index item matched has no body in the read,
+  so its type is never deserialized and does not refuse: the fold reads its tags alone.
 
   An exit or a throw from any of it, on any decision, answers
   `{:error, :decision_execution_failed}`. It logs nothing but what
@@ -457,9 +463,10 @@ defmodule Decree.Decision do
       7% more hold than 16 single-type items at 16 writers, 1,139 µs against 1,067 µs. An
       item's further tags are checked per first-tag hit after `after`, so they are not
       counted.
-    - `max_events` counts matched rows, both reads together, an event in both counted
-      once, command matches and the facts the index item matches included, because a read
-      returning `count` rows cannot be told from one that was cut.
+    - `max_events` counts matched events, both reads together, an event in both counted
+      once, command matches included, because a read returning `count` events cannot be told
+      from one that was cut. A fact only the index item matched is a position, not an event,
+      so it is not counted, and the read answers every one (see "Index facts").
     - `max_batch_events` counts new events, across every member. `$all` is held for each
       one, about 0.1 ms.
 
@@ -490,8 +497,9 @@ defmodule Decree.Decision do
       "Answers" says.
     - `[:decree, :decision, :read]`, once per completed read cycle, one refused on
       `max_events` included, and none for one refused at step 3. Measurements `items`, `probes`, `matched_events`, `read_time`
-      and `fold_time`, the last two in native units, `fold_time` 0 when refused. Metadata
-      `application`, `decision` and `attempt`.
+      and `fold_time`, the last two in native units, `fold_time` 0 when refused.
+      `matched_events` is what `max_events` counts, so no fact only the index item matched.
+      Metadata `application`, `decision` and `attempt`.
     - `[:decree, :decision, :retry]`, measurement `attempt`, the one that failed. Metadata
       `application`, `decision` and `reason`, `:append_condition_failed` or
       `:new_command_match`.

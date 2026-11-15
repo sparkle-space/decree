@@ -155,7 +155,8 @@ defmodule Decree.Decision.Rule do
   `max_items`, `max_probes`, `max_events`, `max_batch_events` and `bound_reason:` are those of
   "Bounds" in `Decree.Decision`, with the same defaults, the same rule for raising one, and the
   same answers: `:decision_query_too_large` and `:decision_batch_too_large`. `max_items` counts
-  the index item, so 15 of a rule's own make 16, and `max_events` counts the facts it matches.
+  the index item, so 15 of a rule's own make 16, and `max_events` does not count the facts it
+  matches: they come by position, with no event (see "Index facts" in `Decree.Decision`).
   `max_batch_events` holds on every append a rule route makes, a plain one after `[]` included.
   A condition's items run under the `$all` lock on an aggregate route as on a decision's, so
   lead each item with its narrowest tag.

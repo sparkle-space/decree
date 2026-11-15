@@ -1003,6 +1003,8 @@ defmodule Decree.Decision.DispatchTest do
     end
   end
 
+  # `Tight` bounds `max_events` at 12. The case's facts are read by position, so they are not
+  # matched events: each count below is the decision's own matches and command matches alone.
   describe "F11, `max_events`" do
     setup do
       attach_telemetry([[:decree, :decision, :read], [:decree, :decision, :refused]])
@@ -1016,20 +1018,22 @@ defmodule Decree.Decision.DispatchTest do
     test "exactly at the bound passes" do
       command = scripted([], Tight)
 
-      seed_claims(command.scope, 3)
+      seed_claims(command.scope, 12)
 
       assert :ok = App.dispatch(command)
+
+      assert_received {:telemetry, [:decree, :decision, :read], %{matched_events: 12}, _metadata}
     end
 
     test "one over refuses, on what was read, with the command match the newest row" do
       command = scripted([], Tight)
 
-      seed_claims(command.scope, 3)
+      seed_claims(command.scope, 12)
       seed(%Released{scope: "x"}, ["command:" <> command.command_id])
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
-      value = 4 + fact_count()
+      value = 13
 
       assert_received {:telemetry, [:decree, :decision, :refused], %{value: ^value, limit: 12},
                        %{bound: :events}}
@@ -1038,7 +1042,7 @@ defmodule Decree.Decision.DispatchTest do
     test "well over it, the read cut at the bound plus one, still refuses" do
       command = scripted([], Tight)
 
-      seed_claims(command.scope, 6)
+      seed_claims(command.scope, 15)
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
     end
@@ -1046,7 +1050,7 @@ defmodule Decree.Decision.DispatchTest do
     test "at the bound, a command match as the newest row is seen" do
       command = scripted([], Tight)
 
-      seed_claims(command.scope, 2)
+      seed_claims(command.scope, 11)
       seed(%Released{scope: "x"}, ["command:" <> command.command_id])
 
       assert {:error, :reused_command_id} = App.dispatch(command)
@@ -1054,7 +1058,7 @@ defmodule Decree.Decision.DispatchTest do
 
     test "both reads together, an event in both counted once" do
       scope = scope()
-      [_one, _two, _three] = seed_claims(scope, 3)
+      [_one, _two, _three | _rest] = seed_claims(scope, 12)
 
       command =
         scripted(
@@ -1071,7 +1075,7 @@ defmodule Decree.Decision.DispatchTest do
     test "both reads together, over the bound, refuse" do
       scope = scope()
 
-      seed_claims(scope, 2)
+      seed_claims(scope, 11)
       seed(%Released{scope: scope}, ["scope:" <> scope])
       seed(%Released{scope: scope}, ["scope:" <> scope])
 
@@ -1086,11 +1090,11 @@ defmodule Decree.Decision.DispatchTest do
     test "emits the read event for a refused read, with no fold" do
       command = scripted([], Tight)
 
-      seed_claims(command.scope, 4)
+      seed_claims(command.scope, 13)
 
       assert {:error, :decision_query_too_large} = App.dispatch(command)
 
-      matched = 4 + fact_count()
+      matched = 13
 
       assert_received {:telemetry, [:decree, :decision, :read],
                        %{matched_events: ^matched, fold_time: 0}, %{attempt: 1}}

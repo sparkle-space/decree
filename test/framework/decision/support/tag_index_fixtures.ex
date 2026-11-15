@@ -258,9 +258,38 @@ defmodule Decree.TagIndexFixtures do
   end
 
   @doc """
+  Appends `count` enabling facts for a family and key, in one append to a stream of their own,
+  and answers their positions in order. More facts than a decision's `max_events`, as a store
+  gathers over its life.
+  """
+  def seed_facts!(application, count, family \\ "entity", key \\ nil) do
+    events =
+      for _fact <- 1..count do
+        %Decree.EventStore.EventData{
+          event_type: Atom.to_string(TagIndexEnabled),
+          data: %TagIndexEnabled{index_id: UUID.uuid4(), family: family, key: key},
+          metadata: %{},
+          tags: [TagIndex.fact_tag(), TagIndex.state_tag(family, key, :enabled)]
+        }
+      end
+
+    {:ok, %Decree.Store.AppendResult{position: last}} =
+      Decree.EventStore.append_to_stream(
+        application,
+        "facts-" <> UUID.uuid4(),
+        :any_version,
+        events,
+        returning: :append_result
+      )
+
+    Enum.to_list((last - count + 1)..last)
+  end
+
+  @doc """
   What a mocked store's `read_query/2` answers: every family enabled, each fact matching the
   index item, wherever `items` holds it, and the facts' tags when `opts`' `tag_items` names
-  that item, as a store answers them.
+  that item, as a store answers them. A fact is an event unless `opts`' `position_items` names
+  that item, when it is a position alone, as a store answers it.
   """
   def mocked_read(items, opts) do
     index = Enum.find_index(items, &(&1 == [tags: [TagIndex.fact_tag()]]))
@@ -268,7 +297,8 @@ defmodule Decree.TagIndexFixtures do
 
     %ReadResult{
       events:
-        for {{family, key}, position} <- facts do
+        for {{family, key}, position} <- facts,
+            index not in Keyword.get(opts, :position_items, []) do
           %RecordedEvent{
             event_number: position,
             data: %TagIndexEnabled{family: family, key: key},

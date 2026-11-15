@@ -237,6 +237,22 @@ defmodule Decree.Store.Storage.ReadTagsTest do
       assert EventStore.read_tags([1, 2]) == {:ok, tags}
     end
 
+    test "leave out the tags of a match only `position_items` matched, and keep the match" do
+      :ok = EventStore.append_to_stream("XPost-1", 0, [event("captured", ["user:7"])])
+      :ok = EventStore.append_to_stream("stream", 0, [event("typed", ["content_ref:abc"])])
+      :ok = EventStore.append_to_stream("other", 0, [event("typed", ["user:7"])])
+
+      items = [[tags: ["user:7"]], [types: ["typed"]]]
+
+      assert {:ok, %ReadResult{events: [], tags: tags, matched_items: matched}} =
+               EventStore.read_query(items, tag_items: [0, 1], position_items: [0, 1])
+
+      # Positions 1 and 2 have no tag left to answer, and they are matches all the same.
+      assert matched == %{1 => [0], 2 => [1], 3 => [0, 1]}
+      assert tags == %{3 => ["user:7"]}
+      assert EventStore.read_tags([1, 2, 3]) == {:ok, tags}
+    end
+
     test "are answered on a store that declares no type and no kind" do
       :ok =
         EventStore.append_to_stream("stream", 0, [

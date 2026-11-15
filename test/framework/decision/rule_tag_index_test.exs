@@ -137,4 +137,56 @@ defmodule Decree.Decision.RuleTagIndexTest do
       assert received(@read) == []
     end
   end
+
+  # A store gathers facts over its life, and the index item reads every one. `TightRule` bounds
+  # `max_events` at 12, so its read asks for 13 rows: the facts must be neither cut by that
+  # count nor counted by the bound (sparkle-space/sparklespace#8313).
+  describe "more facts than `max_events + 1`" do
+    test "a dispatch decides, and the read event counts its business events alone" do
+      TagIndexFixtures.seed_facts!(App, 30)
+
+      scope = scope()
+
+      for _event <- 1..2, do: seed(%Read{scope: scope}, ["scope:" <> scope], App)
+
+      command = ruled([scope: scope], Decree.RuleFixtures.Tight)
+
+      assert :ok = App.dispatch(command)
+      assert [_one] = stored(ruled_stream(command), App)
+
+      assert [{%{matched_events: 2}, _metadata}] = received(@read)
+    end
+
+    test "every fact is folded: the last one a disable refuses" do
+      TagIndexFixtures.seed_facts!(App, 30)
+
+      disable_index!("entity")
+
+      command = ruled([], Decree.RuleFixtures.Tight)
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored(ruled_stream(command), App) == []
+    end
+
+    test "every fact is folded: a disable then an enable as the last two decides" do
+      TagIndexFixtures.seed_facts!(App, 30)
+
+      disable_index!("entity")
+      enable_index!("entity")
+
+      command = ruled([], Decree.RuleFixtures.Tight)
+
+      assert :ok = App.dispatch(command)
+      assert [_one] = stored(ruled_stream(command), App)
+    end
+
+    test "the read names the index item, and only it, as `position_items`" do
+      Process.register(self(), :rule_recorder)
+
+      assert :ok = App.dispatch(ruled())
+
+      assert_received {:read_query, items, opts}
+      assert Keyword.fetch!(opts, :position_items) == [length(items) - 1]
+    end
+  end
 end

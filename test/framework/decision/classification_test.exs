@@ -130,8 +130,9 @@ defmodule Decree.Decision.ClassificationTest do
 
       assert :ok = App.dispatch(fresh)
 
-      # The read held the old match, so the filter is what kept it from the fold.
-      matched = 1 + fact_count()
+      # The read held the old match, so the filter is what kept it from the fold. The facts are
+      # read by position, so the old match is the one matched event.
+      matched = 1
 
       assert_received {:telemetry, [:decree, :decision, :read], %{matched_events: ^matched},
                        _metadata}

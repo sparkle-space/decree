@@ -114,11 +114,12 @@ defmodule Decree.Decision.RuleRefusalsTest do
     test "`max_events + 1` refuses, and is reported" do
       scope = scope()
 
-      for _event <- 1..4, do: seed(%Read{scope: scope}, ["scope:" <> scope], App)
+      # The facts are read by position, so `max_events` counts the rule's own matches alone.
+      for _event <- 1..13, do: seed(%Read{scope: scope}, ["scope:" <> scope], App)
 
       assert_refused_cleanly(ruled([scope: scope], Tight), :decision_query_too_large)
 
-      matched = 4 + fact_count()
+      matched = 13
 
       assert [{%{value: ^matched, limit: 12}, %{bound: :events}}] = received(@refused)
       assert [{%{matched_events: ^matched, fold_time: 0}, _metadata}] = received(@read)
@@ -128,10 +129,8 @@ defmodule Decree.Decision.RuleRefusalsTest do
       scope = scope()
       other = scope()
 
-      for _event <- 1..2 do
-        seed(%Read{scope: scope}, ["scope:" <> scope], App)
-        seed(%Read{scope: other}, ["scope:" <> other], App)
-      end
+      for _event <- 1..11, do: seed(%Read{scope: scope}, ["scope:" <> scope], App)
+      for _event <- 1..2, do: seed(%Read{scope: other}, ["scope:" <> other], App)
 
       item = [types: [Atom.to_string(Read)], tags: ["scope:" <> other]]
       command = ruled([scope: scope, followup: following([item])], Tight)
