@@ -15,6 +15,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
     ReadResult,
     RecordedEvent,
     StorageInitializer,
+    TcpProxy,
     UUID
   }
 
@@ -220,6 +221,39 @@ defmodule Decree.Store.MigrateEventStoreTest do
 
       assert message =~ "{Postgrex.Error, :raise_exception}"
       refute message =~ @detail_marker
+    end
+
+    # A lock query that fails with an error other than a `Postgrex.Error` is named by its
+    # class too: through a proxy that refuses every connection, the lock connection never
+    # connects and the query is dropped from its queue.
+    @tag capture_log: true
+    test "names a failed migration lock's connection error by its class only", %{
+      config: config
+    } do
+      proxy =
+        start_supervised!(
+          {TcpProxy, upstream: {Keyword.fetch!(config, :hostname), Keyword.fetch!(config, :port)}}
+        )
+
+      :ok = TcpProxy.refuse(proxy)
+      port = TcpProxy.port(proxy)
+
+      config =
+        Keyword.merge(config,
+          hostname: "127.0.0.1",
+          port: port,
+          queue_target: 10,
+          queue_interval: 100
+        )
+
+      message = failed_migration_message(config)
+
+      assert message =~
+               "The Decree.Store database could not be migrated. Could not acquire migration lock due to: " <>
+                 "{DBConnection.ConnectionError, :queue_timeout}"
+
+      refute message =~ "127.0.0.1"
+      refute message =~ Integer.to_string(port)
     end
   end
 

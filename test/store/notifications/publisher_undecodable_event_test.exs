@@ -21,6 +21,7 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     FiniteTypeProvider,
     PubSub,
     RecordedEvent,
+    SecondAskCrashingSerializer,
     UUID
   }
 
@@ -251,6 +252,43 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
       assert_receive {:DOWN, ^ref, :process, ^publisher,
                       {%RuntimeError{message: "type provider crashed"}, _stacktrace}},
                      2_000
+    end
+  end
+
+  # Whether an event's type is known is asked once, outside the rescue: a serializer whose
+  # ask passes once and then crashes takes the publisher down at its second ask, the next
+  # event's, rather than having that crash cut the batch as an undecodable event.
+  describe "a serializer whose type check crashes on its second ask" do
+    @second_ask_store :publisher_second_ask_store
+
+    setup do
+      SecondAskCrashingSerializer.arm!()
+
+      start_supervised!(
+        {TestEventStore, name: @second_ask_store, serializer: SecondAskCrashingSerializer},
+        id: @second_ask_store
+      )
+
+      :ok
+    end
+
+    test "takes the publisher down", %{conn: conn, schema: schema} do
+      publisher = Process.whereis(Module.concat([@second_ask_store, Publisher]))
+      assert is_pid(publisher)
+      ref = Process.monitor(publisher)
+
+      events = EventFactory.create_recorded_events(2, UUID.uuid4())
+
+      log =
+        capture_log(fn ->
+          :ok = Appender.append(conn, nil, events, schema: schema)
+
+          assert_receive {:DOWN, ^ref, :process, ^publisher,
+                          {%RuntimeError{message: "known_type? crashed on call 2"}, _stacktrace}},
+                         2_000
+        end)
+
+      refute log =~ "failed to deserialize"
     end
   end
 
