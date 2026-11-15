@@ -3,6 +3,7 @@ defmodule Decree.Store.Storage.DeleteStream do
 
   require Logger
 
+  alias Decree.Store.LogTerms
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Stream, as: StreamStorage
   alias Decree.Store.TagIndex
@@ -29,7 +30,8 @@ defmodule Decree.Store.Storage.DeleteStream do
 
       {:error, error} = reply ->
         Logger.warning(
-          "Failed to soft delete stream #{inspect(stream_id)} due to: " <> inspect(error)
+          "Failed to soft delete stream #{inspect(stream_id)} due to: " <>
+            inspect(LogTerms.reduce(error))
         )
 
         reply
@@ -82,7 +84,7 @@ defmodule Decree.Store.Storage.DeleteStream do
       :ok
     else
       {:error, %Postgrex.Error{postgres: %{code: :feature_not_supported}} = error} ->
-        log_failed_hard_delete(stream_id, inspect(error))
+        log_failed_hard_delete(stream_id, inspect(LogTerms.reduce(error)))
 
         {:error, :not_supported}
 
@@ -92,7 +94,7 @@ defmodule Decree.Store.Storage.DeleteStream do
         {:error, :stream_not_found}
 
       {:error, error} = reply ->
-        log_failed_hard_delete(stream_id, inspect(error))
+        log_failed_hard_delete(stream_id, inspect(LogTerms.reduce(error)))
 
         reply
     end
@@ -142,7 +144,8 @@ defmodule Decree.Store.Storage.DeleteStream do
 
       {:error, error} = reply ->
         Logger.warning(
-          "Failed to delete tags of stream #{inspect(stream_id)} due to: " <> inspect(error)
+          "Failed to delete tags of stream #{inspect(stream_id)} due to: " <>
+            inspect(LogTerms.reduce(error))
         )
 
         reply

@@ -112,7 +112,7 @@ defmodule Decree.Store.AdvisoryLocks do
   end
 
   alias Decree.Store.AdvisoryLocks.{Lock, State}
-  alias Decree.Store.Storage
+  alias Decree.Store.{LogTerms, Storage}
 
   def start_link(opts) do
     {start_opts, advisory_locks_opts} =
@@ -461,7 +461,7 @@ defmodule Decree.Store.AdvisoryLocks do
   defp end_session(%State{} = state, pool, reason) do
     Logger.warning(
       "Ending the advisory lock session, so that it holds no lock left behind, due to: " <>
-        inspect(reason)
+        inspect(LogTerms.reduce(reason))
     )
 
     Process.exit(pool, :kill)

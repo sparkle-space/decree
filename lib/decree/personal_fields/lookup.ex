@@ -10,6 +10,7 @@ defmodule Decree.PersonalFields.Lookup do
   require Logger
 
   alias Decree.Application
+  alias Decree.Store.LogTerms
 
   @type answer :: {:ok, String.t(), binary} | :erased | :unknown
   @type answers :: %{optional(term) => answer}
@@ -29,13 +30,15 @@ defmodule Decree.PersonalFields.Lookup do
 
   @doc """
   Reports a key that a value could not be read with, as a lookup answering `:unknown` does.
-  An id is not personal, and the runbook needs it to find the subject.
+  The telemetry event carries the subject's id, which the runbook needs to find the subject;
+  the warning shows its last eight characters only, as a subject's id can be a user's own
+  (sparkle-space/sparklespace#8352).
   """
   @spec unknown(Application.t(), term) :: :unknown
   def unknown(application, subject_id) when is_binary(subject_id) and subject_id != "" do
     report(application, subject_id)
 
-    Logger.warning("no personal field key for subject #{subject_id}")
+    Logger.warning("no personal field key for subject #{LogTerms.suffix(subject_id)}")
 
     :unknown
   end

@@ -11,7 +11,7 @@ defmodule Decree.Store.Subscriptions.Subscription do
 
   require Logger
 
-  alias Decree.Store.RecordedEvent
+  alias Decree.Store.{LogTerms, RecordedEvent}
   alias Decree.Store.Subscriptions.{SubscriptionFsm, Subscription, SubscriptionState}
 
   defstruct [
@@ -225,7 +225,9 @@ defmodule Decree.Store.Subscriptions.Subscription do
       ) do
     %Subscription{subscription: subscription} = state
 
-    Logger.debug(describe(state) <> " advisory lock lost due to: " <> inspect(reason))
+    Logger.debug(
+      describe(state) <> " advisory lock lost due to: " <> inspect(LogTerms.reduce(reason))
+    )
 
     state =
       subscription
@@ -239,7 +241,10 @@ defmodule Decree.Store.Subscriptions.Subscription do
   def handle_info({:DOWN, _ref, :process, pid, reason}, %Subscription{} = state) do
     %Subscription{subscription: subscription} = state
 
-    Logger.debug(describe(state) <> " subscriber #{inspect(pid)} down due to: #{inspect(reason)}")
+    Logger.debug(
+      describe(state) <>
+        " subscriber #{inspect(pid)} down due to: " <> inspect(LogTerms.reduce(reason))
+    )
 
     state =
       subscription
@@ -538,5 +543,5 @@ defmodule Decree.Store.Subscriptions.Subscription do
   defp stop_reason(%Subscription{}), do: nil
 
   defp describe(%Subscription{stream_uuid: stream_uuid, subscription_name: name}),
-    do: "Subscription #{inspect(name)}@#{inspect(stream_uuid)}"
+    do: "Subscription #{inspect(name)}@#{inspect(LogTerms.suffix(stream_uuid))}"
 end

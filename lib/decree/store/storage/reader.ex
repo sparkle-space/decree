@@ -3,7 +3,7 @@ defmodule Decree.Store.Storage.Reader do
 
   require Logger
 
-  alias Decree.Store.{ReadResult, RecordedEvent, UUID}
+  alias Decree.Store.{LogTerms, ReadResult, RecordedEvent, UUID}
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Reader
 
@@ -115,7 +115,10 @@ defmodule Decree.Store.Storage.Reader do
   end
 
   defp failed_to_read(stream_id, reason) do
-    Logger.warning("Failed to read events from stream id #{stream_id} due to: #{inspect(reason)}")
+    Logger.warning(
+      "Failed to read events from stream id #{stream_id} due to: " <>
+        inspect(LogTerms.reduce(reason))
+    )
 
     {:error, reason}
   end
@@ -287,6 +290,12 @@ defmodule Decree.Store.Storage.Reader do
       do_query(conn, Statements.read_tags(schema), [positions, tag_kinds, event_types], opts)
     end
 
+    defp failed_query(error) do
+      Logger.warning(
+        "Failed to read events from stream due to: " <> inspect(LogTerms.reduce(error))
+      )
+    end
+
     defp bound_and_order(:forward), do: {">=", "ASC"}
     defp bound_and_order(:backward), do: {"<=", "DESC"}
 
@@ -298,18 +307,20 @@ defmodule Decree.Store.Storage.Reader do
         {:ok, %Postgrex.Result{rows: rows}} ->
           {:ok, rows}
 
-        {:error, %Postgrex.Error{postgres: %{message: message}}} ->
-          Logger.warning("Failed to read events from stream due to: " <> inspect(message))
+        # The reply keeps the error's message, as upstream's does; the log line names the
+        # error by its class, as the message can carry a value.
+        {:error, %Postgrex.Error{postgres: %{message: message}} = error} ->
+          failed_query(error)
 
           {:error, message}
 
-        {:error, %DBConnection.ConnectionError{message: message}} ->
-          Logger.warning("Failed to read events from stream due to: " <> inspect(message))
+        {:error, %DBConnection.ConnectionError{message: message} = error} ->
+          failed_query(error)
 
           {:error, message}
 
         {:error, error} = reply ->
-          Logger.warning("Failed to read events from stream due to: " <> inspect(error))
+          failed_query(error)
 
           reply
       end

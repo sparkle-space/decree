@@ -1,7 +1,7 @@
 defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   @moduledoc false
 
-  alias Decree.Store.{AdvisoryLocks, PubSub, RecordedEvent, Storage}
+  alias Decree.Store.{AdvisoryLocks, LogTerms, PubSub, RecordedEvent, Storage}
   alias Decree.Store.Streams.{Stream, StreamInfo}
   alias Decree.Store.Subscriptions.{SubscriptionState, Subscriber}
 
@@ -282,7 +282,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           end
 
         {:error, reason} ->
-          Logger.debug(describe(data) <> " head check failed due to: " <> inspect(reason))
+          Logger.debug(
+            describe(data) <> " head check failed due to: " <> inspect(LogTerms.reduce(reason))
+          )
 
           next_state(:subscribed, data)
       end
@@ -612,7 +614,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       Logger.warning(
         describe(data) <>
           " failed to subscribe due to: " <>
-          inspect(failure) <> ", retrying in #{resubscribe_wait(data)}ms"
+          inspect(LogTerms.reduce(failure)) <> ", retrying in #{resubscribe_wait(data)}ms"
       )
     end
 
@@ -864,7 +866,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     Logger.warning(
       describe(data) <>
         " failed to catch up due to: " <>
-        inspect(reason) <> ", attempt #{attempt}, retrying in #{retry_interval}ms"
+        inspect(LogTerms.reduce(reason)) <>
+        ", attempt #{attempt}, retrying in #{retry_interval}ms"
     )
 
     :telemetry.execute(
@@ -995,7 +998,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     catch
       :exit, reason ->
         Logger.warning(
-          describe(data) <> " did not hear back on releasing its lock due to: " <> inspect(reason)
+          describe(data) <>
+            " did not hear back on releasing its lock due to: " <>
+            inspect(LogTerms.reduce(reason))
         )
 
         :ok
@@ -1572,5 +1577,5 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     do: queue_size >= max_size
 
   defp describe(%SubscriptionState{stream_uuid: stream_uuid, subscription_name: name}),
-    do: "Subscription #{inspect(name)}@#{inspect(stream_uuid)}"
+    do: "Subscription #{inspect(name)}@#{inspect(LogTerms.suffix(stream_uuid))}"
 end

@@ -14,6 +14,7 @@ defmodule Decree.Store.MonitoredServer do
   require Logger
 
   alias DBConnection.Backoff
+  alias Decree.Store.LogTerms
 
   defmodule State do
     @moduledoc false
@@ -197,7 +198,9 @@ defmodule Decree.Store.MonitoredServer do
   def terminate(reason, %State{} = state) do
     %State{pid: pid, shutdown: shutdown, mfa: {module, _fun, _args}} = state
 
-    Logger.debug("Monitored server #{inspect(module)} terminate due to: " <> inspect(reason))
+    Logger.debug(
+      "Monitored server #{inspect(module)} terminate due to: " <> inspect(LogTerms.reduce(reason))
+    )
 
     :ok = Registry.unregister(MonitoredServer.Registry, pid)
 
@@ -254,7 +257,9 @@ defmodule Decree.Store.MonitoredServer do
         on_process_start(pid, state)
 
       {:error, reason} ->
-        Logger.info("Failed to start #{inspect(module)} due to: #{inspect(reason)}")
+        Logger.info(
+          "Failed to start #{inspect(module)} due to: " <> inspect(LogTerms.reduce(reason))
+        )
 
         delayed_start(state)
     end
@@ -273,7 +278,7 @@ defmodule Decree.Store.MonitoredServer do
   defp on_process_exit(pid, reason, %State{} = state) do
     %State{monitors: monitors} = state
 
-    Logger.debug("Monitored process EXIT due to: " <> inspect(reason))
+    Logger.debug("Monitored process EXIT due to: " <> inspect(LogTerms.reduce(reason)))
 
     Enum.each(monitors, fn {monitor, ref} ->
       Process.send(monitor, {:DOWN, ref, :process, pid, reason}, [])

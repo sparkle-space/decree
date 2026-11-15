@@ -10,7 +10,7 @@ defmodule Decree.Store.Notifications.Publisher do
 
   require Logger
 
-  alias Decree.Store.{PubSub, RecordedEvent, Storage}
+  alias Decree.Store.{LogTerms, PubSub, RecordedEvent, Storage}
   alias Decree.Store.Notifications.Notification
 
   defmodule State do
@@ -79,6 +79,16 @@ defmodule Decree.Store.Notifications.Publisher do
   # as usual. A subscription process sees the gap (it expects `last_received + 1`) and reads
   # from storage, where it holds; an aggregate stops on the gap; a plain `subscribe/2`
   # subscriber checks continuity itself.
+  #
+  # Any other event that fails to deserialize, such as a corrupt payload, raises in the
+  # serializer. The raise is caught and the whole notification skipped, logged by the
+  # exception's module only, never its message, which can carry the payload's bytes: a raise
+  # would crash the publisher, restart the notifications tree (`one_for_all`) and, past its
+  # restart intensity, the store's whole tree (sparkle-space/sparklespace#8349). A subscription
+  # recovers the skipped wake-up from storage: its next notification shows a gap
+  # (`last_received + 1`), and while `subscribed` a head its head check saw and still has not
+  # received at the next check starts a catch-up read (`SubscriptionFsm`). That read meets the
+  # same event and raises in the subscription process, which is `:temporary`.
 
   defp read_events(%Notification{} = notification, %State{} = state) do
     %Notification{
@@ -112,17 +122,22 @@ defmodule Decree.Store.Notifications.Publisher do
           {stream_uuid, deserialized_events, pending}
 
         {:error, error} ->
-          Logger.error(
-            "Decree.Store notifications failed to read events due to: " <> inspect(error)
-          )
-
-          nil
+          failed_to_read(error)
       end
+    rescue
+      exception -> failed_to_read(exception)
     catch
-      :exit, ex ->
-        Logger.error("Decree.Store notifications failed to read events due to: " <> inspect(ex))
-        nil
+      :exit, reason -> failed_to_read(reason)
     end
+  end
+
+  defp failed_to_read(reason) do
+    Logger.error(
+      "Decree.Store notifications failed to read events due to: " <>
+        inspect(LogTerms.reduce(reason))
+    )
+
+    nil
   end
 
   defp broadcast(event_store, stream_uuid, events, pending) do
@@ -134,7 +149,7 @@ defmodule Decree.Store.Notifications.Publisher do
 
       {event_number, event_type} ->
         Logger.warning(
-          "Decree.Store notifications stopped a batch of #{inspect(stream_uuid)} at event " <>
+          "Decree.Store notifications stopped a batch of #{inspect(LogTerms.suffix(stream_uuid))} at event " <>
             "#{event_number}: its type #{inspect(event_type)} is not known to this instance"
         )
 
