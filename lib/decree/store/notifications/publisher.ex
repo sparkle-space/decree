@@ -98,9 +98,12 @@ defmodule Decree.Store.Notifications.Publisher do
   # after it in that notification until a later append shows the gap; an aggregate's next
   # append then fails closed on `:wrong_expected_version`, and its rebuild raises on the event.
   #
-  # A storage error is answered as `{:error, reason}` and an exit is caught: both skip the
-  # notification, logged by class. Any other raise in the read is a fault and crashes the
-  # publisher.
+  # A storage error is answered as `{:error, reason}`, and an exit or a raise in the storage
+  # read is caught: each skips the notification, logged by class. The read raises when a row
+  # cannot be adapted into a `RecordedEvent`, as a text correlation or causation id read by a
+  # store configured for uuid ids; its message can carry the row's value, and crashing would
+  # restart the notifications tree as above. The rescue covers that read only, not the
+  # deserialize, which is cut per event.
 
   defp read_events(%Notification{} = notification, %State{} = state) do
     %Notification{
@@ -129,6 +132,8 @@ defmodule Decree.Store.Notifications.Publisher do
           correlation_id_type: correlation_id_type,
           causation_id_type: causation_id_type
         )
+      rescue
+        exception -> {:error, exception}
       catch
         :exit, reason -> {:error, reason}
       end
