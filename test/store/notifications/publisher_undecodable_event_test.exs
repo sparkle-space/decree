@@ -14,9 +14,9 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
 
   import ExUnit.CaptureLog
 
-  alias Decree.Store.{EventFactory, PubSub, RecordedEvent, UUID}
+  alias Decree.Store.{EventData, EventFactory, PubSub, RecordedEvent, UUID}
   alias Decree.Store.Notifications.Publisher
-  alias Decree.Store.Storage.Appender
+  alias Decree.Store.Storage.{Appender, Initializer}
 
   @marker "undecodable-payload-marker"
   @publisher Module.concat([TestEventStore, Publisher])
@@ -131,6 +131,83 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     assert store_children() == before
 
     assert :ok = TestEventStore.append_to_stream(UUID.uuid4(), 0, EventFactory.create_events(1))
+  end
+
+  # A row the read itself cannot turn into a `RecordedEvent` raises in the storage read, before
+  # any deserialize. A store whose schema was initialised with `correlation_id_type: "text"`
+  # and is run with the default `"uuid"` reads each text id as a uuid's 16 bytes, and an id of
+  # any other length raises `FunctionClauseError` in the reader's id conversion. The publisher
+  # skips that notification and keeps running.
+  describe "a row the read cannot adapt" do
+    @text_schema "publisher_text_ids"
+    @text_store :publisher_text_ids_store
+    @id_marker "id-marker-not-a-uuid"
+
+    setup %{conn: conn, config: config} do
+      drop = ~s[DROP SCHEMA IF EXISTS "#{@text_schema}" CASCADE]
+      Postgrex.query!(conn, drop, [])
+      Postgrex.query!(conn, ~s[CREATE SCHEMA "#{@text_schema}"], [])
+
+      text_config =
+        Keyword.merge(config,
+          schema: @text_schema,
+          correlation_id_type: "text",
+          causation_id_type: "text"
+        )
+
+      {:ok, :ok} = Initializer.run!(conn, text_config)
+
+      on_exit(fn ->
+        {:ok, observer} = Postgrex.start_link(TestEventStore.config())
+        Postgrex.query!(observer, drop, [])
+        GenServer.stop(observer)
+      end)
+
+      start_supervised!({TestEventStore, name: @text_store, schema: @text_schema},
+        id: @text_store
+      )
+
+      :ok
+    end
+
+    test "is skipped and the publisher publishes the next append", %{conn: conn} do
+      publisher = Process.whereis(Module.concat([@text_store, Publisher]))
+      ref = Process.monitor(publisher)
+
+      bad = UUID.uuid4()
+      good = UUID.uuid4()
+      :ok = PubSub.subscribe(@text_store, good)
+
+      [%RecordedEvent{} = event] = EventFactory.create_recorded_events(1, bad)
+      event = %RecordedEvent{event | correlation_id: @id_marker, causation_id: nil}
+
+      log =
+        capture_log(fn ->
+          :ok =
+            Appender.append(conn, nil, [event],
+              schema: @text_schema,
+              correlation_id_type: "text",
+              causation_id_type: "text"
+            )
+
+          # Read by the same publisher, so with no id for it to convert.
+          %EventData{} = good_event = EventFactory.create_event(nil)
+          good_event = %EventData{good_event | correlation_id: nil, causation_id: nil}
+
+          :ok = TestEventStore.append_to_stream(good, 0, [good_event], name: @text_store)
+
+          assert_receive {:events, [%RecordedEvent{stream_uuid: ^good}]}
+        end)
+
+      refute_received {:DOWN, ^ref, :process, _pid, _reason}
+      assert Process.whereis(Module.concat([@text_store, Publisher])) == publisher
+
+      assert log =~
+               "Decree.Store notifications failed to read events due to: FunctionClauseError"
+
+      refute log =~ @id_marker
+      refute log =~ bad
+    end
   end
 
   defp suffix(stream_uuid), do: "..." <> String.slice(stream_uuid, -8, 8)
