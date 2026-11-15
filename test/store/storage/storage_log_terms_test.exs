@@ -10,8 +10,19 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
   # own transaction, which is rolled back, so nothing outlives the test.
 
   import ExUnit.CaptureLog
+  import Decree.Store.SubscriptionHelpers, only: [wait_for_lock_pool: 1]
 
-  alias Decree.Store.{AppendError, EventFactory, Storage, UUID}
+  alias Decree.Store.{
+    AppendError,
+    DenyListSerializer,
+    EventData,
+    EventFactory,
+    NewReleaseEvent,
+    RecordedEvent,
+    Storage,
+    UUID
+  }
+
   alias Decree.Store.Notifications
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Storage.{Appender, DeleteStream, Snapshot}
@@ -255,6 +266,76 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
     end
   end
 
+  describe "a held subscription's probe" do
+    @old :log_marker_old_store
+    @new_type "Elixir.Decree.Store.NewReleaseEvent"
+
+    # An old instance holds a subscription before an event of a type it does not know; the
+    # `subscriptions` table is then swapped for a view over a function that raises, committed,
+    # so the held subscription's probe, on its own pool, fails at Postgres.
+    setup do
+      DenyListSerializer.deny([@new_type])
+      on_exit(fn -> DenyListSerializer.allow_all() end)
+
+      on_exit(fn ->
+        {:ok, observer} = Postgrex.start_link(TestEventStore.config())
+
+        for statement <- [
+              ~s[DROP VIEW IF EXISTS "public".subscriptions],
+              ~s[DROP FUNCTION IF EXISTS "public".log_hygiene_subscriptions()],
+              ~s[ALTER TABLE IF EXISTS "public".subscriptions_hidden RENAME TO subscriptions]
+            ] do
+          Postgrex.query!(observer, statement, [])
+        end
+
+        GenServer.stop(observer)
+      end)
+
+      start_supervised!({TestEventStore, name: @old, serializer: DenyListSerializer},
+        id: @old
+      )
+
+      wait_for_lock_pool(@old)
+
+      :ok = forward_logs()
+    end
+
+    test "logs a failed probe by its class", %{conn: conn, schema: schema} do
+      name = UUID.uuid4()
+
+      {line, log} =
+        with_log([level: :debug], fn ->
+          {:ok, subscription} =
+            TestEventStore.subscribe_to_all_streams(name, self(),
+              name: @old,
+              start_from: :origin,
+              retry_interval: 200
+            )
+
+          assert_receive {:subscribed, ^subscription}
+
+          :ok =
+            TestEventStore.append_to_stream(UUID.uuid4(), 0, [
+              EventFactory.create_event(nil, 2),
+              %EventData{event_type: @new_type, data: %NewReleaseEvent{event: 3}, metadata: %{}}
+            ])
+
+          ack_through(subscription, 2)
+
+          # Held, with its checkpoint written: only now is the table swapped.
+          await_logged("is held before event 3")
+
+          refuse(conn, schema, {:view, "subscriptions"})
+
+          await_logged("the probe failed due to")
+        end)
+
+      assert line =~ "the probe failed due to: {Postgrex.Error, :check_violation}"
+      refute line =~ @marker
+      refute log =~ @marker
+    end
+  end
+
   describe "a stream's id on the store's debug lines" do
     test "is its suffix", %{stream_uuid: stream_uuid} do
       name = "log-hygiene"
@@ -349,6 +430,28 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
       ~s[CREATE VIEW "#{schema}".#{table} AS SELECT * FROM "#{schema}".log_hygiene_#{table}()],
       []
     )
+  end
+
+  # Acks every event the subscription sends until it has acked event `last`.
+  defp ack_through(subscription, last) do
+    assert_receive {:events, events}, 5_000
+
+    for %RecordedEvent{event_number: number} <- events do
+      :ok = TestEventStore.ack(subscription, number)
+    end
+
+    if Enum.any?(events, &(&1.event_number >= last)),
+      do: :ok,
+      else: ack_through(subscription, last)
+  end
+
+  # Waits for a forwarded log line containing `text`, and answers it.
+  defp await_logged(text) do
+    receive do
+      {:logged, line} -> if line =~ text, do: line, else: await_logged(text)
+    after
+      5_000 -> flunk("no log line containing #{inspect(text)}")
+    end
   end
 
   # Forwards each log line's text to the test, so it can wait for one.

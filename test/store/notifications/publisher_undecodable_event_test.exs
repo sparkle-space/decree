@@ -2,10 +2,11 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
   use Decree.Store.StorageCase
 
   # An event whose stored bytes the store's serializer cannot decode is a raise in the
-  # publisher's read, not an error it is answered: the publisher skips that notification and
-  # keeps running, so the notifications tree (`one_for_all`) is not restarted, and a run of
-  # them does not exhaust its restart intensity and restart the whole store tree under a
-  # concurrent append (sparkle-space/sparklespace#8349).
+  # publisher's deserialize, not an error it is answered: the publisher stops that
+  # notification's batch at the event, broadcasts the events before it and keeps running, so
+  # the notifications tree (`one_for_all`) is not restarted, and a run of them does not
+  # exhaust its restart intensity and restart the whole store tree under a concurrent append
+  # (sparkle-space/sparklespace#8349).
   #
   # Each event is planted through `Appender.append/4` with bytes the JSON serializer cannot
   # decode, a real append, so the `streams` table's `event_notification` trigger fires and the
@@ -45,9 +46,48 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     refute_received {:DOWN, ^ref, :process, _pid, _reason}
     assert Process.whereis(@publisher) == publisher
 
-    assert log =~ "Decree.Store notifications failed to read events due to: Jason.DecodeError"
+    assert log =~
+             "Decree.Store notifications failed to deserialize event 1 of " <>
+               inspect(suffix(bad)) <> " due to: Jason.DecodeError"
+
     refute log =~ @marker
     refute log =~ bad
+  end
+
+  test "the events before an undecodable one in the same append are broadcast", %{
+    conn: conn,
+    schema: schema
+  } do
+    publisher = Process.whereis(@publisher)
+    ref = Process.monitor(publisher)
+
+    stream_uuid = UUID.uuid4()
+    :ok = PubSub.subscribe(TestEventStore, stream_uuid, notices: true)
+
+    [first, second, third] = EventFactory.create_recorded_events(3, stream_uuid)
+    second = %RecordedEvent{second | data: <<0>> <> @marker}
+
+    log =
+      capture_log(fn ->
+        # One append, so one notification for the stream, and no later append.
+        :ok = Appender.append(conn, nil, [first, second, third], schema: schema)
+
+        assert_receive {:events, [%RecordedEvent{stream_uuid: ^stream_uuid} = event]}
+        assert %RecordedEvent{stream_version: 1, data: %EventFactory.Event{event: 1}} = event
+      end)
+
+    refute_receive {:events, _events}, 300
+    refute_received {:events_pending, _event_number}
+
+    refute_received {:DOWN, ^ref, :process, _pid, _reason}
+    assert Process.whereis(@publisher) == publisher
+
+    assert log =~
+             "Decree.Store notifications failed to deserialize event 2 of " <>
+               inspect(suffix(stream_uuid)) <> " due to: Jason.DecodeError"
+
+    refute log =~ @marker
+    refute log =~ stream_uuid
   end
 
   test "a run of undecodable events does not restart the store's tree", %{
@@ -92,6 +132,8 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
 
     assert :ok = TestEventStore.append_to_stream(UUID.uuid4(), 0, EventFactory.create_events(1))
   end
+
+  defp suffix(stream_uuid), do: "..." <> String.slice(stream_uuid, -8, 8)
 
   # A real append of one event of a known type whose data is not JSON.
   defp plant_undecodable(conn, schema, stream_uuid) do
