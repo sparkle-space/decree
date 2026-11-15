@@ -152,6 +152,7 @@ defmodule Decree.Store.Streams.Stream do
   def read_query(conn, items, opts) do
     {command_tag, opts} = Keyword.pop(opts, :command_tag)
     {tag_items, opts} = Keyword.pop(opts, :tag_items, [])
+    {position_items, opts} = Keyword.pop(opts, :position_items, [])
     {direction, bound, opts} = pop_direction_and_bound(opts)
     {count, opts} = Keyword.pop(opts, :count)
 
@@ -160,7 +161,10 @@ defmodule Decree.Store.Streams.Stream do
     with {:ok, query} <- Query.compile(items),
          :ok <- validate_deletable(query, opts),
          :ok <- validate_command_tag(query, command_tag),
-         :ok <- validate_tag_items(tag_items, length(items)) do
+         :ok <- validate_item_indexes(tag_items, length(items)),
+         :ok <- validate_item_indexes(position_items, length(items)) do
+      opts = Keyword.put(opts, :position_items, position_items)
+
       read_query_storage(conn, query, direction, bound, count, command_tag, tag_items, opts)
     end
   end
@@ -735,15 +739,16 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  # An index no item has reads no tag for any event, so, as with `command_tag`, a typo must not
-  # reach the database. Walked by hand because an improper list must answer, not raise.
-  defp validate_tag_items([], _count), do: :ok
+  # An index no item has reads no tag and answers no match by position, so, as with
+  # `command_tag`, a typo must not reach the database. Walked by hand because an improper list
+  # must answer, not raise.
+  defp validate_item_indexes([], _count), do: :ok
 
-  defp validate_tag_items([index | indexes], count)
+  defp validate_item_indexes([index | indexes], count)
        when is_integer(index) and index >= 0 and index < count,
-       do: validate_tag_items(indexes, count)
+       do: validate_item_indexes(indexes, count)
 
-  defp validate_tag_items(_indexes, _count), do: {:error, :invalid_query}
+  defp validate_item_indexes(_indexes, _count), do: {:error, :invalid_query}
 
   # Walked by hand because an improper list must answer, not raise. `$1` is a `bigint[]`, so
   # a position past a bigint could not be sent, and a refusal here leaves a caller's

@@ -305,7 +305,8 @@ defmodule Decree.Decision.Read do
   end
 
   @doc """
-  Merges a second read in by position. An event both reads hold counts once.
+  Merges a second read in by position. An event both reads hold counts once, and so does one
+  a read answered by position alone and the other with its event.
   """
   @spec merge(%Merged{}, %__MODULE__{}, ReadResult.t()) :: %Merged{}
   def merge(%Merged{offset: offset} = merged, %__MODULE__{} = read, %ReadResult{} = result) do
@@ -362,7 +363,8 @@ defmodule Decree.Decision.Read do
   end
 
   @doc """
-  The matched rows, both reads together, as `max_events` counts them.
+  The matched events, both reads together, as `max_events` counts them. A fact only the index
+  item matched is a position in `matched_items` with no event, so it is not counted.
   """
   @spec matched_count(%Merged{}) :: non_neg_integer()
   def matched_count(%Merged{events: events}), do: length(events)

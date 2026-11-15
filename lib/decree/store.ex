@@ -461,6 +461,7 @@ defmodule Decree.Store do
           | {:count, non_neg_integer()}
           | {:command_tag, String.t()}
           | {:tag_items, [non_neg_integer()]}
+          | {:position_items, [non_neg_integer()]}
   @type stream_query_option ::
           option
           | {:from, integer()}
@@ -648,7 +649,14 @@ defmodule Decree.Store do
       def stream_all_backward(start_version, opts),
         do: stream_backward(@all_stream, start_version, opts)
 
-      @accepted_overrides_read_query [:command_tag, :count, :direction, :from, :tag_items]
+      @accepted_overrides_read_query [
+        :command_tag,
+        :count,
+        :direction,
+        :from,
+        :tag_items,
+        :position_items
+      ]
       @accepted_overrides_stream_query [:direction, :from]
 
       def read_query(items, opts \\ []) do
@@ -1379,6 +1387,16 @@ defmodule Decree.Store do
         then has the tags of each match one of them matched, read in the same statement
         (see "Reading the tags of events" in `Decree.Store`). Defaults to `[]`, which reads
         no tag.
+      - `position_items` a list of 0-based indexes of the query's items. A match only these
+        items matched is answered by position alone: it is in `matched_items`, in `tags` when
+        a `tag_items` item matched it, and in `command_stamps` when it carries `command_tag`,
+        but not in `events`. `count` neither cuts nor counts such a match, so every one of
+        them is answered, however many there are. A match any other item matched too is
+        answered with its event and counted, exactly as without the option. The read's
+        statement and snapshot are the same. One caveat: a read that `count` cut answers a
+        match past the cut that a `position_items` item matched as if only those items had,
+        since the other items' probes stop at the cut; such a read answered `count` events
+        and is partial anyway. Defaults to `[]`, which answers every match with its event.
       - `name` the name of the event store if provided to `start_link/1`.
       - `conn` an existing Postgrex connection or transaction to read through.
       - `timeout` an optional timeout for the database query, in milliseconds.
@@ -1387,9 +1405,9 @@ defmodule Decree.Store do
   Returns `{:ok, %Decree.Store.ReadResult{}}`. A query `Decree.Store.Query.compile/1`
   refuses answers its error, a query naming something deletable answers
   `{:error, :query_names_deletable}` (see "Deletable streams" in `Decree.Store`), and a
-  `command_tag` no item names, or `tag_items` that is anything but a list of indexes of the
-  query's items, answers `{:error, :invalid_query}`: none of these sends anything to the
-  database. An invalid
+  `command_tag` no item names, or `tag_items` or `position_items` that is anything but a
+  list of indexes of the query's items, answers `{:error, :invalid_query}`: none of these
+  sends anything to the database. An invalid
   `direction`, `from` or `count` raises an `ArgumentError`.
   """
   @callback read_query(items :: [Decree.Store.Query.item()], opts :: [read_query_option]) ::
