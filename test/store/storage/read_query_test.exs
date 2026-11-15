@@ -531,6 +531,204 @@ defmodule Decree.Store.Storage.ReadQueryTest do
     end
   end
 
+  # A decision's index item matches every fact a store holds, and needs only their positions
+  # and tags (sparkle-space/sparklespace#8313).
+  describe "`position_items`" do
+    # Facts at 1 to 3, business events at 4 and 5.
+    setup do
+      append(
+        "facts",
+        for(state <- ["a", "b", "c"], do: event("fact", ["fact", "state:" <> state]))
+      )
+
+      append("business", [event("typed", ["order:1"]), event("typed", ["order:1"])])
+
+      :ok
+    end
+
+    @items [[tags: ["order:1"]], [tags: ["fact"]]]
+
+    test "answers a match only they matched by position and tags, with no event" do
+      assert {:ok, %ReadResult{after: 5} = result} =
+               EventStore.read_query(@items, position_items: [1], tag_items: [1])
+
+      assert numbers(result) == [4, 5]
+      assert result.matched_items == %{1 => [1], 2 => [1], 3 => [1], 4 => [0], 5 => [0]}
+
+      assert result.tags == %{
+               1 => ["fact", "state:a"],
+               2 => ["fact", "state:b"],
+               3 => ["fact", "state:c"]
+             }
+    end
+
+    test "absent, or empty, answers every match with its event, as before" do
+      assert {:ok, %ReadResult{} = result} = EventStore.read_query(@items, tag_items: [1])
+      assert numbers(result) == [1, 2, 3, 4, 5]
+
+      assert {:ok, %ReadResult{} = empty} =
+               EventStore.read_query(@items, tag_items: [1], position_items: [])
+
+      assert %ReadResult{empty | read_at: nil} == %ReadResult{result | read_at: nil}
+
+      assert {:ok, %ReadResult{} = positioned} =
+               EventStore.read_query(@items, position_items: [1], tag_items: [1])
+
+      # The same matches, items and tags: only the events differ.
+      assert positioned.matched_items == result.matched_items
+      assert positioned.tags == result.tags
+      assert positioned.after == result.after
+      assert positioned.events == Enum.filter(result.events, &(&1.event_number in [4, 5]))
+    end
+
+    test "answers a match another item matched too with its event, and counts it" do
+      append("both", [event("fact", ["fact", "order:1"])])
+
+      assert {:ok, result} = EventStore.read_query(@items, position_items: [1], count: 3)
+
+      assert numbers(result) == [4, 5, 6]
+      assert %RecordedEvent{event_type: "fact"} = List.last(result.events)
+      assert result.matched_items[6] == [0, 1]
+
+      assert {:ok, result} = EventStore.read_query(@items, position_items: [1], count: 2)
+
+      assert numbers(result) == [4, 5]
+    end
+
+    test "are neither cut nor counted by `count`" do
+      append("business", [event("typed", ["order:1"])])
+
+      for count <- [0, 1, 3] do
+        assert {:ok, result} = EventStore.read_query(@items, position_items: [1], count: count)
+
+        assert numbers(result) == Enum.take([4, 5, 6], count)
+
+        assert Map.take(result.matched_items, [1, 2, 3]) == %{1 => [1], 2 => [1], 3 => [1]},
+               "count: #{count}"
+      end
+    end
+
+    test "answer every match of a bare item, cut or not, however far past the cut" do
+      append("late-facts", for(_ <- 1..3, do: event("fact", ["fact"])))
+
+      assert {:ok, result} = EventStore.read_query(@items, position_items: [1], count: 1)
+
+      assert numbers(result) == [4]
+      assert Enum.sort(Map.keys(result.matched_items)) == [1, 2, 3, 4, 6, 7, 8]
+    end
+
+    test "a read cut by `count` answers a match past the cut by the items that reached it" do
+      # 6 matches item 0 as well, but item 0's probe stops at the cut, so the read cannot see
+      # that: it answers 6 as a bare match. The read answered `count` events, so it is partial.
+      append("both", [event("fact", ["fact", "order:1"])])
+
+      assert {:ok, result} = EventStore.read_query(@items, position_items: [1], count: 2)
+
+      assert numbers(result) == [4, 5]
+      assert result.matched_items[6] == [1]
+    end
+
+    test "read backward" do
+      assert {:ok, result} =
+               EventStore.read_query(@items, position_items: [1], direction: :backward)
+
+      assert numbers(result) == [5, 4]
+      assert Enum.sort(Map.keys(result.matched_items)) == [1, 2, 3, 4, 5]
+
+      assert {:ok, result} =
+               EventStore.read_query(@items,
+                 position_items: [1],
+                 direction: :backward,
+                 from: 2,
+                 count: 0
+               )
+
+      assert result.events == []
+      assert result.matched_items == %{1 => [1], 2 => [1]}
+    end
+
+    test "give a match only they matched its command stamp entry" do
+      assert {:ok, result} =
+               EventStore.read_query(@items, position_items: [1], command_tag: "fact")
+
+      # An ordinary tag's row has no stamp, so each entry is `nil`: the entry is the point.
+      assert result.command_stamps == %{1 => nil, 2 => nil, 3 => nil}
+    end
+
+    test "a match of a type item, or of a tag and type item" do
+      items = [[tags: ["order:1"]], [types: ["fact"], tags: ["state:a"]], [types: ["fact"]]]
+
+      assert {:ok, result} = EventStore.read_query(items, position_items: [1, 2])
+
+      assert numbers(result) == [4, 5]
+      assert result.matched_items == %{1 => [1, 2], 2 => [2], 3 => [2], 4 => [0], 5 => [0]}
+    end
+
+    test "leave out a match whose `$all` row has no original stream, as the event's fetch does",
+         context do
+      %{observer: observer, schema: schema} = context
+
+      Postgrex.transaction(observer, fn tx ->
+        # Replica mode fires no trigger, so the update is let through.
+        Postgrex.query!(tx, "SET LOCAL session_replication_role = replica", [])
+
+        Postgrex.query!(
+          tx,
+          ~s[UPDATE "#{schema}".stream_events SET original_stream_id = NULL ] <>
+            "WHERE stream_id = 0 AND stream_version IN (2, 4)",
+          []
+        )
+      end)
+
+      assert {:ok, plain} = EventStore.read_query(@items)
+      assert {:ok, positioned} = EventStore.read_query(@items, position_items: [1])
+
+      assert numbers(plain) == [1, 3, 5]
+      assert numbers(positioned) == [5]
+      assert Map.keys(positioned.matched_items) == Map.keys(plain.matched_items)
+      assert Enum.sort(Map.keys(positioned.matched_items)) == [1, 3, 5]
+    end
+
+    test "that is not a list of the query's item indexes is refused" do
+      for position_items <- [nil, 0, [-1], [2], [0, 2], [0.0], ["0"], [0 | 1], %{}] do
+        assert {:error, :invalid_query} =
+                 EventStore.read_query(@items, position_items: position_items),
+               inspect(position_items)
+      end
+    end
+  end
+
+  # A store's life of facts, against a decision's read: `count` is `max_events + 1` at the
+  # default bound.
+  describe "`position_items` over 2,000 matches" do
+    setup do
+      for _batch <- 1..20 do
+        append("facts", for(_ <- 1..100, do: event("fact", ["fact", "state:a"])))
+      end
+
+      append("business", for(_ <- 1..5, do: event("typed", ["order:1"])))
+
+      :ok
+    end
+
+    test "answers every one of them, past `count`, and every business event" do
+      items = [[tags: ["order:1"]], [tags: ["fact"]]]
+
+      assert {:ok, result} =
+               EventStore.read_query(items, position_items: [1], tag_items: [1], count: 1_001)
+
+      assert numbers(result) == Enum.to_list(2_001..2_005)
+      assert Map.keys(result.matched_items) |> Enum.sort() == Enum.to_list(1..2_005)
+      assert Enum.all?(1..2_000, &(result.matched_items[&1] == [1]))
+      assert Map.keys(result.tags) |> Enum.sort() == Enum.to_list(1..2_000)
+
+      # Without the option the facts are events, and `count` cuts them.
+      assert {:ok, plain} = EventStore.read_query(items, tag_items: [1], count: 1_001)
+
+      assert numbers(plain) == Enum.to_list(1..1_001)
+    end
+  end
+
   describe "a refused query" do
     test "answers its error from `read_query`" do
       assert {:error, :invalid_query} = EventStore.read_query([])
@@ -683,6 +881,19 @@ defmodule Decree.Store.Storage.ReadQueryTest do
       orphan.("gone")
 
       assert positions([[tags: ["first", "second"]]], count: 1) == [4]
+    end
+
+    test "rows with no `$all` row are no match of `position_items` either", %{orphan: orphan} do
+      append("keep-1", [event("typed", ["tag"])])
+      append("gone", for(_ <- 1..3, do: event("typed", ["tag"])))
+      append("keep-2", [event("typed", ["tag"])])
+
+      orphan.("gone")
+
+      assert {:ok, result} = EventStore.read_query([[tags: ["tag"]]], position_items: [0])
+
+      assert result.events == []
+      assert result.matched_items == %{1 => [0], 5 => [0]}
     end
 
     test "a whole page of orphans does not end `stream_query`", %{orphan: orphan} do

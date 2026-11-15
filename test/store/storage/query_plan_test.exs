@@ -60,6 +60,25 @@ defmodule Decree.Store.Storage.QueryPlanTest do
       end
     end
 
+    # The `position_items` form (sparkle-space/sparklespace#8313): the same probes, with the
+    # position item's uncut, and the same fetch for a bodied hit.
+    test "is index-bound with `position_items`, in both directions", context do
+      for direction <- [:forward, :backward],
+          items <- [
+            [[types: ["type-1"], tags: ["tag-1"]], [tags: ["tag-2"]]],
+            [[tags: ["broad", "tag-1"]], [types: ["type-3"]], [tags: ["tag-2"]]],
+            [[types: ["type-1"], tags: ["broad", "tag-1"]], [tags: ["tag-2"]]]
+          ] do
+        position_items = [length(items) - 1]
+        plan = explain(context, items, direction, "tag-1", position_items, position_items)
+
+        assert_no_seq_scan(plan, ["event_tags", "event_types", "stream_events"])
+        assert_live_event_check(plan)
+        assert_index_on(plan, "ix_event_tags_position", ~s("position"))
+        assert_index_on(plan, "event_tags_pkey", "tag")
+      end
+    end
+
     test "reads the rows it planned", %{plan_conn: conn, schema: schema} do
       query = compile([[tags: ["tag-1"]]])
 
@@ -87,6 +106,52 @@ defmodule Decree.Store.Storage.QueryPlanTest do
         assert_no_seq_scan(plan, ["stream_events", "events", "event_tags", "event_types"])
         assert_fetch_probe(plan)
       end
+    end
+
+    # The `position_items` form, the index item the position item, as a dispatch reads it, on
+    # a store with a few facts and on one with 2,000 (sparkle-space/sparklespace#8313).
+    for {positions, facts} <- [{400, 8}, {2_000, 8}, {13_700, 8}, {4_000, 2_000}, {13_700, 2_000}],
+        read <- [:decision, :rule] do
+      @tag positions: positions, facts: facts, read: read
+      test "probes per hit for a positioned #{read} at #{positions} events, #{facts} facts",
+           context do
+        {items, command_tag, tag_items} = small_store_read(context.read)
+        position_items = [length(items) - 1]
+
+        plan = explain(context, items, :forward, command_tag, tag_items, position_items)
+
+        assert_no_seq_scan(plan, ["stream_events", "events", "event_tags", "event_types"])
+        assert_fetch_probe(plan, :outside_subplans)
+        assert_bare_check(plan)
+        assert_hit_tags_joined_once(plan)
+        # The tags of each hit, by its own position.
+        assert_index_on(plan, "ix_event_tags_position", ~s("position"))
+      end
+    end
+
+    @tag positions: 4_000, facts: 2_000
+    test "reads every one of 2,000 facts by position, with their tags", context do
+      %{plan_conn: conn, schema: schema} = context
+      {items, command_tag, tag_items} = small_store_read(:decision)
+
+      assert {:ok, %ReadResult{} = result} =
+               Storage.read_query(
+                 conn,
+                 compile(items),
+                 :forward,
+                 0,
+                 @count,
+                 command_tag,
+                 tag_items,
+                 schema: schema,
+                 position_items: [2]
+               )
+
+      facts = Enum.to_list(1..2_000)
+
+      assert result.events == []
+      assert result.matched_items == Map.new(facts, &{&1, [2]})
+      assert Map.keys(result.tags) |> Enum.sort() == facts
     end
 
     @tag positions: 400
@@ -310,9 +375,14 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     [plan_conn: conn]
   end
 
-  # `n` positions on `n / 2` streams of two events each. The first 8 are index facts; every
-  # other event has one of three types and three tags almost no other event shares.
-  defp seed_small(%{positions: positions, postgrex_config: postgrex_config, schema: schema}) do
+  # `n` positions on `n / 2` streams of two events each. The first 8, or the test's `facts`,
+  # are index facts; every other event has one of three types and three tags almost no other
+  # event shares.
+  defp seed_small(
+         %{positions: positions, postgrex_config: postgrex_config, schema: schema} = context
+       ) do
+    facts = Map.get(context, :facts, 8)
+
     stop_supervised!(TestEventStore)
 
     conn = LockSession.connect(postgrex_config)
@@ -332,7 +402,7 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     SELECT
       n AS position,
       CASE
-        WHEN n <= 8 THEN 'IndexFact'
+        WHEN n <= #{facts} THEN 'IndexFact'
         ELSE (ARRAY['Registered', 'Released', 'Thing'])[n % 3 + 1]
       END AS event_type
     FROM generate_series(1, #{positions}) AS n
@@ -373,7 +443,7 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     CROSS JOIN LATERAL (
       SELECT unnest(
         CASE
-          WHEN t.position <= 8 THEN
+          WHEN t.position <= #{facts} THEN
             ARRAY['tag_index:fact', 'tag_index_state:f' || t.position || ':-:enabled']
           ELSE
             ARRAY[
@@ -410,14 +480,21 @@ defmodule Decree.Store.Storage.QueryPlanTest do
     {[[types: ["Registered"], tags: ["email:fp:dnew"]], [tags: ["tag_index:fact"]]], nil, [1]}
   end
 
-  defp explain(context, items, direction, command_tag \\ "tag-1", tag_items \\ [0]) do
+  defp explain(
+         context,
+         items,
+         direction,
+         command_tag \\ "tag-1",
+         tag_items \\ [0],
+         positioned \\ []
+       ) do
     %{plan_conn: conn, schema: schema} = context
 
     %Query{} = query = compile(items)
 
     statement =
       schema
-      |> Reader.Query.read_query_statement(direction)
+      |> Reader.Query.read_query_statement(direction, positioned != [])
       |> IO.iodata_to_binary()
 
     bound = if direction == :forward, do: 0, else: 9_223_372_036_854_775_807
@@ -436,6 +513,8 @@ defmodule Decree.Store.Storage.QueryPlanTest do
       []
     ]
 
+    params = if positioned == [], do: params, else: params ++ [positioned]
+
     %Postgrex.Result{rows: [[[%{"Plan" => plan}]]]} =
       Postgrex.query!(conn, "EXPLAIN (FORMAT JSON) " <> statement, params)
 
@@ -450,6 +529,17 @@ defmodule Decree.Store.Storage.QueryPlanTest do
 
   defp nodes(%{"Plans" => plans} = node), do: [node | Enum.flat_map(plans, &nodes/1)]
   defp nodes(node), do: [node]
+
+  defp nodes_outside_subplans(%{"Plans" => plans} = node) do
+    [
+      node
+      | plans
+        |> Enum.reject(&(&1["Parent Relationship"] == "SubPlan"))
+        |> Enum.flat_map(&nodes_outside_subplans/1)
+    ]
+  end
+
+  defp nodes_outside_subplans(node), do: [node]
 
   # `tables` nil means every table.
   defp assert_no_seq_scan(plan, tables \\ nil) do
@@ -469,14 +559,40 @@ defmodule Decree.Store.Storage.QueryPlanTest do
            "no condition on #{column} in #{index}: #{inspect(conditions)}\n#{summary(plan)}"
   end
 
-  # The fetch: one probe of `ix_stream_events` per hit, by the hit's position.
-  defp assert_fetch_probe(plan) do
+  # The fetch: one probe of `ix_stream_events` per hit, by the hit's position. In the
+  # `position_items` form the bare check probes the same index by the same position, in a
+  # subplan, so `:outside_subplans` looks only at the fetch's own nodes.
+  defp assert_fetch_probe(plan, scope \\ :all) do
+    candidates = if scope == :all, do: nodes(plan), else: nodes_outside_subplans(plan)
+
     conditions =
-      for %{"Index Name" => "ix_stream_events"} = node <- nodes(plan),
+      for %{"Index Name" => "ix_stream_events"} = node <- candidates,
           do: node["Index Cond"] || ""
 
     assert Enum.any?(conditions, &(&1 =~ ~r/stream_version = hits(_\d+)?\."position"/)),
            "no per-hit fetch: #{inspect(conditions)}\n#{summary(plan)}"
+  end
+
+  # The tags of 2,000 facts are 2,000 rows. Joined as `hit_tags` by a nested loop on a join
+  # filter, they are scanned once per hit, which is quadratic: the positioned form reads them per
+  # hit instead, and no join filter names `hit_tags`.
+  defp assert_hit_tags_joined_once(plan) do
+    filters =
+      for %{"Join Filter" => filter} <- nodes(plan), filter =~ "hit_tags", do: filter
+
+    assert filters == [], "hit_tags joined per row: #{inspect(filters)}\n#{summary(plan)}"
+  end
+
+  # A bare hit's check, in place of the fetch: a subplan probing `ix_stream_events` per bare
+  # hit, by its position.
+  defp assert_bare_check(plan) do
+    checks =
+      for %{"Parent Relationship" => "SubPlan"} = subplan <- nodes(plan),
+          %{"Index Name" => "ix_stream_events"} = node <- nodes(subplan),
+          do: node["Index Cond"] || ""
+
+    assert Enum.any?(checks, &(&1 =~ ~r/stream_version = hits(_\d+)?\."position"/)),
+           "no per-hit bare check: #{inspect(checks)}\n#{summary(plan)}"
   end
 
   # The fetch stage probes `ix_stream_events` too, by `hits.position`. This is the fragment's

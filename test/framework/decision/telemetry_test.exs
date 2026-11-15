@@ -155,8 +155,9 @@ defmodule Decree.Decision.TelemetryTest do
 
       assert :ok = App.dispatch(scripted(scope: scope))
 
-      # The index item is one item and one probe, and its facts are matched events.
-      matched = 2 + fact_count()
+      # The index item is one item and one probe. Its facts are read by position, so they are
+      # not matched events.
+      matched = 2
 
       assert_received {:telemetry, @read,
                        %{
@@ -181,7 +182,7 @@ defmodule Decree.Decision.TelemetryTest do
 
       assert :ok = App.dispatch(scripted(scope: scope, followup: fn _c, _t, _e -> [released] end))
 
-      matched = 1 + fact_count()
+      matched = 1
 
       assert_received {:telemetry, @read, %{items: 4, probes: 4, matched_events: ^matched},
                        _metadata}
@@ -214,7 +215,7 @@ defmodule Decree.Decision.TelemetryTest do
       assert :ok = App.dispatch(scripted(decide: decide))
 
       assert_received {:telemetry, @read, _, %{attempt: 1}}
-      matched = 1 + fact_count()
+      matched = 1
 
       assert_received {:telemetry, @read, %{matched_events: ^matched}, %{attempt: 2}}
     end

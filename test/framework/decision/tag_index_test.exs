@@ -12,7 +12,8 @@ defmodule Decree.Decision.TagIndexTest do
     Digesting,
     DisableDeletableApp,
     HardDeletesApp,
-    IndexDeletableApp
+    IndexDeletableApp,
+    Tight
   }
 
   alias Decree.Event.Append
@@ -226,6 +227,11 @@ defmodule Decree.Decision.TagIndexTest do
       assert [_one] = stored(stream(command))
       assert_received {:telemetry, @read_query, _, %{items: items, opts: opts}}
       assert Keyword.fetch!(opts, :tag_items) == framework_indexes(items)
+
+      # The facts come by position: the index item alone, never the command item.
+      assert Keyword.fetch!(opts, :position_items) ==
+               [Enum.find_index(items, &(&1 == [tags: ["tag_index:fact"]]))]
+
       refute_read_tags()
     end
 
@@ -598,13 +604,16 @@ defmodule Decree.Decision.TagIndexTest do
       assert :ok = App.dispatch(command)
 
       assert_received {:telemetry, [:decree, :event_store, :read_query, :start], _,
-                       %{items: items}}
+                       %{items: items, opts: opts}}
 
       assert Enum.take(items, -3) == [
                [tags: ["command:" <> command.command_id]],
                [tags: ["tag_index:fact"]],
                [types: [Atom.to_string(Activated)], tags: ["feature:claims"]]
              ]
+
+      # The index item alone comes by position; the activation item's match is an event.
+      assert Keyword.fetch!(opts, :position_items) == [length(items) - 2]
 
       thirteen = Enum.map(1..13, &claimed_item("item-#{&1}"))
       fourteen = Enum.map(1..14, &claimed_item("item-#{&1}"))
@@ -613,6 +622,102 @@ defmodule Decree.Decision.TagIndexTest do
 
       assert {:error, :decision_query_too_large} =
                App.dispatch(scripted([query: fn _c, _t -> fourteen end], Activating))
+    end
+  end
+
+  # A store gathers facts over its life, and the index item reads every one. `Tight` bounds
+  # `max_events` at 12, so its read asks for 13 rows: the facts must be neither cut by that
+  # count nor counted by the bound (sparkle-space/sparklespace#8313).
+  describe "more facts than `max_events + 1`" do
+    test "a dispatch decides, and the read event counts its business events alone" do
+      TagIndexFixtures.seed_facts!(App, 30)
+
+      command = scripted([], Tight)
+
+      for _claim <- 1..2, do: seed(%Claimed{scope: command.scope}, ["scope:" <> command.scope])
+
+      assert :ok = App.dispatch(command)
+      assert [_one] = stored("tight-" <> command.claim_id)
+
+      assert_received {:telemetry, @read, %{matched_events: 2}, %{attempt: 1}}
+    end
+
+    test "every fact is folded: the last one a disable refuses" do
+      TagIndexFixtures.seed_facts!(App, 30)
+
+      disable_index!("entity")
+
+      command = scripted([], Tight)
+
+      assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+      assert stored("tight-" <> command.claim_id) == []
+    end
+
+    test "every fact is folded: a disable then an enable as the last two decides" do
+      TagIndexFixtures.seed_facts!(App, 30)
+
+      disable_index!("entity")
+      enable_index!("entity")
+
+      command = scripted([], Tight)
+
+      assert :ok = App.dispatch(command)
+      assert [_one] = stored("tight-" <> command.claim_id)
+    end
+
+    # A fact the decision's own item matches too is its business: an event, and counted. One
+    # read answering it by position and the other with its event counts it once, with it.
+    for {name, first_reads_fact} <- [{"first", false}, {"second", true}] do
+      @tag first_reads_fact: first_reads_fact
+      test "a fact bare in the #{name} read and an event in the other counts once", context do
+        TagIndexFixtures.seed_facts!(App, 30)
+
+        test = self()
+        scope = scope()
+
+        seed(%Decree.TagIndexFixtures.TagIndexEnabled{index_id: UUID.uuid4(), family: "entity"}, [
+          TagIndex.fact_tag(),
+          TagIndex.state_tag("entity", nil, :enabled),
+          "scope:" <> scope
+        ])
+
+        for _claim <- 1..11, do: seed(%Claimed{scope: scope}, ["scope:" <> scope])
+
+        fact_item = [
+          types: [Atom.to_string(Decree.TagIndexFixtures.TagIndexEnabled)],
+          tags: ["scope:" <> scope]
+        ]
+
+        {first, second} =
+          if context.first_reads_fact,
+            do: {fact_item, claimed_item(scope)},
+            else: {claimed_item(scope), fact_item}
+
+        decide = fn state, command ->
+          send(test, {:state, state})
+          %Claimed{claim_id: command.claim_id, scope: command.scope}
+        end
+
+        command =
+          scripted(
+            [
+              scope: scope,
+              query: fn _c, _t -> [first] end,
+              followup: fn _c, _t, _e -> [second] end,
+              decide: decide
+            ],
+            Tight
+          )
+
+        # Eleven claims and the fact are twelve, the bound: counted twice, it would refuse.
+        assert :ok = App.dispatch(command)
+
+        assert_received {:telemetry, @read, %{matched_events: 12}, %{attempt: 1}}
+        assert_received {:state, state}
+
+        assert [%Decree.TagIndexFixtures.TagIndexEnabled{family: "entity"}] =
+                 Enum.reject(state, &match?(%Claimed{}, &1))
+      end
     end
   end
 
