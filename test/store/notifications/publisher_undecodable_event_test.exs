@@ -18,7 +18,10 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     CrashingTypeProvider,
     EventData,
     EventFactory,
+    ExitingSerializer,
+    ExitOnAskEvent,
     FiniteTypeProvider,
+    JsonSerializer,
     PubSub,
     RecordedEvent,
     SecondAskCrashingSerializer,
@@ -290,6 +293,82 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
 
       refute log =~ "failed to deserialize"
     end
+  end
+
+  # An exit in the serializer, as from a call to a dead or slow process, is not a crash of the
+  # type check: whether it comes from the type check or from a known event's deserialize, the
+  # batch is cut at that event as at an undecodable one, and the publisher keeps running. The
+  # exits are confined to a store instance of its own, so the test subscribes there; the
+  # store's own instance reads the same rows and decodes them.
+  describe "a serializer that exits" do
+    @exit_store :publisher_exiting_serializer_store
+
+    setup do
+      start_supervised!(
+        {TestEventStore, name: @exit_store, serializer: ExitingSerializer},
+        id: @exit_store
+      )
+
+      :ok
+    end
+
+    test "in a known event's deserialize cuts the batch there", %{conn: conn, schema: schema} do
+      [first, second, third] = EventFactory.create_recorded_events(3, UUID.uuid4())
+
+      second = %RecordedEvent{
+        second
+        | data:
+            JsonSerializer.serialize(%EventFactory.Event{event: ExitingSerializer.data_marker()})
+      }
+
+      assert_exit_cut(conn, schema, [first, second, third], ExitingSerializer.data_marker())
+    end
+
+    test "in the type check cuts the batch there", %{conn: conn, schema: schema} do
+      [first, second, third] = EventFactory.create_recorded_events(3, UUID.uuid4())
+
+      second = %RecordedEvent{
+        second
+        | event_type: "Elixir.Decree.Store.ExitOnAskEvent",
+          data: JsonSerializer.serialize(%ExitOnAskEvent{event: 2})
+      }
+
+      assert_exit_cut(conn, schema, [first, second, third], ExitingSerializer.type_marker())
+    end
+  end
+
+  # One append of three events whose second exits in the exiting store's serializer, and no
+  # later append: the first is broadcast, the rest are not, no position notice is sent, the
+  # publisher survives, and the cut is logged by the exit's reduced class.
+  defp assert_exit_cut(conn, schema, [first | _rest] = events, marker) do
+    %RecordedEvent{stream_uuid: stream_uuid} = first
+
+    publisher = Process.whereis(Module.concat([@exit_store, Publisher]))
+    assert is_pid(publisher)
+    ref = Process.monitor(publisher)
+
+    :ok = PubSub.subscribe(@exit_store, stream_uuid, notices: true)
+
+    log =
+      capture_log(fn ->
+        :ok = Appender.append(conn, nil, events, schema: schema)
+
+        assert_receive {:events, [%RecordedEvent{stream_uuid: ^stream_uuid} = event]}
+        assert %RecordedEvent{stream_version: 1, data: %EventFactory.Event{event: 1}} = event
+      end)
+
+    refute_receive {:events, _events}, 300
+    refute_received {:events_pending, _event_number}
+
+    refute_received {:DOWN, ^ref, :process, _pid, _reason}
+    assert Process.whereis(Module.concat([@exit_store, Publisher])) == publisher
+
+    assert log =~
+             "Decree.Store notifications failed to deserialize event 2 of " <>
+               inspect(suffix(stream_uuid)) <> " due to: {:noproc, :redacted}"
+
+    refute log =~ marker
+    refute log =~ stream_uuid
   end
 
   defp suffix(stream_uuid), do: "..." <> String.slice(stream_uuid, -8, 8)
