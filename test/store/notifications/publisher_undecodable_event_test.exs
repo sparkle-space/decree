@@ -18,6 +18,7 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     CrashingTypeProvider,
     EventData,
     EventFactory,
+    ExitedAnswerEvent,
     ExitingSerializer,
     ExitOnAskEvent,
     FiniteTypeProvider,
@@ -334,6 +335,45 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
       }
 
       assert_exit_cut(conn, schema, [first, second, third], ExitingSerializer.type_marker())
+    end
+
+    # A type check's answer is data: a truthy answer shaped like a caught exit is a known
+    # type, and the event is deserialized and broadcast like any other.
+    test "in name only, as a type check's answer, does not cut the batch", %{
+      conn: conn,
+      schema: schema
+    } do
+      [first, second] = EventFactory.create_recorded_events(2, UUID.uuid4())
+      %RecordedEvent{stream_uuid: stream_uuid} = first
+
+      second = %RecordedEvent{
+        second
+        | event_type: "Elixir.Decree.Store.ExitedAnswerEvent",
+          data: JsonSerializer.serialize(%ExitedAnswerEvent{event: 2})
+      }
+
+      publisher = Process.whereis(Module.concat([@exit_store, Publisher]))
+      assert is_pid(publisher)
+      ref = Process.monitor(publisher)
+
+      :ok = PubSub.subscribe(@exit_store, stream_uuid, notices: true)
+
+      log =
+        capture_log(fn ->
+          :ok = Appender.append(conn, nil, [first, second], schema: schema)
+
+          assert_receive {:events, [%RecordedEvent{stream_version: 1}, event]}
+          assert %RecordedEvent{stream_version: 2, data: %ExitedAnswerEvent{event: 2}} = event
+        end)
+
+      refute_receive {:events, _events}, 300
+      refute_received {:events_pending, _event_number}
+      refute_received {:DOWN, ^ref, :process, _pid, _reason}
+      assert Process.whereis(Module.concat([@exit_store, Publisher])) == publisher
+
+      refute log =~ "failed to deserialize"
+      refute log =~ "stopped a batch"
+      refute log =~ "exited_answer_marker"
     end
   end
 
