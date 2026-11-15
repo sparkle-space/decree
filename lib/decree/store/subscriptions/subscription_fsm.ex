@@ -1124,7 +1124,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   def held_wait(attempt, retry_interval), do: jittered_backoff(attempt, retry_interval)
 
   # The alarm of a held subscription: a warning naming the event's type and number, never
-  # its data, and the `[:decree, :store, :subscription, :held]` telemetry event (documented
+  # its data, and a failed probe's error by its class (`LogTerms.reduce/1`), and the
+  # `[:decree, :store, :subscription, :held]` telemetry event (documented
   # on `c:Decree.Store.subscribe_to_stream/4`). Raised on every hold and on every probe
   # that leaves the subscription held.
   defp alarm(%SubscriptionState{held: held} = data, reason) do
@@ -1146,7 +1147,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     because =
       case reason do
         nil -> ""
-        reason -> " (the probe failed due to: " <> inspect(reason) <> ")"
+        reason -> " (the probe failed due to: " <> inspect(LogTerms.reduce(reason)) <> ")"
       end
 
     Logger.warning(

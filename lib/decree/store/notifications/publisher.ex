@@ -81,14 +81,26 @@ defmodule Decree.Store.Notifications.Publisher do
   # subscriber checks continuity itself.
   #
   # Any other event that fails to deserialize, such as a corrupt payload, raises in the
-  # serializer. The raise is caught and the whole notification skipped, logged by the
-  # exception's module only, never its message, which can carry the payload's bytes: a raise
-  # would crash the publisher, restart the notifications tree (`one_for_all`) and, past its
-  # restart intensity, the store's whole tree (sparkle-space/sparklespace#8349). A subscription
-  # recovers the skipped wake-up from storage: its next notification shows a gap
+  # serializer. Events are deserialized one at a time, in order, and a raise is caught around
+  # each event's deserialize only: the batch is cut at that event, as at an unknown type, and
+  # the events before it are broadcast. Whichever of the two cuts comes first wins. The cut is
+  # logged at `:error` by the exception's module, the event's number and the stream's suffix,
+  # never the message, which can carry the payload's bytes: a raise would crash the publisher,
+  # restart the notifications tree (`one_for_all`) and, past its restart intensity, the
+  # store's whole tree (sparkle-space/sparklespace#8349). No position notice is sent: a
+  # subscription process would take it for an unknown type and hold.
+  #
+  # A subscription recovers the rest from storage: its next notification shows a gap
   # (`last_received + 1`), and while `subscribed` a head its head check saw and still has not
   # received at the next check starts a catch-up read (`SubscriptionFsm`). That read meets the
-  # same event and raises in the subscription process, which is `:temporary`.
+  # same event and raises in the subscription process, which is `:temporary`. An aggregate or
+  # a plain `subscribe/2` subscriber is sent nothing for the event that failed and the events
+  # after it in that notification until a later append shows the gap; an aggregate's next
+  # append then fails closed on `:wrong_expected_version`, and its rebuild raises on the event.
+  #
+  # A storage error is answered as `{:error, reason}` and an exit is caught: both skip the
+  # notification, logged by class. Any other raise in the read is a fault and crashes the
+  # publisher.
 
   defp read_events(%Notification{} = notification, %State{} = state) do
     %Notification{
@@ -109,26 +121,61 @@ defmodule Decree.Store.Notifications.Publisher do
 
     count = to_stream_version - from_stream_version + 1
 
-    try do
-      case Storage.read_stream_forward(conn, stream_id, from_stream_version, count,
-             schema: schema,
-             timeout: query_timeout,
-             correlation_id_type: correlation_id_type,
-             causation_id_type: causation_id_type
-           ) do
-        {:ok, events} ->
-          {deserialized_events, pending} = RecordedEvent.deserialize_known(events, serializer)
-
-          {stream_uuid, deserialized_events, pending}
-
-        {:error, error} ->
-          failed_to_read(error)
+    read =
+      try do
+        Storage.read_stream_forward(conn, stream_id, from_stream_version, count,
+          schema: schema,
+          timeout: query_timeout,
+          correlation_id_type: correlation_id_type,
+          causation_id_type: causation_id_type
+        )
+      catch
+        :exit, reason -> {:error, reason}
       end
-    rescue
-      exception -> failed_to_read(exception)
-    catch
-      :exit, reason -> failed_to_read(reason)
+
+    case read do
+      {:ok, events} ->
+        {deserialized_events, pending} = deserialize(events, stream_uuid, serializer, [])
+
+        {stream_uuid, deserialized_events, pending}
+
+      {:error, error} ->
+        failed_to_read(error)
     end
+  end
+
+  # `RecordedEvent.deserialize_known/2` one event at a time, so a raise is the cut at that
+  # event and the events before it stand.
+  defp deserialize([], _stream_uuid, _serializer, acc), do: {Enum.reverse(acc), nil}
+
+  defp deserialize([event | events], stream_uuid, serializer, acc) do
+    case deserialize_one(event, serializer) do
+      {:ok, {[deserialized], nil}} ->
+        deserialize(events, stream_uuid, serializer, [deserialized | acc])
+
+      {:ok, {[], pending}} ->
+        {Enum.reverse(acc), pending}
+
+      {:raised, exception} ->
+        failed_to_deserialize(stream_uuid, event, exception)
+
+        {Enum.reverse(acc), nil}
+    end
+  end
+
+  defp deserialize_one(event, serializer) do
+    {:ok, RecordedEvent.deserialize_known([event], serializer)}
+  rescue
+    exception -> {:raised, exception}
+  end
+
+  defp failed_to_deserialize(stream_uuid, %RecordedEvent{event_number: event_number}, exception) do
+    Logger.error(
+      "Decree.Store notifications failed to deserialize event #{event_number} of " <>
+        inspect(LogTerms.suffix(stream_uuid)) <>
+        " due to: " <>
+        inspect(LogTerms.reduce(exception)) <> ", broadcasting the events before it"
+    )
   end
 
   defp failed_to_read(reason) do
