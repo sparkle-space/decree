@@ -14,7 +14,16 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
 
   import ExUnit.CaptureLog
 
-  alias Decree.Store.{EventData, EventFactory, PubSub, RecordedEvent, UUID}
+  alias Decree.Store.{
+    CrashingTypeProvider,
+    EventData,
+    EventFactory,
+    FiniteTypeProvider,
+    PubSub,
+    RecordedEvent,
+    UUID
+  }
+
   alias Decree.Store.Notifications.Publisher
   alias Decree.Store.Storage.{Appender, Initializer}
 
@@ -207,6 +216,41 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
 
       refute log =~ @id_marker
       refute log =~ bad
+    end
+  end
+
+  # A type provider that crashes in `known_type?/1` with an exception other than the ones it
+  # reads as an unknown type is a crash, not an undecodable event, and still raises (decree
+  # 772c21f): the publisher goes down rather than cutting the batch. The crash is confined to
+  # a store instance of its own, run with the framework's serializer over the provider; the
+  # provider is global, so this module is not async.
+  describe "a type provider that crashes" do
+    @crash_store :publisher_crashing_provider_store
+
+    setup do
+      FiniteTypeProvider.configure!(CrashingTypeProvider)
+
+      start_supervised!(
+        {TestEventStore, name: @crash_store, serializer: Decree.Serialization.JsonSerializer},
+        id: @crash_store
+      )
+
+      :ok
+    end
+
+    @tag capture_log: true
+    test "takes the publisher down", %{conn: conn, schema: schema} do
+      publisher = Process.whereis(Module.concat([@crash_store, Publisher]))
+      assert is_pid(publisher)
+      ref = Process.monitor(publisher)
+
+      [event] = EventFactory.create_recorded_events(1, UUID.uuid4())
+
+      :ok = Appender.append(conn, nil, [event], schema: schema)
+
+      assert_receive {:DOWN, ^ref, :process, ^publisher,
+                      {%RuntimeError{message: "type provider crashed"}, _stacktrace}},
+                     2_000
     end
   end
 
