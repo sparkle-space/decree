@@ -21,7 +21,9 @@ defmodule Decree.Store.AppendError do
     - `code` — the Postgres error code name (`Postgrex.Error`'s
       `postgres.code`, such as `:serialization_failure`), or `nil` when the
       error carries no SQLSTATE.
-    - `reason` — the original error term, for logging.
+    - `reason` — the original error term, kept for callers. The store never
+      logs it whole: `message/1` reduces it with `Decree.Store.LogTerms.reduce/1`,
+      as it can carry the failing row's values.
 
   ## Classes
 
