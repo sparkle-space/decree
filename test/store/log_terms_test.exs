@@ -91,6 +91,11 @@ defmodule Decree.Store.LogTermsTest do
       assert LogTerms.suffix("$all") == "$all"
     end
 
+    test "a binary that is not UTF-8 shows a fixed marker, not its bytes" do
+      assert LogTerms.suffix(<<0xC2, 0xAE, 0xF5>>) == "...(not utf-8)"
+      assert LogTerms.suffix("stream-id" <> <<0xFF>>) == "...(not utf-8)"
+    end
+
     test "anything not a string shows no id" do
       assert LogTerms.suffix(nil) == "...(none)"
       assert LogTerms.suffix(42) == "...(none)"

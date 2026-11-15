@@ -33,4 +33,13 @@ defmodule Decree.PersonalFields.LookupLogTest do
 
     assert_received {:key_unknown, %{application: :app, subject_id: @subject_id}}
   end
+
+  test "a subject id that is not UTF-8 answers unknown and logs a marker, not its bytes" do
+    subject_id = "fake-subject-marker" <> <<0xC2, 0xAE, 0xF5>>
+
+    log = capture_log([level: :debug], fn -> :unknown = Lookup.unknown(:app, subject_id) end)
+
+    assert log =~ "no personal field key for subject ...(not utf-8)\n"
+    refute log =~ "marker"
+  end
 end
