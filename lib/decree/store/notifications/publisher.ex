@@ -161,7 +161,8 @@ defmodule Decree.Store.Notifications.Publisher do
   # One event at a time: an unknown type is the cut at that event, with its position notice,
   # and so is a raise or an exit in a known event's deserialize, or an exit from the type
   # question; the events before it stand. Whether the type is known is asked once, outside
-  # any rescue, so a type provider's crash raises.
+  # any rescue, so a type provider's crash raises. The answer and the exit are tagged apart,
+  # so an answer of any shape is data: every answer but `false` or `nil` is a known type.
   defp deserialize([], _stream_uuid, _serializer, acc), do: {Enum.reverse(acc), nil}
 
   defp deserialize([event | events], stream_uuid, serializer, acc) do
@@ -173,10 +174,10 @@ defmodule Decree.Store.Notifications.Publisher do
 
         {Enum.reverse(acc), nil}
 
-      unknown when unknown in [false, nil] ->
+      {:returned, unknown} when unknown in [false, nil] ->
         {Enum.reverse(acc), {event_number, event_type}}
 
-      _known ->
+      {:returned, _known} ->
         case deserialize_one(event, serializer) do
           {:ok, deserialized} ->
             deserialize(events, stream_uuid, serializer, [deserialized | acc])
@@ -190,7 +191,7 @@ defmodule Decree.Store.Notifications.Publisher do
   end
 
   defp known_type(serializer, event_type) do
-    RecordedEvent.known_type?(serializer, event_type)
+    {:returned, RecordedEvent.known_type?(serializer, event_type)}
   catch
     :exit, reason -> {:exited, reason}
   end
