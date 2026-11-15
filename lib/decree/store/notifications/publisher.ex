@@ -155,7 +155,7 @@ defmodule Decree.Store.Notifications.Publisher do
 
   # One event at a time: an unknown type is the cut at that event, with its position notice,
   # and so is a raise in a known event's deserialize; the events before it stand. Whether the
-  # type is known is asked outside the rescue, so a type provider's crash raises.
+  # type is known is asked once, outside the rescue, so a type provider's crash raises.
   defp deserialize([], _stream_uuid, _serializer, acc), do: {Enum.reverse(acc), nil}
 
   defp deserialize([event | events], stream_uuid, serializer, acc) do
@@ -177,7 +177,7 @@ defmodule Decree.Store.Notifications.Publisher do
   end
 
   defp deserialize_one(event, serializer) do
-    {:ok, RecordedEvent.deserialize(event, serializer)}
+    {:ok, RecordedEvent.deserialize_known_type(event, serializer)}
   rescue
     exception -> {:raised, exception}
   end

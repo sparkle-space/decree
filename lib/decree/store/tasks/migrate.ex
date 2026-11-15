@@ -53,7 +53,7 @@ defmodule Decree.Store.Tasks.Migrate do
         {:error, :lock_already_taken} ->
           write_info("Decree.Store database migration already in progress.", opts)
 
-        {:error, %Postgrex.Error{} = error} ->
+        {:error, error} ->
           raise_msg(
             "The Decree.Store database could not be migrated. Could not acquire migration lock due to: " <>
               inspect(LogTerms.reduce(error)),
