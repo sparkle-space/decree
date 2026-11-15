@@ -154,6 +154,34 @@ defmodule Decree.Store.Storage.AppendErrorTest do
       assert AppendError.message(error) =~ "retryable"
       assert AppendError.message(error) =~ "serialization_failure"
     end
+
+    test "the message names the original error by its type and code, never its values" do
+      marker = "append-error-marker"
+
+      error =
+        AppendError.from_error(%Postgrex.Error{
+          message: marker,
+          postgres: %{
+            code: :check_violation,
+            pg_code: "23514",
+            severity: "ERROR",
+            message: marker,
+            detail: "Failing row contains (#{marker})."
+          }
+        })
+
+      assert AppendError.message(error) ==
+               "append rejected (check_violation): " <>
+                 "{Postgrex.Error, :check_violation}"
+
+      for reason <- [
+            DBConnection.ConnectionError.exception(message: marker, reason: :queue_timeout),
+            {:error, marker},
+            marker
+          ] do
+        refute AppendError.message(AppendError.from_error(reason)) =~ marker
+      end
+    end
   end
 
   defp untyped_event do

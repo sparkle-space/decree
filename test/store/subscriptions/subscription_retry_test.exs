@@ -96,7 +96,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionRetryTest do
         end)
 
       assert [_warning] = Regex.scan(~r/failed to subscribe/, log)
-      assert log =~ "connection not available and queuing is disabled"
+      assert log =~ "{DBConnection.ConnectionError, :error}"
+      refute log =~ "connection not available"
     end
 
     test "a success resets the backoff, so the next failure waits the shortest", %{proxy: proxy} do
