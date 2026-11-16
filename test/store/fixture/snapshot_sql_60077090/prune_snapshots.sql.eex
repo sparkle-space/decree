@@ -1,0 +1,7 @@
+<%!--
+  Deletes one source type's versioned rows below a snapshot version, for an operator to run
+  once no running code reads an older version. It reads no index: it runs rarely, and an
+  index on `source_type` would be written on every snapshot.
+--%>
+DELETE FROM "<%= schema %>".versioned_snapshots
+WHERE source_type = $1 AND snapshot_version < $2;

@@ -5,10 +5,10 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Storage.Initializer
 
-  # No code path reads or writes the one-row `snapshots` table from before store migration
-  # 1.10.0 any longer: a snapshot without a `snapshot_version` is refused. The table stays for
-  # a pod of the previous release, whose hard delete still deletes from it, so a row an old
-  # pod wrote there outlives every delete this release makes. A later release drops the table.
+  # A snapshot without a `snapshot_version` is refused: no code path reads or writes the
+  # one-row `snapshots` table from before store migration 1.10.0, which Init no longer creates
+  # and store migration 1.11.0 drops (sparkle-space/sparklespace#8200). Every snapshot path
+  # runs on a store without it.
 
   defmodule Snap do
     @moduledoc false
@@ -39,10 +39,14 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
         [store: unquote(store), schema: unquote(schema)]
       end
 
-      test "a read is refused, even with a legacy row for the source", context do
+      test "the store has no legacy table", context do
+        assert legacy_table(context) == nil
+      end
+
+      test "a read is refused", context do
         %{store: store} = context
         source_uuid = stream(store)
-        insert_legacy_row(context, source_uuid)
+        :ok = store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1}))
 
         assert store.read_snapshot(source_uuid) == {:error, :invalid_snapshot_version}
 
@@ -50,21 +54,19 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
                  {:error, :invalid_snapshot_version}
       end
 
-      test "a record is refused, and writes no legacy row", context do
+      test "a record is refused, and writes no row", context do
         %{store: store} = context
         source_uuid = stream(store)
 
         assert store.record_snapshot(snapshot(source_uuid, nil, %Snap{at: "legacy"})) ==
                  {:error, :invalid_snapshot_version}
 
-        assert count(context, "snapshots", source_uuid) == 0
         assert count(context, "versioned_snapshots", source_uuid) == 0
       end
 
-      test "delete_snapshot removes every version's row and leaves the legacy row", context do
+      test "delete_snapshot removes every version's row, with no legacy table", context do
         %{store: store} = context
         source_uuid = stream(store)
-        insert_legacy_row(context, source_uuid)
 
         :ok = store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1}))
         :ok = store.record_snapshot(snapshot(source_uuid, 2, %Snap{at: 2}))
@@ -72,7 +74,7 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
         assert :ok = store.delete_snapshot(source_uuid)
 
         assert count(context, "versioned_snapshots", source_uuid) == 0
-        assert count(context, "snapshots", source_uuid) == 1
+        assert legacy_table(context) == nil
       end
     end
 
@@ -86,10 +88,9 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
         [store: store, schema: unquote(schema)]
       end
 
-      test "removes its stream's versioned rows and leaves the legacy row", context do
+      test "removes its stream's versioned rows, with no legacy table", context do
         %{store: store} = context
         source_uuid = stream(store)
-        insert_legacy_row(context, source_uuid)
 
         :ok = store.record_snapshot(snapshot(source_uuid, 1, %Snap{at: 1}))
         :ok = store.record_snapshot(snapshot(source_uuid, 2, %Snap{at: 2}))
@@ -97,7 +98,7 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
         :ok = store.delete_stream(source_uuid, :any_version, :hard)
 
         assert count(context, "versioned_snapshots", source_uuid) == 0
-        assert count(context, "snapshots", source_uuid) == 1
+        assert legacy_table(context) == nil
       end
     end
   end
@@ -111,26 +112,16 @@ defmodule Decree.Store.Storage.LegacySnapshotRemovedTest do
     stream_uuid
   end
 
-  # The row a pod from before store migration 1.10.0 writes: the statement its legacy
-  # `record_snapshot` runs.
-  defp insert_legacy_row(context, source_uuid) do
-    %{conn: conn, schema: schema, serializer: serializer} = context
+  # The one-row `snapshots` table in the store's schema, or nil.
+  defp legacy_table(context) do
+    %{conn: conn, schema: schema} = context
 
-    Postgrex.query!(
-      conn,
-      ~s|INSERT INTO "#{schema}".snapshots | <>
-        "(source_uuid, source_version, source_type, data, metadata) " <>
-        "VALUES ($1, $2, $3, $4, $5)",
-      [
-        source_uuid,
-        1,
-        Atom.to_string(Snap),
-        serializer.serialize(%Snap{at: "legacy"}),
-        serializer.serialize(%{})
-      ]
-    )
+    %Postgrex.Result{rows: [[table]]} =
+      Postgrex.query!(conn, "SELECT to_regclass(format('%I.snapshots', $1::text))::text", [
+        schema
+      ])
 
-    :ok
+    table
   end
 
   defp snapshot(source_uuid, snapshot_version, data) do

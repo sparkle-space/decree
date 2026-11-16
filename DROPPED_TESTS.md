@@ -137,7 +137,7 @@ Kept and rewritten, with the same assertions at snapshot version 1, each source'
 - `test/framework/event_store/telemetry_test.exs` "emit `[:decree, :event_store, :record_snapshot, :start | :stop]` event", whose span numbers follow the append's, as the `ack_event` case's do;
 - `test/store/storage/snapshot_test.exs`, `test/store/event_store_test.exs` "read a snapshot" and "delete a snapshot", and `test/store/multi_event_store_test.exs` "should record and read snapshot from multiple stores", whose second store still reads no snapshot before its own is recorded.
 
-`test/store/migrated_event_store_test.exs` "read a snapshot" is "keeps the legacy snapshot rows, and an unversioned read is refused": it reads the dump's ten rows from `snapshots` with SQL, the same source, version, type and data, and an unversioned read of each answers `{:error, :invalid_snapshot_version}`. `test/store/manual/seed_eventstore.exs`, a script and not a test, loses its snapshot step; the committed dumps keep their rows.
+`test/store/migrated_event_store_test.exs` "read a snapshot" is "drops the legacy snapshot table, and an unversioned read is refused": the dump's ten rows were rows of `snapshots`, which store migration 1.11.0 drops with them, so its assertions on their source, version, type and data are gone with the table; it checks that the migrated store has no `snapshots` table, that an unversioned read of each of the ten sources answers `{:error, :invalid_snapshot_version}`, and that a read at version 1 answers `{:error, :snapshot_not_found}`. `test/store/manual/seed_eventstore.exs`, a script and not a test, loses its snapshot step; the committed dumps keep their rows.
 
 ## Upstream test configurations not run
 

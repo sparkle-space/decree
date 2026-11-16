@@ -26,7 +26,8 @@ defmodule Decree.Store.Tasks.Migrations do
     "1.7.0",
     "1.8.0",
     "1.9.0",
-    "1.10.0"
+    "1.10.0",
+    "1.11.0"
   ]
 
   @dialyzer {:no_return, exec: 2, handle_response: 1}
