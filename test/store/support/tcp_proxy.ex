@@ -13,6 +13,10 @@ defmodule Decree.Store.TcpProxy do
   #   - `{:delay, delay}`: forwards this connection after `delay` milliseconds, and the
   #     mode is `:forward` again from the next one, which is not held up by it.
   #
+  # With `tap: pid`, every chunk a client sends is also sent to `pid` as
+  # `{:tcp_proxy_sent, data}` before it is forwarded, so a test can read the statements a
+  # connection sends (a query's text is in its Parse message).
+  #
   # Changing the mode affects new connections only; connections already forwarded
   # stay up. Connections are accepted one at a time, so a held one is handled by the
   # mode that follows `:hold`, and those behind it wait in the listen backlog.
@@ -41,6 +45,7 @@ defmodule Decree.Store.TcpProxy do
   @impl true
   def init(opts) do
     upstream = Keyword.fetch!(opts, :upstream)
+    tap = Keyword.get(opts, :tap)
 
     {:ok, listen} =
       :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
@@ -48,7 +53,7 @@ defmodule Decree.Store.TcpProxy do
     {:ok, port} = :inet.port(listen)
 
     proxy = self()
-    acceptor = spawn_link(fn -> accept(proxy, listen, upstream) end)
+    acceptor = spawn_link(fn -> accept(proxy, listen, upstream, tap) end)
 
     {:ok, %{listen: listen, port: port, mode: :forward, acceptor: acceptor, held: nil}}
   end
@@ -86,7 +91,7 @@ defmodule Decree.Store.TcpProxy do
 
   # Runs linked to the proxy; each forwarded connection's pump is linked to it, so
   # stopping the proxy closes every connection.
-  defp accept(proxy, listen, upstream) do
+  defp accept(proxy, listen, upstream, tap) do
     {:ok, client} = :gen_tcp.accept(listen)
 
     case GenServer.call(proxy, :mode, :infinity) do
@@ -94,22 +99,22 @@ defmodule Decree.Store.TcpProxy do
         :gen_tcp.close(client)
 
       :forward ->
-        start_pump(client, upstream, 0)
+        start_pump(client, upstream, 0, tap)
 
       {:delay, delay} ->
-        start_pump(client, upstream, delay)
+        start_pump(client, upstream, delay, tap)
     end
 
-    accept(proxy, listen, upstream)
+    accept(proxy, listen, upstream, tap)
   end
 
-  defp start_pump(client, upstream, delay) do
-    pump = spawn_link(fn -> pump(client, upstream, delay) end)
+  defp start_pump(client, upstream, delay, tap) do
+    pump = spawn_link(fn -> pump(client, upstream, delay, tap) end)
     _ = :gen_tcp.controlling_process(client, pump)
     send(pump, :go)
   end
 
-  defp pump(client, {host, port}, delay) do
+  defp pump(client, {host, port}, delay, tap) do
     receive do
       :go -> :ok
     end
@@ -119,22 +124,24 @@ defmodule Decree.Store.TcpProxy do
     case :gen_tcp.connect(to_charlist(host), port, [:binary, active: true]) do
       {:ok, server} ->
         _ = :inet.setopts(client, active: true)
-        copy(client, server)
+        copy(client, server, tap)
 
       {:error, _reason} ->
         :gen_tcp.close(client)
     end
   end
 
-  defp copy(client, server) do
+  defp copy(client, server, tap) do
     receive do
       {:tcp, ^client, data} ->
+        if tap, do: send(tap, {:tcp_proxy_sent, data})
+
         _ = :gen_tcp.send(server, data)
-        copy(client, server)
+        copy(client, server, tap)
 
       {:tcp, ^server, data} ->
         _ = :gen_tcp.send(client, data)
-        copy(client, server)
+        copy(client, server, tap)
 
       {:tcp_closed, _socket} ->
         :gen_tcp.close(client)

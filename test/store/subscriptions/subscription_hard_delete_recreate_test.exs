@@ -22,9 +22,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionHardDeleteRecreateTest do
     RecordedEvent,
     Storage,
     StoreRows,
+    TcpProxy,
     UUID,
     Wait
   }
+
+  alias Decree.Store.Sql.Statements
 
   alias Decree.Store.Streams.Stream
   alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
@@ -608,6 +611,139 @@ defmodule Decree.Store.Subscriptions.SubscriptionHardDeleteRecreateTest do
     end
   end
 
+  # Every statement the follow added is gated off for `$all`, which is never hard deleted:
+  # its `stream_id` is never set, so no read of it, no follow and no fenced checkpoint. Driven
+  # through `SubscriptionFsm` directly on a connection through a tapped proxy, so each signal's
+  # statements are read off the wire, a query's text being in its Parse message.
+  describe "case 13: a $all subscription across a hard delete of a member stream" do
+    test "runs none of the statements a stream subscription runs to follow its stream",
+         context do
+      %{
+        config: config,
+        conn: conn,
+        postgrex_config: postgrex_config,
+        schema: schema,
+        serializer: serializer,
+        stream_uuid: stream_uuid,
+        subscription_name: name
+      } = context
+
+      attach_stream_recreated(name)
+      wait_for_lock_pool(TestEventStore)
+
+      proxy =
+        start_supervised!(
+          {TcpProxy,
+           upstream: {Keyword.fetch!(config, :hostname), Keyword.fetch!(config, :port)},
+           tap: self()}
+        )
+
+      tapped =
+        start_supervised!(
+          {Postgrex,
+           Keyword.merge(postgrex_config,
+             hostname: "127.0.0.1",
+             port: TcpProxy.port(proxy),
+             pool_size: 1
+           )},
+          id: :tapped
+        )
+
+      Postgrex.query!(tapped, "SELECT 1", [])
+      _bootstrap = sent()
+
+      texts = %{
+        stream_info: text(Statements.query_stream_info(schema)),
+        ack_by_id: text(Statements.subscription_ack_by_id(schema)),
+        ack_in_stream: text(Statements.subscription_ack_by_id_in_stream(schema)),
+        reset_by_id: text(Statements.subscription_reset_by_id(schema))
+      }
+
+      other_stream_uuid = UUID.uuid4()
+      :ok = EventStore.append_to_stream(stream_uuid, 0, EventFactory.create_events(3))
+      :ok = EventStore.append_to_stream(other_stream_uuid, 0, EventFactory.create_events(2))
+
+      subscriber = forwarder(:all)
+
+      fsm =
+        "$all"
+        |> SubscriptionFsm.new(name,
+          conn: tapped,
+          event_store: TestEventStore,
+          schema: schema,
+          serializer: serializer,
+          buffer_size: 10
+        )
+        |> SubscriptionFsm.connect_subscriber(subscriber, [])
+        |> SubscriptionFsm.subscribe()
+
+      assert %SubscriptionFsm{state: :request_catch_up} = fsm
+      # The subscribe reads its row; it reads no stream id.
+      assert_statements(sent(), texts, %{stream_info: 0}, "$all subscribe")
+
+      fsm = catch_up_until_subscribed(fsm)
+
+      # Two catch-up reads (the events, then none), each reading `$all`'s row as before.
+      assert_statements(
+        sent(),
+        texts,
+        %{stream_info: 2, ack_in_stream: 0, reset_by_id: 0},
+        "$all catch-up"
+      )
+
+      assert_receive {:all, {:events, events}}, 5_000
+      assert [1, 2, 3, 4, 5] = numbers(events)
+
+      fsm = fsm |> ack(5, subscriber) |> SubscriptionFsm.check_stream()
+
+      # The checkpoint is the by-id write, never the stream-fenced one or the reset.
+      assert_statements(
+        sent(),
+        texts,
+        %{ack_by_id: 1, ack_in_stream: 0, reset_by_id: 0, stream_info: 0},
+        "$all checkpoint"
+      )
+
+      :ok = hard_delete(conn, schema, stream_uuid)
+
+      # A batch at or below its position: ignored, nothing read.
+      fsm = fsm |> SubscriptionFsm.notify_events(Enum.take(events, 3))
+      assert %SubscriptionFsm{state: :subscribed} = fsm
+      assert sent() == "", "$all past batch: a statement was sent"
+
+      # The next batch: enqueued, no stream id read.
+      :ok = EventStore.append_to_stream(other_stream_uuid, 2, EventFactory.create_events(1))
+      {:ok, [next]} = EventStore.read_all_streams_forward(6, 1)
+
+      fsm = fsm |> SubscriptionFsm.notify_events([next])
+      assert sent() == "", "$all expected batch: a statement was sent"
+      assert_receive {:all, {:events, [%RecordedEvent{event_number: 6}]}}, 5_000
+
+      fsm = fsm |> ack(6, subscriber) |> SubscriptionFsm.check_stream()
+
+      assert_statements(
+        sent(),
+        texts,
+        %{ack_by_id: 1, ack_in_stream: 0, reset_by_id: 0, stream_info: 0},
+        "$all checkpoint after the hard delete"
+      )
+
+      # The head check reads the head, as before: one `streams` read, and no follow.
+      fsm = SubscriptionFsm.check_head(fsm)
+      assert %SubscriptionFsm{state: :subscribed} = fsm
+      assert_statements(sent(), texts, %{stream_info: 1, reset_by_id: 0}, "$all head check")
+
+      # A resubscribe after a lost lock reads its row, and no stream id.
+      %SubscriptionFsm{data: %SubscriptionState{lock_ref: lock_ref}} = fsm
+      fsm = fsm |> SubscriptionFsm.disconnect(lock_ref) |> SubscriptionFsm.subscribe()
+      assert_statements(sent(), texts, %{stream_info: 0, reset_by_id: 0}, "$all resubscribe")
+
+      refute_received {:stream_recreated, _metadata}
+      assert Map.get(fsm.data, :stream_id) == nil
+      assert %{last_ack: 6} = Map.take(fsm.data, [:last_ack])
+    end
+  end
+
   def forward_telemetry(_event, _measurements, %{subscription_name: name} = metadata, config) do
     %{test: test, subscription_name: subscription_name} = config
 
@@ -838,6 +974,40 @@ defmodule Decree.Store.Subscriptions.SubscriptionHardDeleteRecreateTest do
     on_exit(fn -> Process.exit(pid, :kill) end)
 
     pid
+  end
+
+  # Everything the tapped connection sent since the last call.
+  defp sent(acc \\ "") do
+    receive do
+      {:tcp_proxy_sent, data} -> sent(acc <> data)
+    after
+      0 -> acc
+    end
+  end
+
+  defp text(iodata), do: IO.iodata_to_binary(iodata)
+
+  defp assert_statements(sql, texts, expected, label) do
+    for {statement, count} <- expected do
+      found = length(:binary.matches(sql, Map.fetch!(texts, statement)))
+
+      assert found == count,
+             "#{label}: expected #{count} #{statement} statement(s), found #{found}"
+    end
+  end
+
+  defp catch_up_until_subscribed(fsm, reads \\ 5)
+
+  defp catch_up_until_subscribed(%SubscriptionFsm{state: :subscribed} = fsm, _reads), do: fsm
+
+  defp catch_up_until_subscribed(%SubscriptionFsm{} = fsm, reads) when reads > 0,
+    do: fsm |> SubscriptionFsm.catch_up() |> catch_up_until_subscribed(reads - 1)
+
+  defp ack(fsm, ack, subscriber) do
+    case SubscriptionFsm.ack(fsm, ack, subscriber) do
+      {_reply, %SubscriptionFsm{} = fsm} -> fsm
+      %SubscriptionFsm{} = fsm -> fsm
+    end
   end
 
   defp numbers(events), do: Enum.map(events, fn %RecordedEvent{event_number: n} -> n end)
