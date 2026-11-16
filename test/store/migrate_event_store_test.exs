@@ -15,6 +15,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
     ReadResult,
     RecordedEvent,
     StorageInitializer,
+    TcpProxy,
     UUID
   }
 
@@ -157,6 +158,102 @@ defmodule Decree.Store.MigrateEventStoreTest do
       # The round trip wrote rows on both sides.
       assert_same_schema(migrated_schema, dump_schema(config), :schema_only)
       assert migrated_function == append_function(config)
+    end
+  end
+
+  # A migration runs from a release Job, so its failure message reaches persistent pod logs.
+  # A `Postgrex.Error` carries the row values it failed on in its detail; the message names
+  # the failure by its class only (sparkle-space/sparklespace#8352).
+  describe "a failed migration's message" do
+    @detail_marker "migrate-detail-marker"
+
+    test "names a failed migration step by its class only", %{config: config} do
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
+
+      # Every migration records its version last: the insert fails, with the marker in the
+      # error's detail.
+      execute_each(config, [
+        """
+        CREATE FUNCTION public.refuse_schema_migration() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'migration refused' USING DETAIL = '#{@detail_marker}';
+        END;
+        $$
+        """,
+        """
+        CREATE TRIGGER refuse_schema_migration BEFORE INSERT ON public.schema_migrations
+        FOR EACH ROW EXECUTE FUNCTION public.refuse_schema_migration()
+        """
+      ])
+
+      message = failed_migration_message(config)
+
+      assert message =~ "The Decree.Store database couldn't be migrated, reason given: "
+      assert message =~ "{Postgrex.Error, :raise_exception}"
+      refute message =~ @detail_marker
+    end
+
+    test "names a failed migration lock by its class only", %{config: config} do
+      create_new_database(config)
+
+      # The lock query calls `pg_try_advisory_lock/2` unqualified: a function of the same
+      # name in a schema searched before `pg_catalog` answers it, and raises with the marker
+      # in its detail.
+      execute_each(config, [
+        "CREATE SCHEMA lock_refusal",
+        """
+        CREATE FUNCTION lock_refusal.pg_try_advisory_lock(integer, integer) RETURNS boolean
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'lock refused' USING DETAIL = '#{@detail_marker}';
+        END;
+        $$
+        """
+      ])
+
+      config = Keyword.put(config, :parameters, search_path: "lock_refusal, pg_catalog, public")
+
+      message = failed_migration_message(config)
+
+      assert message =~
+               "The Decree.Store database could not be migrated. Could not acquire migration lock due to: "
+
+      assert message =~ "{Postgrex.Error, :raise_exception}"
+      refute message =~ @detail_marker
+    end
+
+    # A lock query that fails with an error other than a `Postgrex.Error` is named by its
+    # class too: through a proxy that refuses every connection, the lock connection never
+    # connects and the query is dropped from its queue.
+    @tag capture_log: true
+    test "names a failed migration lock's connection error by its class only", %{
+      config: config
+    } do
+      proxy =
+        start_supervised!(
+          {TcpProxy, upstream: {Keyword.fetch!(config, :hostname), Keyword.fetch!(config, :port)}}
+        )
+
+      :ok = TcpProxy.refuse(proxy)
+      port = TcpProxy.port(proxy)
+
+      config =
+        Keyword.merge(config,
+          hostname: "127.0.0.1",
+          port: port,
+          queue_target: 10,
+          queue_interval: 100
+        )
+
+      message = failed_migration_message(config)
+
+      assert message =~
+               "The Decree.Store database could not be migrated. Could not acquire migration lock due to: " <>
+                 "{DBConnection.ConnectionError, :queue_timeout}"
+
+      refute message =~ "127.0.0.1"
+      refute message =~ Integer.to_string(port)
     end
   end
 
@@ -991,5 +1088,27 @@ defmodule Decree.Store.MigrateEventStoreTest do
 
   defp migrate_eventstore(config, opts) do
     Migrate.exec(config, opts)
+  end
+
+  # The message of whatever the failed migration raises, with its printed output, so a
+  # marker printed rather than raised is caught too.
+  defp failed_migration_message(config) do
+    output =
+      capture_io(fn ->
+        exception =
+          try do
+            migrate_eventstore(config, quiet: false, is_mix: false)
+            flunk("the migration did not fail")
+          rescue
+            exception in ExUnit.AssertionError -> reraise exception, __STACKTRACE__
+            exception -> exception
+          end
+
+        send(self(), {:raised, exception})
+      end)
+
+    assert_received {:raised, exception}
+
+    inspect(exception.__struct__) <> ": " <> Exception.message(exception) <> "\n" <> output
   end
 end

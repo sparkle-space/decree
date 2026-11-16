@@ -105,7 +105,10 @@ defmodule Decree.Store.RecordedEvent do
     end
   end
 
-  defp deserialize_known_type(%RecordedEvent{} = recorded_event, serializer) do
+  @doc false
+  # Deserializes an event whose type the caller has already found known, without asking
+  # again.
+  def deserialize_known_type(%RecordedEvent{} = recorded_event, serializer) do
     %RecordedEvent{data: data, metadata: metadata, event_type: event_type} = recorded_event
 
     %RecordedEvent{

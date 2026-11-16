@@ -3,6 +3,7 @@ defmodule Decree.Store.Storage.Subscription do
 
   require Logger
 
+  alias Decree.Store.LogTerms
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.Subscription
 
@@ -106,7 +107,7 @@ defmodule Decree.Store.Storage.Subscription do
     def execute(conn, stream_uuid, subscription_name, start_from, opts) do
       Logger.debug(
         "Attempting to create subscription on stream " <>
-          inspect(stream_uuid) <>
+          inspect(LogTerms.suffix(stream_uuid)) <>
           " named " <> inspect(subscription_name) <> " starting from #" <> inspect(start_from)
       )
 
@@ -117,22 +118,22 @@ defmodule Decree.Store.Storage.Subscription do
       case Postgrex.query(conn, query, [stream_uuid, subscription_name, start_from], opts) do
         {:ok, %Postgrex.Result{rows: rows}} ->
           Logger.debug(
-            "Created subscription on stream \"#{stream_uuid}\" named \"#{subscription_name}\""
+            "Created subscription on stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\""
           )
 
           {:ok, Subscription.Adapter.to_subscription(rows)}
 
         {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
           Logger.debug(
-            "Failed to create subscription on stream \"#{stream_uuid}\" named \"#{subscription_name}\", already exists"
+            "Failed to create subscription on stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\", already exists"
           )
 
           {:error, :subscription_already_exists}
 
         {:error, error} = reply ->
           Logger.warning(
-            "Failed to create stream create subscription on stream \"#{stream_uuid}\" named \"#{subscription_name}\" due to: " <>
-              inspect(error)
+            "Failed to create stream create subscription on stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\" due to: " <>
+              inspect(LogTerms.reduce(error))
           )
 
           reply
@@ -154,8 +155,8 @@ defmodule Decree.Store.Storage.Subscription do
 
         {:error, error} = reply ->
           Logger.warning(
-            "Failed to ack last seen event on stream \"#{stream_uuid}\" named \"#{subscription_name}\" due to: " <>
-              inspect(error)
+            "Failed to ack last seen event on stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\" due to: " <>
+              inspect(LogTerms.reduce(error))
           )
 
           reply
@@ -177,7 +178,7 @@ defmodule Decree.Store.Storage.Subscription do
         {:error, error} = reply ->
           Logger.warning(
             "Failed to ack last seen event for subscription id #{subscription_id} due to: " <>
-              inspect(error)
+              inspect(LogTerms.reduce(error))
           )
 
           reply
@@ -190,7 +191,7 @@ defmodule Decree.Store.Storage.Subscription do
 
     def execute(conn, stream_uuid, subscription_name, opts) do
       Logger.debug(
-        "Attempting to delete subscription on stream \"#{stream_uuid}\" named \"#{subscription_name}\""
+        "Attempting to delete subscription on stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\""
       )
 
       {schema, opts} = Keyword.pop(opts, :schema)
@@ -200,15 +201,15 @@ defmodule Decree.Store.Storage.Subscription do
       case Postgrex.query(conn, query, [stream_uuid, subscription_name], opts) do
         {:ok, _result} ->
           Logger.debug(
-            "Deleted subscription to stream \"#{stream_uuid}\" named \"#{subscription_name}\""
+            "Deleted subscription to stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\""
           )
 
           :ok
 
         {:error, error} = reply ->
           Logger.warning(
-            "Failed to delete subscription to stream \"#{stream_uuid}\" named \"#{subscription_name}\" due to: " <>
-              inspect(error)
+            "Failed to delete subscription to stream \"#{LogTerms.suffix(stream_uuid)}\" named \"#{subscription_name}\" due to: " <>
+              inspect(LogTerms.reduce(error))
           )
 
           reply

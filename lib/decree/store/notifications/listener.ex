@@ -11,6 +11,7 @@ defmodule Decree.Store.Notifications.Listener do
 
   require Logger
 
+  alias Decree.Store.LogTerms
   alias Decree.Store.Notifications.{Listener, Notification}
 
   defstruct [:listen_to, :query_timeout, :schema, :ref, demand: 0, queue: :queue.new()]
@@ -34,12 +35,14 @@ defmodule Decree.Store.Notifications.Listener do
 
   # Notification received from PostgreSQL's `NOTIFY`
   def handle_info({:notification, _connection_pid, _ref, channel, payload}, %Listener{} = state) do
+    notification = Notification.new(payload)
+
     Logger.debug(
       "Listener received notification on channel " <>
-        inspect(channel) <> " with payload: " <> inspect(payload)
+        inspect(channel) <> " with payload: " <> inspect(describe(notification))
     )
 
-    state = Notification.new(payload) |> enqueue(state)
+    state = enqueue(notification, state)
 
     dispatch_events([], state)
   end
@@ -81,6 +84,22 @@ defmodule Decree.Store.Notifications.Listener do
       {:empty, _queue} ->
         {:noreply, Enum.reverse(events), state}
     end
+  end
+
+  # The payload as it came, with the stream's id reduced to its suffix: the id can be a
+  # user's own.
+  defp describe(%Notification{} = notification) do
+    %Notification{
+      stream_uuid: stream_uuid,
+      stream_id: stream_id,
+      from_stream_version: from_stream_version,
+      to_stream_version: to_stream_version
+    } = notification
+
+    Enum.join(
+      [LogTerms.suffix(stream_uuid), stream_id, from_stream_version, to_stream_version],
+      ","
+    )
   end
 
   defp enqueue(%Notification{} = notification, %Listener{} = state) do

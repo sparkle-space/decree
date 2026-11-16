@@ -5,7 +5,7 @@ defmodule Decree.Store.Tasks.Migrate do
 
   import Decree.Store.Tasks.Output
 
-  alias Decree.Store.{Config, Storage}
+  alias Decree.Store.{Config, LogTerms, Storage}
   alias Decree.Store.Tasks.Migrations
 
   @dialyzer {:no_return, exec: 2, handle_response: 1}
@@ -53,10 +53,10 @@ defmodule Decree.Store.Tasks.Migrate do
         {:error, :lock_already_taken} ->
           write_info("Decree.Store database migration already in progress.", opts)
 
-        {:error, %Postgrex.Error{} = error} ->
+        {:error, error} ->
           raise_msg(
             "The Decree.Store database could not be migrated. Could not acquire migration lock due to: " <>
-              inspect(error),
+              inspect(LogTerms.reduce(error)),
             opts
           )
       end
@@ -106,7 +106,7 @@ defmodule Decree.Store.Tasks.Migrate do
         {:error, error} ->
           raise_msg(
             "The Decree.Store database couldn't be migrated, reason given: " <>
-              inspect(Exception.message(error)),
+              inspect(LogTerms.reduce(error)),
             opts
           )
       end
@@ -139,13 +139,22 @@ defmodule Decree.Store.Tasks.Migrate do
     |> handle_response()
   end
 
+  # A failed statement rolls the transaction back with its error, answered as
+  # `{:error, error}`, so the failure is printed by its class (`LogTerms.reduce/1`): a raised
+  # `Postgrex.Error`'s message carries its detail, which can hold row values, and a migration
+  # runs from a release Job whose output is kept in pod logs (sparkle-space/sparklespace#8352).
   defp transaction(conn, statements) do
     opts = [timeout: :infinity]
 
     Postgrex.transaction(
       conn,
       fn transaction ->
-        Enum.each(statements, &Postgrex.query!(transaction, &1, [], opts))
+        Enum.each(statements, fn statement ->
+          case Postgrex.query(transaction, statement, [], opts) do
+            {:ok, _result} -> :ok
+            {:error, error} -> Postgrex.rollback(transaction, error)
+          end
+        end)
       end,
       opts
     )

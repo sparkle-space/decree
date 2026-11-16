@@ -21,7 +21,9 @@ defmodule Decree.Store.AppendError do
     - `code` — the Postgres error code name (`Postgrex.Error`'s
       `postgres.code`, such as `:serialization_failure`), or `nil` when the
       error carries no SQLSTATE.
-    - `reason` — the original error term, for logging.
+    - `reason` — the original error term, kept for callers. The store never
+      logs it whole: `message/1` reduces it with `Decree.Store.LogTerms.reduce/1`,
+      as it can carry the failing row's values.
 
   ## Classes
 
@@ -82,6 +84,8 @@ defmodule Decree.Store.AppendError do
   `{:error, :duplicate_stream_uuid}`.
   """
 
+  alias Decree.Store.LogTerms
+
   @type class :: :unavailable | :retryable | :rejected
 
   @type t :: %__MODULE__{
@@ -127,7 +131,8 @@ defmodule Decree.Store.AppendError do
 
   @doc """
   A one-line description for a log line: the class, the code, and the original
-  error's message.
+  error reduced to its type and its code or reason (`Decree.Store.LogTerms.reduce/1`),
+  never its message, which can carry the values of the row it failed on.
   """
   @spec message(t) :: String.t()
   def message(%__MODULE__{class: class, code: code, reason: reason}) do
@@ -147,6 +152,5 @@ defmodule Decree.Store.AppendError do
 
   defp classify(_pg_code), do: :rejected
 
-  defp describe(%{__exception__: true} = exception), do: Exception.message(exception)
-  defp describe(reason), do: inspect(reason)
+  defp describe(reason), do: inspect(LogTerms.reduce(reason))
 end

@@ -1,6 +1,15 @@
 defmodule Decree.Store.Storage.Appender do
   @moduledoc false
-  alias Decree.Store.{AppendCondition, AppendError, AppendResult, Query, RecordedEvent, UUID}
+  alias Decree.Store.{
+    AppendCondition,
+    AppendError,
+    AppendResult,
+    LogTerms,
+    Query,
+    RecordedEvent,
+    UUID
+  }
+
   alias Decree.Store.Sql.Statements
 
   require Logger
@@ -59,7 +68,9 @@ defmodule Decree.Store.Storage.Appender do
 
         with {:ok, {[new_stream_id], _versions, _position} = written} <-
                insert_members(conn, [member], condition, opts) do
-          Logger.debug("Appended #{event_count} event(s) to stream #{inspect(stream_uuid)}")
+          Logger.debug(
+            "Appended #{event_count} event(s) to stream #{inspect(LogTerms.suffix(stream_uuid))}"
+          )
 
           # Only the first batch carries the condition. A later batch's would see the
           # earlier batches' own rows and fail on them, and `$all` is held from the first
@@ -75,7 +86,8 @@ defmodule Decree.Store.Storage.Appender do
     catch
       {:error, error} = reply ->
         Logger.warning(
-          "Failed to append events to stream #{inspect(stream_uuid)} due to: " <> inspect(error)
+          "Failed to append events to stream #{inspect(LogTerms.suffix(stream_uuid))} due to: " <>
+            describe(error)
         )
 
         reply
@@ -118,19 +130,28 @@ defmodule Decree.Store.Storage.Appender do
       {:ok, written} ->
         event_count = members |> Enum.map(&length(&1.events)) |> Enum.sum()
 
-        Logger.debug("Appended #{event_count} event(s) to streams #{inspect(stream_uuids)}")
+        Logger.debug(
+          "Appended #{event_count} event(s) to streams #{inspect(suffixes(stream_uuids))}"
+        )
 
         success_reply(returning, stream_uuids, written)
 
       {:error, error} = reply ->
         Logger.warning(
-          "Failed to append events to streams #{inspect(stream_uuids)} due to: " <>
-            inspect(error)
+          "Failed to append events to streams #{inspect(suffixes(stream_uuids))} due to: " <>
+            describe(error)
         )
 
         reply
     end
   end
+
+  # A failed append's log line: an `AppendError` by its class, code and reduced reason, any
+  # other answer (a domain atom) as it is.
+  defp describe(%AppendError{} = error), do: AppendError.message(error)
+  defp describe(error), do: inspect(LogTerms.reduce(error))
+
+  defp suffixes(stream_uuids), do: Enum.map(stream_uuids, &LogTerms.suffix/1)
 
   defp encode_events(events, tags, correlation_id_type, causation_id_type) do
     events

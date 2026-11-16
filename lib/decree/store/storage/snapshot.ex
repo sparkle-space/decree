@@ -3,6 +3,7 @@ defmodule Decree.Store.Storage.Snapshot do
 
   require Logger
 
+  alias Decree.Store.LogTerms
   alias Decree.Store.Snapshots.SnapshotData
   alias Decree.Store.Sql.Statements
 
@@ -24,7 +25,8 @@ defmodule Decree.Store.Storage.Snapshot do
 
         {:error, error} = reply ->
           Logger.warning(
-            "Failed to read snapshot for source \"#{source_uuid}\" due to: #{inspect(error)}"
+            "Failed to read snapshot for source \"#{LogTerms.suffix(source_uuid)}\" due to: " <>
+              inspect(LogTerms.reduce(error))
           )
 
           reply
@@ -113,7 +115,8 @@ defmodule Decree.Store.Storage.Snapshot do
 
       {:error, error} = reply ->
         Logger.warning(
-          "Failed to delete snapshot for source \"#{source_uuid}\" due to: " <> inspect(error)
+          "Failed to delete snapshot for source \"#{LogTerms.suffix(source_uuid)}\" due to: " <>
+            inspect(LogTerms.reduce(error))
         )
 
         reply
@@ -133,7 +136,7 @@ defmodule Decree.Store.Storage.Snapshot do
       {:error, error} = reply ->
         Logger.warning(
           "Failed to prune snapshots of type \"#{source_type}\" below version " <>
-            "#{snapshot_version} due to: " <> inspect(error)
+            "#{snapshot_version} due to: " <> inspect(LogTerms.reduce(error))
         )
 
         reply
@@ -147,8 +150,8 @@ defmodule Decree.Store.Storage.Snapshot do
     %SnapshotData{source_uuid: source_uuid, source_version: source_version} = snapshot
 
     Logger.warning(
-      "Failed to record snapshot for source \"#{source_uuid}\" at version \"#{source_version}\" due to: " <>
-        inspect(error)
+      "Failed to record snapshot for source \"#{LogTerms.suffix(source_uuid)}\" at version \"#{source_version}\" due to: " <>
+        inspect(LogTerms.reduce(error))
     )
   end
 

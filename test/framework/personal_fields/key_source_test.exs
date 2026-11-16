@@ -121,7 +121,10 @@ defmodule Decree.PersonalFields.KeySourceTest do
         :telemetry.detach("#{unquote(mode)}-#{subject}")
 
         assert_receive {%{}, %{application: App, subject_id: ^subject}}
-        assert log =~ subject
+        # The warning names the subject by its suffix; the telemetry above carries its id
+        # (sparkle-space/sparklespace#8352).
+        assert log =~ "no personal field key for subject ..." <> String.slice(subject, -8, 8)
+        refute log =~ subject
         refute log =~ "key store down"
         refute log =~ "key_store_down"
         refute log =~ "too short"
