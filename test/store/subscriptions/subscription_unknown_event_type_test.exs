@@ -9,6 +9,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
   # `DenyListSerializer`, which does not know `NewReleaseEvent`, stands for an old pod, and
   # `TestEventStore` with the plain serializer for a new one.
 
+  import ExUnit.CaptureLog
   import Decree.Store.SubscriptionHelpers, only: [wait_for_lock_pool: 1]
 
   alias Decree.Store.{
@@ -27,6 +28,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
   }
 
   alias Decree.Store.Notifications.Publisher
+  alias Decree.Store.Streams.Stream
   alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
 
   @old :old_store
@@ -257,6 +259,107 @@ defmodule Decree.Store.Subscriptions.SubscriptionUnknownEventTypeTest do
 
       assert [2, 3] = receive_and_ack(:old, subscription, subscriber, 2)
       refute_receive {:old, {:events, _events}}, 300
+    end
+
+    # The probe's type read answers `:stream_deleted`: not a failed probe to hold again on,
+    # but a stream the catch-up read decides on, as it does for any subscription
+    # (sparkle-space/sparklespace#8357). A retry interval of five seconds still probes within
+    # a second.
+    test "a soft delete of its stream ends the hold: the catch-up read unsubscribes it", %{
+      subscription_name: name
+    } do
+      stream_uuid = UUID.uuid4()
+
+      :ok =
+        TestEventStore.append_to_stream(stream_uuid, 0, [
+          known_event(1),
+          new_event(2),
+          known_event(3)
+        ])
+
+      subscriber = forwarder(:old)
+
+      log =
+        capture_log(fn ->
+          {:ok, subscription} =
+            TestEventStore.subscribe_to_stream(stream_uuid, name, subscriber,
+              name: @old,
+              buffer_size: 10,
+              retry_interval: 5_000
+            )
+
+          assert_receive {:old, {:subscribed, ^subscription}}
+          assert_receive {:old, {:events, [%RecordedEvent{event_number: 1}]}}
+          :ok = Subscription.ack(subscription, 1, subscriber)
+
+          assert_receive {:held, _measurements, %{subscription_name: ^name, attempt: 1}}
+          assert fsm(subscription).state == :held
+
+          :ok = TestEventStore.delete_stream(stream_uuid, :any_version, :soft)
+
+          Wait.until(5_000, fn -> assert fsm(subscription).state == :unsubscribed end)
+
+          refute_receive {:held, _measurements, %{subscription_name: ^name}}, 1_500
+          refute_received {:old, {:events, _events}}
+          assert fsm(subscription).state == :unsubscribed
+        end)
+
+      refute log =~ "attempt 2"
+      refute log =~ "the probe failed"
+    end
+
+    # The probe's type read answers `:stream_not_found`: the stream is gone and not
+    # recreated, and the catch-up read subscribes it, as it does for any subscription.
+    test "a hard delete of its stream ends the hold: the catch-up read subscribes it", %{
+      conn: conn,
+      schema: schema,
+      subscription_name: name
+    } do
+      stream_uuid = UUID.uuid4()
+
+      :ok =
+        TestEventStore.append_to_stream(stream_uuid, 0, [
+          known_event(1),
+          new_event(2),
+          known_event(3)
+        ])
+
+      subscriber = forwarder(:old)
+
+      log =
+        capture_log(fn ->
+          {:ok, subscription} =
+            TestEventStore.subscribe_to_stream(stream_uuid, name, subscriber,
+              name: @old,
+              buffer_size: 10,
+              retry_interval: 5_000
+            )
+
+          ref = Process.monitor(subscription)
+
+          assert_receive {:old, {:subscribed, ^subscription}}
+          assert_receive {:old, {:events, [%RecordedEvent{event_number: 1}]}}
+          :ok = Subscription.ack(subscription, 1, subscriber)
+
+          assert_receive {:held, _measurements, %{subscription_name: ^name, attempt: 1}}
+          assert fsm(subscription).state == :held
+
+          :ok =
+            Stream.delete(conn, stream_uuid, :any_version, :hard,
+              schema: schema,
+              enable_hard_deletes: true
+            )
+
+          Wait.until(5_000, fn -> assert fsm(subscription).state == :subscribed end)
+
+          refute_receive {:held, _measurements, %{subscription_name: ^name}}, 1_500
+          refute_received {:old, {:events, _events}}
+          assert fsm(subscription).state == :subscribed
+          refute_received {:DOWN, ^ref, :process, _pid, _reason}
+        end)
+
+      refute log =~ "attempt 2"
+      refute log =~ "the probe failed"
     end
   end
 

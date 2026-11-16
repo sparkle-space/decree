@@ -21,10 +21,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionUndecodableEventTest do
     FlaggedRaisingSerializer,
     RecordedEvent,
     Storage,
-    UUID
+    UUID,
+    Wait
   }
 
   alias Decree.Store.Storage.Appender
+  alias Decree.Store.Streams.Stream
   alias Decree.Store.Subscriptions.{Subscription, SubscriptionFsm, SubscriptionState}
 
   @marker "undecodable-subscription-marker"
@@ -214,6 +216,36 @@ defmodule Decree.Store.Subscriptions.SubscriptionUndecodableEventTest do
     end
   end
 
+  describe "a subscription held before an undecodable event whose stream is then deleted" do
+    # The probe's read answers `:stream_deleted` or `:stream_not_found`: not a failed probe to
+    # hold again on, but a stream the catch-up read decides on, as it does for any
+    # subscription. A retry interval of five seconds still probes within a second.
+
+    test "soft deleted: the probe resubscribes and the catch-up read unsubscribes it", %{
+      conn: conn,
+      schema: schema,
+      subscription_name: name,
+      stream_uuid: stream_uuid
+    } do
+      log = held_then_deleted(conn, schema, stream_uuid, name, :soft, :unsubscribed)
+
+      refute log =~ "attempt 2"
+      refute log =~ "the probe failed"
+    end
+
+    test "hard deleted: the probe resubscribes and the catch-up read subscribes it", %{
+      conn: conn,
+      schema: schema,
+      subscription_name: name,
+      stream_uuid: stream_uuid
+    } do
+      log = held_then_deleted(conn, schema, stream_uuid, name, :hard, :subscribed)
+
+      refute log =~ "attempt 2"
+      refute log =~ "the probe failed"
+    end
+  end
+
   describe "a transient subscription meeting an undecodable event" do
     test "delivers the events before it, alarms and stops", %{
       conn: conn,
@@ -268,6 +300,45 @@ defmodule Decree.Store.Subscriptions.SubscriptionUndecodableEventTest do
       Appender.append(conn, nil, [first, %RecordedEvent{second | data: @marker}, third],
         schema: schema
       )
+  end
+
+  # Holds a subscription before the planted event, deletes its stream, and waits for the
+  # probe to leave `held` for `state`, with no second alarm. Answers the captured log.
+  defp held_then_deleted(conn, schema, stream_uuid, name, delete, state) do
+    plant(conn, schema, stream_uuid)
+
+    capture_log(fn ->
+      subscription = subscribe(TestEventStore, stream_uuid, name, retry_interval: 5_000)
+      ref = Process.monitor(subscription)
+
+      assert_receive {:events, [%RecordedEvent{event_number: 1}]}
+      :ok = Subscription.ack(subscription, 1, self())
+
+      assert_receive {:held_undecodable, _measurements,
+                      %{subscription_name: ^name, event_number: 2, attempt: 1}}
+
+      assert fsm(subscription).state == :held
+
+      :ok = delete_stream(conn, schema, stream_uuid, delete)
+
+      Wait.until(5_000, fn -> assert fsm(subscription).state == state end)
+
+      refute_receive {:held_undecodable, _measurements, %{subscription_name: ^name}}, 1_500
+      refute_received {:events, _events}
+      assert fsm(subscription).state == state
+      refute_received {:DOWN, ^ref, :process, _pid, _reason}
+    end)
+  end
+
+  defp delete_stream(_conn, _schema, stream_uuid, :soft) do
+    TestEventStore.delete_stream(stream_uuid, :any_version, :soft)
+  end
+
+  defp delete_stream(conn, schema, stream_uuid, :hard) do
+    Stream.delete(conn, stream_uuid, :any_version, :hard,
+      schema: schema,
+      enable_hard_deletes: true
+    )
   end
 
   defp subscribe(event_store, stream_uuid, name, opts \\ []) do
