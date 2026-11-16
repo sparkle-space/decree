@@ -1862,6 +1862,12 @@ defmodule Decree.Store do
   connects while the subscription is waiting for its lock receives `{:subscribed,
   subscription}` only once the lock is taken.
 
+  A subscription to a single stream that finds its stream hard deleted, and maybe
+  created again under its uuid, sends `{:subscription_stream_recreated, subscription}`
+  before any event of the stream read again from version 1: event numbers start again,
+  so a subscriber that remembers the numbers it has seen forgets them. See "Hard deleted
+  streams" below. A subscriber that does not expect it can ignore it.
+
   A subscription that finds the lock taken by another instance tries again after the
   full `subscription_retry_interval`, without logging, so idle standby instances do
   not poll. Any other failed attempt to subscribe, such as a lock connection that is
@@ -1983,7 +1989,10 @@ defmodule Decree.Store do
   An event sent to a subscriber before then is not redelivered: its ack is taken and
   dropped, it moves no position, and the subscriber is sent nothing more until it has
   acknowledged it, so a late ack is never taken for an event of the new stream with the
-  same number. A checkpoint is written only while the stream it is a position in exists, so
+  same number. Each subscriber is sent `{:subscription_stream_recreated, subscription}`
+  when the subscription follows, before any event of the stream read again; a subscriber
+  that skips event numbers it has already seen (as the framework's event handler does)
+  forgets them then. A checkpoint is written only while the stream it is a position in exists, so
   an ack of a deleted event does not put a position back; the one exception is a stream
   whose first events after the subscription started reach it after the stream was hard
   deleted again, which are delivered and checkpointed as before. A `$all` subscription never

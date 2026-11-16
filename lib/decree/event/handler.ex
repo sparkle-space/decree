@@ -214,6 +214,13 @@ defmodule Decree.Event.Handler do
 
   This will ensure the handler only receives events appended to that stream.
 
+  If the stream is hard deleted and an append to its uuid creates it again, from
+  version 1, the handler handles the recreated events: its subscription follows the
+  stream and tells it (`{:subscription_stream_recreated, subscription}`), and it forgets
+  the last event number it saw, so its already-seen check does not skip them. Events of
+  the deleted stream still waiting in its batch buffer are dropped unhandled, as on a
+  lost lock (sparkle-space/sparklespace#8386).
+
   ## Runtime event handler configuration
 
   Runtime options can be provided to the event handler's `start_link/1` function
@@ -1439,6 +1446,24 @@ defmodule Decree.Event.Handler do
   end
 
   @doc false
+  # The subscription found its stream hard deleted, and maybe created again under its uuid,
+  # and reads it again from version 1 (sparkle-space/sparklespace#8386): see
+  # `stream_recreated/1`. Behind a pending retry wait it is held, as a delivery is, so the
+  # deleted stream's events before it are handled (and their numbers seen) first.
+  @impl GenServer
+  def handle_info(
+        {:subscription_stream_recreated, _subscription} = message,
+        %Handler{retry_wait: %{}} = state
+      ) do
+    {:noreply, defer(message, state)}
+  end
+
+  @impl GenServer
+  def handle_info({:subscription_stream_recreated, subscription}, %Handler{} = state) do
+    {:noreply, stream_recreated(subscription, state)}
+  end
+
+  @doc false
   # While a retry waits, a delivery is held behind it: it is handled after the retry and the
   # rest of the retried delivery.
   @impl GenServer
@@ -1674,6 +1699,42 @@ defmodule Decree.Event.Handler do
 
   defp handle_deferred_message(:flush_batch_timeout, state, deferred),
     do: flush_on_timeout(state, deferred)
+
+  defp handle_deferred_message({:subscription_stream_recreated, subscription}, state, _deferred),
+    do: stream_recreated(subscription, state)
+
+  # The subscription's stream was hard deleted, and maybe created again under its uuid: the
+  # subscription reads it again from version 1, so event numbers start again, and the last
+  # one seen, a position in the deleted stream, is forgotten. Kept, the already-seen checks
+  # (`handle_event/3` at concurrency 1, `handle_batch/3`) would take the recreated events for
+  # events handled. Events of the deleted stream still in the batch buffer are dropped
+  # unhandled, as a lost lock drops them, and the last is acknowledged: the subscription takes
+  # and drops an ack of an event it sent before following the stream, and sends this handler
+  # nothing more until it has one (sparkle-space/sparklespace#8386). From a subscription
+  # process the handler no longer uses (one replaced by a reset), it changes nothing.
+  defp stream_recreated(
+         subscription,
+         %Handler{subscription: %Subscription{subscription_pid: subscription}} = state
+       ) do
+    Logger.warning(
+      describe(state) <>
+        " subscription found its stream hard deleted, and maybe created again: " <>
+        "it forgets the last event it saw"
+    )
+
+    state = cancel_batch_timer(state)
+
+    %Handler{batch_buffer: buffer, subscription: current} = state
+
+    case buffer do
+      [_ | _] -> :ok = Subscription.ack_event(current, List.last(buffer))
+      _empty -> :ok
+    end
+
+    %Handler{state | last_seen_event: nil, batch_buffer: []}
+  end
+
+  defp stream_recreated(_subscription, %Handler{} = state), do: state
 
   # A timer that already fired leaves its `{:retry_wait, token}` in the mailbox, which
   # `handle_info/2` ignores once `retry_wait` no longer holds its token.

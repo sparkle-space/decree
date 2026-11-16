@@ -118,6 +118,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #   any                 ack of a retired event               taken and dropped: `:ok`, no
   #                                                              position moves
   #
+  # A follow sends each subscriber `{:subscription_stream_recreated, subscription}` before
+  # any event of the stream read again.
+  #
   # Every other cell is as before: `notify_events` outside `subscribed` tracks
   # `last_received` only, and the catch-up read that follows compares the id; a head check
   # outside `subscribed`, or with a hold pending, changes nothing.
@@ -1121,10 +1124,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # stream; retire every subscriber's in-flight events (`Subscriber.retire_in_flight/1`:
   # their acks are taken and dropped, and nothing more is sent to a subscriber until it has
   # acknowledged them, so a late ack is never one for a recreated event of the same number);
-  # put the row back to 0 (`reset_checkpoint/1`); and reset the cursor, the head check and
-  # the id, which the catch-up read that follows takes from the stream it finds. A hard
-  # delete and no stream yet: that read finds none and the subscription waits in
-  # `subscribed`, at 0, so a recreate is read from its first event.
+  # send every subscriber `{:subscription_stream_recreated, subscription}`, ahead of any
+  # event of the stream read again, so one that remembers event numbers (an event handler's
+  # already-seen check) forgets them; put the row back to 0 (`reset_checkpoint/1`); and
+  # reset the cursor, the head check and the id, which the catch-up read that follows takes
+  # from the stream it finds. A hard delete and no stream yet: that read finds none and the
+  # subscription waits in `subscribed`, at 0, so a recreate is read from its first event.
   defp follow_stream_data(%SubscriptionState{} = data, trigger) do
     stream_recreated(data, trigger)
 
@@ -1133,6 +1138,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       |> cancel_checkpoint_timer()
       |> SubscriptionState.reset_event_tracking()
       |> retire_in_flight_events()
+      |> notify_stream_recreated()
       |> reset_checkpoint()
 
     %SubscriptionState{
@@ -1146,6 +1152,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         head_repaired: 0,
         catch_up_retry_token: nil
     }
+  end
+
+  defp notify_stream_recreated(%SubscriptionState{subscribers: subscribers} = data) do
+    for {pid, _subscriber} <- subscribers do
+      send(pid, {:subscription_stream_recreated, self()})
+    end
+
+    data
   end
 
   defp retire_in_flight_events(%SubscriptionState{subscribers: subscribers} = data) do
