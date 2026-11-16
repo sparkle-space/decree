@@ -86,30 +86,19 @@ defmodule Decree.Store.MigratedEventStoreTest do
       refute_receive {:events, _received_events}
     end
 
-    # The dump's snapshots are rows of the one-row `snapshots` table, which the migration
-    # keeps. No code path reads that table: a read without a snapshot version is refused.
-    test "keeps the legacy snapshot rows, and an unversioned read is refused", %{conn: conn} do
-      %Postgrex.Result{rows: rows} =
-        Postgrex.query!(
-          conn,
-          ~s|SELECT source_uuid, source_version, source_type, data FROM "public".snapshots|,
-          []
-        )
-
-      expected =
-        for i <- 1..10 do
-          ["snapshot-#{i}", 1, "Elixir.Snapshot", %{"data" => i, "version" => "1"}]
-        end
-
-      assert rows
-             |> Enum.map(fn [uuid, version, type, data] ->
-               [uuid, version, type, Jason.decode!(data)]
-             end)
-             |> Enum.sort() == Enum.sort(expected)
+    # The dump's snapshots are ten rows of the one-row `snapshots` table, which store
+    # migration 1.11.0 drops with its rows. A read without a snapshot version is refused, and
+    # a read at one finds no row: those rows were never `versioned_snapshots` rows.
+    test "drops the legacy snapshot table, and an unversioned read is refused", %{conn: conn} do
+      assert %Postgrex.Result{rows: [[nil]]} =
+               Postgrex.query!(conn, ~s|SELECT to_regclass('"public".snapshots')::text|, [])
 
       for i <- 1..10 do
         assert TestEventStore.read_snapshot("snapshot-#{i}") ==
                  {:error, :invalid_snapshot_version}
+
+        assert TestEventStore.read_snapshot("snapshot-#{i}", snapshot_version: 1) ==
+                 {:error, :snapshot_not_found}
       end
     end
   end

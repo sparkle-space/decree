@@ -53,6 +53,20 @@ defmodule Decree.Store.Storage.Subscription do
     Subscription.Ack.execute_by_id(conn, subscription_id, last_seen, opts)
   end
 
+  # As `ack_last_seen_event_by_id/4`, for a stream subscription whose position is in the
+  # stream with the given `stream_id`: written only while that stream exists. Answers
+  # `{:error, :stream_changed}` when it does not, after a hard delete, and writes nothing
+  # (sparkle-space/sparklespace#8386).
+  def ack_last_seen_event_in_stream(conn, subscription_id, last_seen, stream_id, opts) do
+    Subscription.Ack.execute_in_stream(conn, subscription_id, last_seen, stream_id, opts)
+  end
+
+  # Puts the row back to 0 when it is at or below `at_most`: a stream subscription following
+  # its stream after a hard delete (sparkle-space/sparklespace#8386).
+  def reset_last_seen_by_id(conn, subscription_id, at_most, opts) do
+    Subscription.Ack.reset_by_id(conn, subscription_id, at_most, opts)
+  end
+
   def delete_subscription(conn, stream_uuid, subscription_name, opts),
     do: Subscription.Delete.execute(conn, stream_uuid, subscription_name, opts)
 
@@ -182,6 +196,42 @@ defmodule Decree.Store.Storage.Subscription do
           )
 
           reply
+      end
+    end
+
+    def execute_in_stream(conn, subscription_id, last_seen, stream_id, opts) do
+      {schema, opts} = Keyword.pop(opts, :schema)
+
+      query = Statements.subscription_ack_by_id_in_stream(schema)
+
+      case Postgrex.query(conn, query, [subscription_id, last_seen, stream_id], opts) do
+        {:ok, %Postgrex.Result{rows: [[true, true]]}} ->
+          :ok
+
+        {:ok, %Postgrex.Result{rows: [[true, false]]}} ->
+          {:error, :subscription_not_found}
+
+        {:ok, %Postgrex.Result{rows: [[false, _acked]]}} ->
+          {:error, :stream_changed}
+
+        {:error, error} = reply ->
+          Logger.warning(
+            "Failed to ack last seen event for subscription id #{subscription_id} due to: " <>
+              inspect(LogTerms.reduce(error))
+          )
+
+          reply
+      end
+    end
+
+    def reset_by_id(conn, subscription_id, at_most, opts) do
+      {schema, opts} = Keyword.pop(opts, :schema)
+
+      query = Statements.subscription_reset_by_id(schema)
+
+      case Postgrex.query(conn, query, [subscription_id, at_most], opts) do
+        {:ok, _result} -> :ok
+        {:error, _error} = reply -> reply
       end
     end
   end

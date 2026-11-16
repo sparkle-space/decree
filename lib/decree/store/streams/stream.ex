@@ -97,11 +97,14 @@ defmodule Decree.Store.Streams.Stream do
     end
   end
 
-  # A subscription's catch-up read: answers `{:ok, events, nil}`, or, when it meets an event
-  # it must hold before, `{:ok, prefix, {event_number, event_type, cause}}` with the events
-  # before it, the cause `:unknown_type` for a type the serializer does not know or
-  # `{:undecodable, class}` for a known type that would not deserialize
-  # (`RecordedEvent.deserialize_until_hold/2`). Never raises for either.
+  # A subscription's catch-up read: answers `{:ok, events, nil, stream_id}`, or, when it
+  # meets an event it must hold before, `{:ok, prefix, {event_number, event_type, cause},
+  # stream_id}` with the events before it, the cause `:unknown_type` for a type the
+  # serializer does not know or `{:undecodable, class}` for a known type that would not
+  # deserialize (`RecordedEvent.deserialize_until_hold/2`). Never raises for either.
+  # `stream_id` is the id of the stream the events were read from, by which a subscription
+  # tells a stream created again after a hard delete from the one it was reading
+  # (sparkle-space/sparklespace#8386).
   def read_stream_forward_known(conn, stream_uuid, start_version, count, opts) do
     with {:ok, stream} <- stream_info(conn, stream_uuid, :stream_exists, opts) do
       %StreamInfo{stream_id: stream_id} = stream
@@ -112,7 +115,7 @@ defmodule Decree.Store.Streams.Stream do
              Storage.read_stream_forward(conn, stream_id, start_version, count, opts) do
         {events, pending} = RecordedEvent.deserialize_until_hold(recorded_events, serializer)
 
-        {:ok, events, pending}
+        {:ok, events, pending, stream_id}
       end
     end
   end

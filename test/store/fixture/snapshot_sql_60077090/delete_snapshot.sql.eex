@@ -1,0 +1,6 @@
+<%!--
+  Deletes every version's row of a source in `versioned_snapshots`. A hard delete does not run
+  it: `delete_stream_row`'s cascade deletes the stream's rows (`DeleteStream.hard_delete/3`).
+--%>
+DELETE FROM "<%= schema %>".versioned_snapshots
+WHERE source_uuid = $1;

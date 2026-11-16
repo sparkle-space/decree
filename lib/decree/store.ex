@@ -1538,6 +1538,12 @@ defmodule Decree.Store do
   After being hard deleted, a stream can later be appended to and read as if it
   had never existed.
 
+  In the same transaction, every persistent subscription to the stream goes back to the
+  start, in place (its row keeps its id, and its holder its lock), so a stream appended to
+  again is delivered from its first event; `$all` subscriptions keep their position. A
+  running subscription to the stream follows it: see "Hard deleted streams" in
+  `c:subscribe_to_stream/4`.
+
   ### Examples
 
   #### Soft delete a stream
@@ -1856,6 +1862,12 @@ defmodule Decree.Store do
   connects while the subscription is waiting for its lock receives `{:subscribed,
   subscription}` only once the lock is taken.
 
+  A subscription to a single stream that finds its stream hard deleted, and maybe
+  created again under its uuid, sends `{:subscription_stream_recreated, subscription}`
+  before any event of the stream read again from version 1: event numbers start again,
+  so a subscriber that remembers the numbers it has seen forgets them. See "Hard deleted
+  streams" below. A subscriber that does not expect it can ignore it.
+
   A subscription that finds the lock taken by another instance tries again after the
   full `subscription_retry_interval`, without logging, so idle standby instances do
   not poll. Any other failed attempt to subscribe, such as a lock connection that is
@@ -1960,6 +1972,41 @@ defmodule Decree.Store do
   `last_seen` (the last event number its subscribers acknowledged) and
   `head_check_interval`. A head read that fails is logged at debug level and retried at
   the next check; it emits nothing and leaves the subscription as it is.
+
+  ## Hard deleted streams
+
+  A hard delete removes a stream, and an append to the same uuid creates it again from
+  version 1. The hard delete puts every persistent subscription to the stream back to the
+  start, in place (see `c:delete_stream/4`), and a subscription to the stream, persistent or
+  transient, never keeps a position from the deleted stream: it delivers the stream created
+  again from its first event, never a refusal.
+
+  A running subscription knows the stream it reads by the stream's id, read when it
+  subscribes, by every catch-up read and head check, and with every batch of events it is
+  sent while caught up (one `streams` row read per batch, for a subscription to a single
+  stream only). When it finds another stream, or none, it follows
+  the stream: it drops its position and the events it has not yet sent, puts its row back to
+  the start, and reads the stream from its first event; with no stream yet it waits for one.
+  An event sent to a subscriber before then is not redelivered: its ack is taken and
+  dropped, it moves no position, and the subscriber is sent nothing more until it has
+  acknowledged it, so a late ack is never taken for an event of the new stream with the
+  same number. Each subscriber is sent `{:subscription_stream_recreated, subscription}`
+  when the subscription follows, before any event of the stream read again; a subscriber
+  that skips event numbers it has already seen (as the framework's event handler does)
+  forgets them then. A checkpoint is written only while the stream it is a position in exists, so
+  an ack of a deleted event does not put a position back; the one exception is a stream
+  whose first events after the subscription started reach it after the stream was hard
+  deleted again, which are delivered and checkpointed as before. A `$all` subscription never
+  follows: `$all` is never hard deleted, and its position stays where it is.
+
+  Each follow logs a warning naming the positions dropped and emits the telemetry event
+  `[:decree, :store, :subscription, :stream_recreated]`, with the measurement `system_time`
+  and the metadata `event_store`, `subscription_name`, `stream_uuid`, `last_seen` (the last
+  event number its subscribers acknowledged in the deleted stream), `last_received`,
+  `transient` and `trigger`, the signal that found the change: `:subscribe`, `:catch_up`,
+  `:head_check`, `:notify` (events at or below its position) or `:checkpoint` (a checkpoint
+  write that found no stream). A follow is emitted even when no stream has been created
+  again yet.
 
   ## Unknown event types
 

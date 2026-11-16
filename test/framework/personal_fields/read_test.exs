@@ -468,7 +468,6 @@ defmodule Decree.PersonalFields.ReadTest do
 
       rows =
         rows(conn, "events", "data, metadata") ++
-          rows(conn, "snapshots", "data, metadata") ++
           rows(conn, "versioned_snapshots", "data, metadata")
 
       scan = Enum.join(rows, "\n")

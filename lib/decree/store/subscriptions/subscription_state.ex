@@ -70,7 +70,18 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     # confirmed. A head is repaired once: one with no event left to read under it
     # (`$all`'s after a hard delete) stays above `last_received`, which is never raised
     # to it.
-    head_repaired: 0
+    head_repaired: 0,
+    # The `stream_id` of the stream the cursor (`last_received`, `last_sent`, `last_ack`)
+    # is a position in, `nil` while none is known, and always for `$all`, which is never
+    # hard deleted. A stream hard deleted and created again under its uuid has a new
+    # `stream_id`: a subscription that reads another id, or no stream, after knowing one
+    # follows the stream from its start (see `SubscriptionFsm`,
+    # sparkle-space/sparklespace#8386).
+    stream_id: nil,
+    # A checkpoint write found no stream with `stream_id`: it was hard deleted. The
+    # subscription follows it once the event in hand is done (`SubscriptionFsm`'s
+    # `check_stream`).
+    stream_gone: false
   ]
 
   def reset_event_tracking(%SubscriptionState{} = state) do

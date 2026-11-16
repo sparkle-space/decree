@@ -9,15 +9,16 @@ defmodule Decree.Store.SnapshotRolloutTest do
 
   @moduletag :migration
 
-  # A rolling deploy from the production pin, decree 0bfc9cd, to this release: an "old pod"
-  # (the snapshot and hard delete SQL at 0bfc9cd, copied byte for byte under
-  # `test/store/fixture/snapshot_sql_0bfc9cd/` and never edited) runs beside a "new pod" (this
-  # release's store API) on the same rows. This release has no store migration, so both run
-  # on the same schema: a migrated store and one this release's Init created. The old pod
-  # still reads and writes the one-row `snapshots` table, and its hard delete's last
-  # statement deletes from it, so the release that drops that table retires this suite.
+  # A rolling deploy from release 1 of sparkle-space/sparklespace#8200, decree 60077090, to
+  # this release, which drops the one-row `snapshots` table in store migration 1.11.0: an "old
+  # pod" (60077090's snapshot and hard delete SQL, copied byte for byte under
+  # `test/store/fixture/snapshot_sql_60077090/` and never edited) runs beside a "new pod" (this
+  # release's store API) on the same rows of a store at 1.11.0, a migrated store and one this
+  # release's Init created, under `public` and a named schema. Release 1 reads, writes and
+  # deletes `versioned_snapshots` only, and its hard delete is four statements that name no
+  # legacy table, so every old-pod path works with the table gone.
 
-  @pinned "test/store/fixture/snapshot_sql_0bfc9cd"
+  @pinned "test/store/fixture/snapshot_sql_60077090"
 
   # The tag the old pod's hard delete refuses a stream for, its `TagIndex.fact_tag/0`.
   @fact_tag "tag_index:fact"
@@ -48,6 +49,10 @@ defmodule Decree.Store.SnapshotRolloutTest do
 
         {:ok, conn} = config |> Config.default_postgrex_opts() |> Postgrex.start_link()
 
+        # The premise: the store is at 1.11.0, and its legacy table is gone.
+        assert store_version(conn, schema) == [1, 11, 0]
+        assert legacy_table(conn, schema) == nil
+
         [conn: conn, schema: schema, source_uuid: stream!(conn, schema)]
       end
 
@@ -70,27 +75,17 @@ defmodule Decree.Store.SnapshotRolloutTest do
         assert old_read(context, 2) == {:ok, 2, "new at version 2"}
       end
 
-      test "an old pod's legacy row is its own, and a new pod's unversioned read is refused",
-           context do
-        old_legacy_write(context, 1, "old legacy")
-        new_write(context, 1, 2, "new at version 1")
+      test "a new pod's unversioned read and write are refused, and move no row", context do
+        old_write(context, 1, 1, "old at version 1")
 
         assert new_unversioned_read(context) == {:error, :invalid_snapshot_version}
         assert new_unversioned_write(context) == {:error, :invalid_snapshot_version}
 
-        assert old_legacy_read(context) == {:ok, 1, "old legacy"}
-        assert new_read(context, 1) == {:ok, 2, "new at version 1"}
-
-        # The old pod's legacy upsert still runs, and moves only its own row.
-        old_legacy_write(context, 3, "old legacy again")
-
-        assert old_legacy_read(context) == {:ok, 3, "old legacy again"}
-        assert new_read(context, 1) == {:ok, 2, "new at version 1"}
+        assert old_read(context, 1) == {:ok, 1, "old at version 1"}
+        assert versioned_count(context) == 1
       end
 
-      test "a new pod's delete removes every version's row, the old pod's too, and no legacy row",
-           context do
-        old_legacy_write(context, 1, "old legacy")
+      test "a new pod's delete removes every version's row, the old pod's too", context do
         old_write(context, 1, 2, "old at version 1")
         new_write(context, 2, 2, "new at version 2")
 
@@ -99,25 +94,48 @@ defmodule Decree.Store.SnapshotRolloutTest do
         assert old_read(context, 1) == :none
         assert new_read(context, 2) == {:error, :snapshot_not_found}
         assert versioned_count(context) == 0
-        assert old_legacy_read(context) == {:ok, 1, "old legacy"}
       end
 
-      test "an old pod's delete removes the source's rows in both tables", context do
-        old_legacy_write(context, 1, "old legacy")
+      test "an old pod's delete removes every version's row, the new pod's too", context do
         old_write(context, 1, 2, "old at version 1")
         new_write(context, 2, 2, "new at version 2")
 
         old_delete(context)
 
-        assert old_legacy_read(context) == :none
         assert new_read(context, 1) == {:error, :snapshot_not_found}
         assert new_read(context, 2) == {:error, :snapshot_not_found}
         assert versioned_count(context) == 0
       end
 
-      test "an old pod's hard delete removes every version's row, the new pod's too, and the legacy row",
+      test "an old pod's prune deletes a type's rows below a version, the new pod's too",
            context do
-        old_legacy_write(context, 1, "old legacy")
+        new_write(context, 1, 2, "new at version 1")
+        old_write(context, 2, 2, "old at version 2")
+        new_write(context, 3, 2, "new at version 3")
+
+        assert old_prune(context, "snapshot", 3) == 2
+
+        assert new_read(context, 1) == {:error, :snapshot_not_found}
+        assert old_read(context, 2) == :none
+        assert new_read(context, 3) == {:ok, 2, "new at version 3"}
+        assert old_prune(context, "snapshot", 3) == 0
+      end
+
+      test "a new pod's prune deletes a type's rows below a version, the old pod's too",
+           context do
+        old_write(context, 1, 2, "old at version 1")
+        new_write(context, 2, 2, "new at version 2")
+        old_write(context, 3, 2, "old at version 3")
+
+        assert Snapshot.prune_snapshots(context.conn, "snapshot", 3, opts(context)) == {:ok, 2}
+
+        assert old_read(context, 1) == :none
+        assert new_read(context, 2) == {:error, :snapshot_not_found}
+        assert old_read(context, 3) == {:ok, 2, "old at version 3"}
+      end
+
+      test "an old pod's hard delete removes every version's row, the new pod's too",
+           context do
         old_write(context, 1, 2, "old at version 1")
         new_write(context, 2, 2, "new at version 2")
         assert versioned_count(context) == 2
@@ -128,12 +146,10 @@ defmodule Decree.Store.SnapshotRolloutTest do
         assert new_read(context, 1) == {:error, :snapshot_not_found}
         assert new_read(context, 2) == {:error, :snapshot_not_found}
         assert versioned_count(context) == 0
-        assert old_legacy_read(context) == :none
       end
 
-      test "a new pod's hard delete removes the old pod's versioned rows, and no legacy row",
+      test "a new pod's hard delete removes every version's row, the old pod's too",
            context do
-        old_legacy_write(context, 1, "old legacy")
         old_write(context, 1, 2, "old at version 1")
         new_write(context, 2, 2, "new at version 2")
 
@@ -147,7 +163,6 @@ defmodule Decree.Store.SnapshotRolloutTest do
         assert old_read(context, 1) == :none
         assert old_read(context, 2) == :none
         assert versioned_count(context) == 0
-        assert old_legacy_read(context) == {:ok, 1, "old legacy"}
       end
     end
   end
@@ -164,7 +179,7 @@ defmodule Decree.Store.SnapshotRolloutTest do
     :ok = Init.exec(config, quiet: true)
   end
 
-  # The old pod: the pinned SQL, rendered for the store's schema, sent as 0bfc9cd's
+  # The old pod: the pinned SQL, rendered for the store's schema, sent as 60077090's
   # `Decree.Store.Storage.Snapshot` and hard delete send it.
 
   # A versioned write: the stream's row FOR KEY SHARE, then the upsert, in one transaction.
@@ -201,33 +216,23 @@ defmodule Decree.Store.SnapshotRolloutTest do
     end
   end
 
-  # A write with a nil `snapshot_version`: 0bfc9cd's legacy path, with no stream needed.
-  defp old_legacy_write(context, source_version, data) do
-    params = [
-      context.source_uuid,
-      source_version,
-      "snapshot",
-      data,
-      ~s({"snapshot_module_version":1})
-    ]
-
-    Postgrex.query!(context.conn, pinned("insert_snapshot", context), params)
-  end
-
-  defp old_legacy_read(context) do
-    case Postgrex.query!(context.conn, pinned("query_snapshot", context), [context.source_uuid]) do
-      %Postgrex.Result{rows: []} -> :none
-      %Postgrex.Result{rows: [[_uuid, version, _type, data, _meta, _at]]} -> {:ok, version, data}
-    end
-  end
-
   defp old_delete(context) do
     Postgrex.query!(context.conn, pinned("delete_snapshot", context), [context.source_uuid])
   end
 
-  # The pinned hard delete at `:any_version`: the fence on, its five statements in its order,
-  # each answer matched as 0bfc9cd matches it, and the fence closed as the last statement, in
-  # one transaction.
+  defp old_prune(context, source_type, snapshot_version) do
+    %Postgrex.Result{num_rows: count} =
+      Postgrex.query!(context.conn, pinned("prune_snapshots", context), [
+        source_type,
+        snapshot_version
+      ])
+
+    count
+  end
+
+  # The pinned hard delete at `:any_version`: the fence on, its four statements in its order,
+  # each answer matched as 60077090 matches it, and the fence closed as the last statement, in
+  # one transaction. `delete_stream_row` cascades to the stream's versioned rows.
   defp old_hard_delete(context) do
     %{conn: conn} = context
     stream_id = stream_id(context)
@@ -244,10 +249,8 @@ defmodule Decree.Store.SnapshotRolloutTest do
 
         Postgrex.query!(tx, pinned("hard_delete_stream", context), [stream_id])
 
-        %Postgrex.Result{num_rows: 1, rows: [[^stream_id, stream_uuid]]} =
+        %Postgrex.Result{num_rows: 1, rows: [[^stream_id]]} =
           Postgrex.query!(tx, pinned("delete_stream_row", context), [stream_id])
-
-        Postgrex.query!(tx, pinned("delete_snapshot", context), [stream_uuid])
 
         Postgrex.query!(tx, "SET LOCAL eventstore.enable_hard_deletes TO 'off';", [])
 
@@ -319,6 +322,27 @@ defmodule Decree.Store.SnapshotRolloutTest do
       [] -> nil
       [[stream_id]] -> stream_id
     end
+  end
+
+  defp store_version(conn, schema) do
+    %Postgrex.Result{rows: [version]} =
+      Postgrex.query!(
+        conn,
+        ~s|SELECT major_version, minor_version, patch_version FROM "#{schema}".schema_migrations| <>
+          " ORDER BY 1 DESC, 2 DESC, 3 DESC LIMIT 1",
+        []
+      )
+
+    version
+  end
+
+  defp legacy_table(conn, schema) do
+    %Postgrex.Result{rows: [[table]]} =
+      Postgrex.query!(conn, "SELECT to_regclass(format('%I.snapshots', $1::text))::text", [
+        schema
+      ])
+
+    table
   end
 
   defp versioned_count(context) do

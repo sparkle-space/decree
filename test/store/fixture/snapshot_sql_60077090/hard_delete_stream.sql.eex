@@ -1,5 +1,5 @@
 <%!--
-  The third of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Its snapshot
+  The third of a hard delete's four statements: see `DeleteStream.hard_delete/3`. Its snapshot
   starts after the stream's row is locked, so it sees everything an append committed while
   that was held, and with the row held nothing can add a `stream_events` row of these events:
   no link exists or can be made. The tag and type rows go here, with the events, because a
