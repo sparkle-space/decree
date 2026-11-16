@@ -684,7 +684,10 @@ defmodule Decree.Decision.PersonalFieldsTest do
                    PersonalApp.dispatch(command)
         end)
 
-      assert log =~ "kept"
+      # The reply keeps the exception; the log names it by its module only
+      # (sparkle-space/sparklespace#8358).
+      assert log =~ "** (MatchError)\n"
+      refute log =~ "kept"
 
       assert_received {:telemetry, @exception, _,
                        %{kind: :error, reason: %MatchError{}, stacktrace: [_ | _]}}
@@ -700,7 +703,8 @@ defmodule Decree.Decision.PersonalFieldsTest do
           assert {:error, %RuntimeError{message: ^planted}} = PersonalApp.dispatch(command)
         end)
 
-      assert log =~ planted
+      assert log =~ "** (RuntimeError)\n"
+      refute log =~ planted
     end
   end
 

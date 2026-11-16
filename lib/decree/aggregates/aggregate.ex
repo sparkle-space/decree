@@ -190,6 +190,7 @@ defmodule Decree.Aggregates.Aggregate do
   alias Decree.Snapshotting
   alias Decree.Store.AppendError
   alias Decree.Store.AppendResult
+  alias Decree.Store.LogTerms
   alias Decree.Telemetry
 
   @type state :: struct()
@@ -534,7 +535,9 @@ defmodule Decree.Aggregates.Aggregate do
   def handle_info({:events, events}, %Aggregate{} = state) do
     %Aggregate{application: application, aggregate_module: aggregate_module} = state
 
-    Logger.debug(describe(state) <> " received events: " <> inspect(events))
+    Logger.debug(
+      describe(state) <> " received events: " <> inspect(Enum.map(events, & &1.stream_version))
+    )
 
     try do
       fold = PersonalFields.fold_events(aggregate_module)
@@ -548,7 +551,9 @@ defmodule Decree.Aggregates.Aggregate do
       noreply_with_lifespan(state)
     catch
       {:error, error} ->
-        Logger.debug(describe(state) <> " stopping due to: " <> inspect(error))
+        Logger.debug(
+          describe(state) <> " stopping due to: " <> inspect(RedactedError.reduce(error))
+        )
 
         # Stop after event handling returned an error
         {:stop, error, state}
@@ -580,7 +585,9 @@ defmodule Decree.Aggregates.Aggregate do
   @doc false
   @impl GenServer
   def handle_info(message, %Aggregate{} = state) do
-    Logger.debug("received unexpected message in handle_info/2: " <> inspect(message))
+    Logger.debug(
+      "received unexpected message in handle_info/2: " <> inspect(RedactedError.reduce(message))
+    )
 
     noreply_with_lifespan(state)
   end
@@ -611,7 +618,12 @@ defmodule Decree.Aggregates.Aggregate do
           throw({:error, {:shutdown, :key_unknown}})
       end
     else
-      Logger.debug(describe(state) <> " received an unexpected event: " <> inspect(event))
+      %RecordedEvent{data: data} = event
+
+      Logger.debug(
+        describe(state) <>
+          " received an unexpected event: " <> inspect(RedactedError.module_or_reduce(data))
+      )
 
       # Throw an error when an unexpected event is received
       throw({:error, :unexpected_event_received})
@@ -646,7 +658,7 @@ defmodule Decree.Aggregates.Aggregate do
           "Invalid timeout for aggregate lifespan " <>
             inspect(lifespan) <>
             ", expected a non-negative integer, `:infinity`, `:hibernate`, `:stop`, or `{:stop, reason}` but got: " <>
-            inspect(invalid)
+            inspect(RedactedError.reduce(invalid))
         )
 
         :infinity
@@ -706,7 +718,10 @@ defmodule Decree.Aggregates.Aggregate do
     %ExecutionContext{command: command, handler: handler, function: function} = context
     %Aggregate{aggregate_state: aggregate_state} = state
 
-    Logger.debug(describe(state) <> " executing command: " <> inspect(command))
+    Logger.debug(
+      describe(state) <>
+        " executing command: " <> inspect(RedactedError.module_or_reduce(command))
+    )
 
     with :ok <- before_execute_command(aggregate_state, context),
          :ok <- authorize(state, command),
@@ -744,7 +759,10 @@ defmodule Decree.Aggregates.Aggregate do
     error ->
       {error, stacktrace} = reported_exception(context, error, __STACKTRACE__, state)
 
-      Logger.error(Exception.format(:error, error, stacktrace))
+      Logger.error(
+        describe(state) <>
+          " raised executing a command: " <> RedactedError.format_reduced(error, stacktrace)
+      )
 
       {{:error, error, stacktrace}, state}
   catch
@@ -936,7 +954,9 @@ defmodule Decree.Aggregates.Aggregate do
         {:ok, %Aggregate{state | snapshotting: snapshotting}}
 
       {:error, reason} = error ->
-        Logger.warning(describe(state) <> " snapshot failed due to: " <> inspect(reason))
+        Logger.warning(
+          describe(state) <> " snapshot failed due to: " <> inspect(RedactedError.reduce(reason))
+        )
 
         error
     end
@@ -1018,6 +1038,8 @@ defmodule Decree.Aggregates.Aggregate do
     Registration.via_tuple(application, name)
   end
 
+  # The aggregate as its log lines name it: its module, the last eight characters of its id
+  # (`Decree.Store.LogTerms.suffix/1`) and its version (sparkle-space/sparklespace#8358).
   defp describe(%Aggregate{} = aggregate) do
     %Aggregate{
       aggregate_module: aggregate_module,
@@ -1025,7 +1047,7 @@ defmodule Decree.Aggregates.Aggregate do
       aggregate_version: aggregate_version
     } = aggregate
 
-    "#{inspect(aggregate_module)}<#{aggregate_uuid}@#{aggregate_version}>"
+    "#{inspect(aggregate_module)}<#{LogTerms.suffix(aggregate_uuid)}@#{aggregate_version}>"
   end
 
   defp reply_with_lifespan(reply, state) do

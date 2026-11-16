@@ -25,7 +25,7 @@ defmodule Decree.Store.RecordedEvent do
 
   """
 
-  alias Decree.Store.{RecordedEvent, UnknownEventTypeError}
+  alias Decree.Store.{LogTerms, RecordedEvent, UnknownEventTypeError}
 
   @type uuid :: String.t()
 
@@ -92,6 +92,50 @@ defmodule Decree.Store.RecordedEvent do
     else
       {Enum.reverse(acc), {event_number, event_type}}
     end
+  end
+
+  @doc false
+  # A subscription's catch-up read: deserializes the events in order up to the first one the
+  # subscription must hold before, and answers `{deserialized, nil}` when there is none, or
+  # `{deserialized_prefix, {event_number, event_type, cause}}` naming it. The cause is
+  # `:unknown_type` for a type the serializer does not know, or `{:undecodable, class}` for a
+  # known type whose deserialize raised or exited, `class` being what
+  # `Decree.Store.LogTerms.reduce/1` keeps of the exception or exit reason, never its message
+  # or the event's data (sparkle-space/sparklespace#8357). Nothing at or after that event is
+  # deserialized. Whether a type is known is asked outside the rescue, so a crash there still
+  # raises, and a throw is caught at neither step.
+  @spec deserialize_until_hold([t()], module()) ::
+          {[t()],
+           nil
+           | {non_neg_integer(), String.t(), :unknown_type | {:undecodable, term()}}}
+  def deserialize_until_hold(recorded_events, serializer) when is_list(recorded_events) do
+    deserialize_until_hold(recorded_events, serializer, [])
+  end
+
+  defp deserialize_until_hold([], _serializer, acc), do: {Enum.reverse(acc), nil}
+
+  defp deserialize_until_hold([recorded_event | recorded_events], serializer, acc) do
+    %RecordedEvent{event_type: event_type, event_number: event_number} = recorded_event
+
+    if known_type?(serializer, event_type) do
+      case guarded_deserialize_known_type(recorded_event, serializer) do
+        {:ok, event} ->
+          deserialize_until_hold(recorded_events, serializer, [event | acc])
+
+        {:undecodable, class} ->
+          {Enum.reverse(acc), {event_number, event_type, {:undecodable, class}}}
+      end
+    else
+      {Enum.reverse(acc), {event_number, event_type, :unknown_type}}
+    end
+  end
+
+  defp guarded_deserialize_known_type(recorded_event, serializer) do
+    {:ok, deserialize_known_type(recorded_event, serializer)}
+  rescue
+    error -> {:undecodable, LogTerms.reduce(error)}
+  catch
+    :exit, reason -> {:undecodable, LogTerms.reduce(reason)}
   end
 
   @doc false

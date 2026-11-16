@@ -65,7 +65,9 @@ defmodule Decree.Projections.ErrorCallbackTest do
           assert_receive {:error, %RuntimeError{message: "it crashed, it crashed, it crashed"}}
         end)
 
-      assert log =~ "** (RuntimeError) it crashed, it crashed, it crashed"
+      # The exception by its module, never its message (sparkle-space/sparklespace#8358).
+      assert log =~ "** (RuntimeError)\n"
+      refute log =~ "it crashed"
 
       assert log =~
                "test/projections/support/error_projector.ex:34: anonymous fn/2 in ErrorProjector.handle/2"

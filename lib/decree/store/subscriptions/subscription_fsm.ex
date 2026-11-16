@@ -55,12 +55,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #
   #   request_catch_up | catching_up -> catch_up_retry -> (read again)
   #
-  # A catch-up read that meets an event of a type this instance does not know records it
-  # as `hold_pending` and reads nothing at or after it. Once the events before it are
-  # drained (acked or filtered, none queued or in flight), the subscription holds before
-  # it in `held`: it has written its checkpoint and released its lock, and probes on a
-  # backoff timer, without the lock, until another instance has delivered the event or
-  # this one knows its type (sparkle-space/sparklespace#7804):
+  # A catch-up read that meets an event of a type this instance does not know
+  # (sparkle-space/sparklespace#7804), or of a known type whose deserialize raises or exits
+  # (sparkle-space/sparklespace#8357), records it as `hold_pending` and reads nothing at or
+  # after it. Once the events before it are drained (acked or filtered, none queued or in
+  # flight), the subscription holds before it in `held`: it has written its checkpoint and
+  # released its lock, and probes on a backoff timer, without the lock, until another
+  # instance has delivered the event, or this one knows its type or can deserialize it:
   #
   #   (any delivering state) -> held -> disconnected | (subscribe as disconnected does)
   #
@@ -367,10 +368,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     end
   end
 
-  # Holding before an event of a type this instance does not know (#7804). The events
-  # before it were delivered and checkpointed, every subscriber was sent
+  # Holding before an event of a type this instance does not know (#7804), or of a known
+  # type it could not deserialize (#8357); `held.cause` says which. The events before it
+  # were delivered and checkpointed, every subscriber was sent
   # `{:subscription_lock_lost, subscription}`, and the advisory lock was released, so an
-  # instance that knows the type can take the lock and deliver the event. Nothing is
+  # instance that can read the event can take the lock and deliver it. Nothing is
   # delivered here and no lock is held; `Subscription.status/1` reports `:parked`.
   #
   # `Subscription` arms a timer with the wait drawn into `held`, and its `probe` reads, on
@@ -378,16 +380,25 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #
   #   - the subscription's row: at or past the held event, or gone, means another instance
   #     delivered it, so go to `disconnected`, a silent standby on the full interval;
-  #   - else the held event's type: known now, so subscribe as `disconnected` does (row,
-  #     lock, catch-up); still unknown, or the probe failed, so stay held, alarm again and
-  #     wait longer.
+  #   - else, held on an unknown type, the held event's type: known now, so subscribe as
+  #     `disconnected` does (row, lock, catch-up); still unknown, or the probe failed, so
+  #     stay held, alarm again and wait longer;
+  #   - else, held on an undecodable event, the one event, read and deserialized as the
+  #     catch-up read does: it decodes now, is gone, or its type is now unknown, so
+  #     subscribe (the catch-up read then finds what the stream holds now); still
+  #     undecodable, or the read failed, so stay held, alarm again and wait longer.
+  #
+  # A probe whose read finds the stream deleted (`:stream_deleted`) or gone
+  # (`:stream_not_found`, after a hard delete) has not failed: either probe subscribes, and
+  # the catch-up read decides as it does for any subscription, `unsubscribed` for a deleted
+  # stream and `subscribed` for a missing one (sparkle-space/sparklespace#8357).
   #
   # Every other event is handled by the catch-alls: events and notices track
   # `last_received` only, an ack or a checkpoint is ignored (nothing is in flight), and a
   # late `:lock_released` for the released lock does not match `lock_ref` (now `nil`).
   defstate held do
-    defevent probe, data: %SubscriptionState{held: %{event_number: event_number}} = data do
-      case probe_held(data, event_number) do
+    defevent probe, data: %SubscriptionState{held: %{} = held} = data do
+      case probe_held(data, held) do
         :delivered ->
           next_state(:disconnected, %SubscriptionState{
             data
@@ -401,6 +412,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
         :unknown ->
           hold_again(data, nil)
+
+        # Still undecodable: the cause carries the class this read raised or exited with.
+        {:undecodable, _class} = cause ->
+          hold_again(%SubscriptionState{data | held: %{held | cause: cause}}, nil)
 
         {:error, reason} ->
           hold_again(data, reason)
@@ -466,7 +481,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   defevent hold,
     data:
       %SubscriptionState{
-        hold_pending: {_event_number, _event_type},
+        hold_pending: {_event_number, _event_type, _cause},
         queue_size: 0,
         in_flight_event_numbers: []
       } = data,
@@ -772,7 +787,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   # A hold is pending: nothing at or after the held event is read. Wait in `catching_up`
   # for the events before it to drain; the `hold` event then holds.
-  def catch_up_from_stream(%SubscriptionState{hold_pending: {_event_number, _event_type}} = data) do
+  def catch_up_from_stream(
+        %SubscriptionState{hold_pending: {_event_number, _event_type, _cause}} = data
+      ) do
     next_state(:catching_up, data)
   end
 
@@ -790,9 +807,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       end
 
     case result do
-      # The read met an event of a type this instance does not know: send the events
-      # before it, and hold before it once they are drained (the `hold` event).
-      {:ok, events, {_event_number, _event_type} = pending} ->
+      # The read met an event of a type this instance does not know, or one it could not
+      # deserialize: send the events before it, and hold before it once they are drained
+      # (the `hold` event).
+      {:ok, events, {_event_number, _event_type, _cause} = pending} ->
         data =
           %SubscriptionState{data | hold_pending: pending}
           |> enqueue_events(events)
@@ -831,10 +849,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       {:error, reason} ->
         # Any other read error, such as a Postgres error or a query or queue timeout:
         # hold the subscription and retry the read on a backoff timer. This covers a
-        # read that returns an error. An event of a type this instance does not know is
-        # not an error: the read stops before it and the subscription holds there (see
-        # `held`). Any other event that fails to deserialize, such as a corrupt payload,
-        # raises in the read and still stops the subscription.
+        # read that returns an error. An event of a type this instance does not know, or
+        # of a known type whose deserialize raises or exits (a corrupt payload), is not an
+        # error: the read stops before it and the subscription holds there (see `held`).
+        # A crash in the serializer's type check, or a throw, still raises in the read.
         hold_catch_up(data, reason)
     end
   end
@@ -909,23 +927,34 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     min(first * Integer.pow(2, min(attempt - 1, 32)), retry_interval)
   end
 
-  # Hold before the event of a type this instance does not know (#7804), once the events
-  # before it are drained. In order: write the checkpoint now, whatever the checkpoint
-  # threshold or delay, so the next owner starts at the held event; tell every subscriber
-  # the lock is lost (an event handler stays alive and drops its batch); release the lock;
-  # drop the event tracking; and alarm. Another instance can now take the lock and deliver
-  # the event. A checkpoint write that fails is only logged, as everywhere: the next owner
-  # then delivers some events again, and skips none.
+  # Hold before the event of a type this instance does not know (#7804), or of a known type
+  # it could not deserialize (#8357), once the events before it are drained. In order:
+  # write the checkpoint now, whatever the checkpoint threshold or delay, so the next owner
+  # starts at the held event; tell every subscriber the lock is lost (an event handler stays
+  # alive and drops its batch); release the lock; drop the event tracking; and alarm.
+  # Another instance can now take the lock and deliver the event. A checkpoint write that
+  # fails is only logged, as everywhere: the next owner then delivers some events again,
+  # and skips none.
   #
   # A transient subscription has no row and no lock, and its position lives in its process:
   # it alarms and stops (`Subscription` stops it under `{:shutdown, {:unknown_event_type,
-  # type}}`), so its subscriber resubscribes from its own position.
-  defp hold_subscription(%SubscriptionState{hold_pending: {event_number, event_type}} = data) do
+  # type}}` or `{:shutdown, {:undecodable_event, class}}`), so its subscriber resubscribes
+  # from its own position.
+  defp hold_subscription(
+         %SubscriptionState{hold_pending: {event_number, event_type, cause}} = data
+       ) do
     data = data |> cancel_checkpoint_timer() |> persist_checkpoint()
 
     case data do
       %SubscriptionState{transient: true} ->
-        held = %{event_number: event_number, type: event_type, attempt: 1, wait: nil}
+        held = %{
+          event_number: event_number,
+          type: event_type,
+          cause: cause,
+          attempt: 1,
+          wait: nil
+        }
+
         data = %SubscriptionState{data | hold_pending: nil, held: held}
 
         alarm(data, nil)
@@ -941,6 +970,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         held = %{
           event_number: event_number,
           type: event_type,
+          cause: cause,
           attempt: 1,
           wait: held_wait(1, retry_interval)
         }
@@ -1017,10 +1047,14 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   # The probe of a held subscription, on the main pool and without the lock: `:delivered`
   # when its row is at or past the held event, or gone (or replaced by a row of another
-  # id); else `:known` or `:unknown` for the held event's type; `{:error, reason}` when a
-  # read failed. An event no longer there reads as known, so the subscribe that follows
-  # finds out what the stream holds now.
-  defp probe_held(%SubscriptionState{} = data, event_number) do
+  # id); else, held on an unknown type, `:known` or `:unknown` for the held event's type,
+  # and held on an undecodable event, `:known` or `{:undecodable, class}` for the event
+  # read again; `{:error, reason}` when a read failed. An event no longer there, or a stream
+  # deleted or gone, reads as known, so the subscribe that follows finds out what the stream
+  # holds now.
+  defp probe_held(%SubscriptionState{} = data, held) do
+    %{event_number: event_number, cause: cause} = held
+
     %SubscriptionState{
       conn: conn,
       schema: schema,
@@ -1047,14 +1081,46 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       when is_integer(last_seen) and last_seen >= event_number ->
         :delivered
 
-      {:ok, %Storage.Subscription{}} ->
+      {:ok, %Storage.Subscription{}} when cause == :unknown_type ->
         probe_held_type(data, event_number)
+
+      {:ok, %Storage.Subscription{}} ->
+        probe_held_event(data, event_number)
 
       {:error, _reason} = error ->
         error
     end
   catch
     :exit, reason -> {:error, reason}
+  end
+
+  # The undecodable held event read again, alone, by the catch-up read's own reader: still
+  # undecodable at the same number means held again; decoded, gone, replaced by a later
+  # event, or now of an unknown type means subscribe, and the catch-up read that follows
+  # delivers it or holds as it finds.
+  defp probe_held_event(%SubscriptionState{} = data, event_number) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      serializer: serializer,
+      stream_uuid: stream_uuid,
+      query_timeout: query_timeout,
+      correlation_id_type: correlation_id_type,
+      causation_id_type: causation_id_type
+    } = data
+
+    case Stream.read_stream_forward_known(conn, stream_uuid, event_number, 1,
+           schema: schema,
+           serializer: serializer,
+           timeout: query_timeout,
+           correlation_id_type: correlation_id_type,
+           causation_id_type: causation_id_type
+         ) do
+      {:ok, _events, {^event_number, _type, {:undecodable, _class} = cause}} -> cause
+      {:ok, _events, _pending} -> :known
+      {:error, reason} when reason in [:stream_deleted, :stream_not_found] -> :known
+      {:error, _reason} = error -> error
+    end
   end
 
   defp probe_held_type(%SubscriptionState{} = data, event_number) do
@@ -1076,6 +1142,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
          ) do
       {:ok, nil} -> :known
       {:ok, type} -> if RecordedEvent.known_type?(serializer, type), do: :known, else: :unknown
+      {:error, reason} when reason in [:stream_deleted, :stream_not_found] -> :known
       {:error, _reason} = error -> error
     end
   end
@@ -1123,11 +1190,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   """
   def held_wait(attempt, retry_interval), do: jittered_backoff(attempt, retry_interval)
 
-  # The alarm of a held subscription: a warning naming the event's type and number, never
-  # its data, and a failed probe's error by its class (`LogTerms.reduce/1`), and the
-  # `[:decree, :store, :subscription, :held]` telemetry event (documented
-  # on `c:Decree.Store.subscribe_to_stream/4`). Raised on every hold and on every probe
-  # that leaves the subscription held.
+  # The alarm of a held subscription: a warning naming the event's number, and its type when
+  # the type is unknown or the class of the error its deserialize raised or exited with
+  # (`LogTerms.reduce/1`), never its data, and a failed probe's error by its class; and the
+  # `[:decree, :store, :subscription, :held]` telemetry event for an unknown type, or
+  # `[:decree, :store, :subscription, :held_undecodable]` for an undecodable event (both
+  # documented on `c:Decree.Store.subscribe_to_stream/4`). Raised on every hold and on every
+  # probe that leaves the subscription held.
   defp alarm(%SubscriptionState{held: held} = data, reason) do
     %SubscriptionState{
       event_store: event_store,
@@ -1136,7 +1205,13 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       transient: transient
     } = data
 
-    %{event_number: event_number, type: event_type, attempt: attempt, wait: wait} = held
+    %{
+      event_number: event_number,
+      type: event_type,
+      cause: cause,
+      attempt: attempt,
+      wait: wait
+    } = held
 
     next =
       case transient do
@@ -1150,25 +1225,37 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         reason -> " (the probe failed due to: " <> inspect(LogTerms.reduce(reason)) <> ")"
       end
 
+    {why, event, extra} =
+      case cause do
+        :unknown_type ->
+          {"its type #{inspect(event_type)} is not known to this instance",
+           [:decree, :store, :subscription, :held], %{}}
+
+        {:undecodable, class} ->
+          {"it could not be deserialized due to: " <> inspect(class),
+           [:decree, :store, :subscription, :held_undecodable], %{error: class}}
+      end
+
     Logger.warning(
-      describe(data) <>
-        " is held before event #{event_number}: its type #{inspect(event_type)} is not " <>
-        "known to this instance" <> because <> next
+      describe(data) <> " is held before event #{event_number}: " <> why <> because <> next
     )
 
     :telemetry.execute(
-      [:decree, :store, :subscription, :held],
+      event,
       %{system_time: System.system_time()},
-      %{
-        event_store: event_store,
-        subscription_name: subscription_name,
-        stream_uuid: stream_uuid,
-        event_type: event_type,
-        event_number: event_number,
-        retry_interval: wait,
-        attempt: attempt,
-        transient: transient
-      }
+      Map.merge(
+        %{
+          event_store: event_store,
+          subscription_name: subscription_name,
+          stream_uuid: stream_uuid,
+          event_type: event_type,
+          event_number: event_number,
+          retry_interval: wait,
+          attempt: attempt,
+          transient: transient
+        },
+        extra
+      )
     )
   end
 

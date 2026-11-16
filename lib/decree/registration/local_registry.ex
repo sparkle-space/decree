@@ -112,7 +112,10 @@ defmodule Decree.Registration.LocalRegistry do
 
   @doc false
   def handle_info(message, state) do
-    Logger.debug("received unexpected message in handle_info/2: " <> inspect(message))
+    Logger.debug(
+      "received unexpected message in handle_info/2: " <>
+        inspect(Decree.PersonalFields.RedactedError.reduce(message))
+    )
 
     {:noreply, state}
   end

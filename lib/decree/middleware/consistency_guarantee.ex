@@ -84,7 +84,8 @@ defmodule Decree.Middleware.ConsistencyGuarantee do
 
   defp timed_out(%Pipeline{} = pipeline, stream_uuid, version) do
     Logger.warning(fn ->
-      "Consistency timeout waiting for aggregate #{inspect(stream_uuid)} at version #{inspect(version)}"
+      "Consistency timeout waiting for aggregate " <>
+        inspect(Decree.Store.LogTerms.suffix(stream_uuid)) <> " at version #{inspect(version)}"
     end)
 
     {:timeout, respond(pipeline, {:error, :consistency_timeout})}

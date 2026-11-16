@@ -778,7 +778,7 @@ defmodule Decree.Event.Handler do
           case Map.get(context, :failures) do
             too_many when too_many >= 3 ->
               # skip bad event after third failure
-              Logger.warning("Skipping bad event, too many failures: " <> inspect(event))
+              Logger.warning("Skipping bad event, too many failures: " <> inspect(event.__struct__))
 
               :skip
 
@@ -1326,7 +1326,9 @@ defmodule Decree.Event.Handler do
 
   @impl GenServer
   def terminate(reason, state) do
-    Logger.debug(describe(state) <> " is shutting down due to #{inspect(reason)}")
+    Logger.debug(
+      describe(state) <> " is shutting down due to " <> inspect(RedactedError.reduce(reason))
+    )
   end
 
   @doc false
@@ -1349,7 +1351,8 @@ defmodule Decree.Event.Handler do
       {:stop, reason} ->
         Logger.debug(
           describe(state) <>
-            " `before_reset/0` callback has requested to stop. (reason: #{inspect(reason)})"
+            " `before_reset/0` callback has requested to stop. (reason: " <>
+            inspect(RedactedError.reduce(reason)) <> ")"
         )
 
         {:stop, reason, state}
@@ -1479,7 +1482,9 @@ defmodule Decree.Event.Handler do
         {:DOWN, ref, :process, _pid, reason},
         %Handler{subscription: %Subscription{subscription_ref: ref}} = state
       ) do
-    Logger.debug(describe(state) <> " subscription DOWN due to: #{inspect(reason)}")
+    Logger.debug(
+      describe(state) <> " subscription DOWN due to: " <> inspect(RedactedError.reduce(reason))
+    )
 
     # Stop event handler when event store subscription process terminates.
     {:stop, reason, state}
@@ -1501,7 +1506,8 @@ defmodule Decree.Event.Handler do
   @impl GenServer
   def handle_info(message, state) do
     Logger.error(
-      describe(state) <> " received unexpected message: " <> inspect(message, pretty: true)
+      describe(state) <>
+        " received unexpected message: " <> inspect(RedactedError.reduce(message))
     )
 
     {:noreply, state}
@@ -1541,7 +1547,7 @@ defmodule Decree.Event.Handler do
         Logger.info(
           describe(state) <>
             " failed to subscribe to event store due to: " <>
-            inspect(error) <> ", retrying in " <> inspect(backoff) <> "ms"
+            inspect(RedactedError.reduce(error)) <> ", retrying in " <> inspect(backoff) <> "ms"
         )
 
         subscribe_timer = Process.send_after(self(), :subscribe_to_events, backoff)
@@ -1868,14 +1874,12 @@ defmodule Decree.Event.Handler do
         )
 
       invalid ->
-        shown_value = if redacted?, do: ":redacted", else: inspect(invalid, pretty: true)
-
         Logger.error(
           describe(state) <>
-            " failed to handle event " <>
-            inspect(event, pretty: true) <>
+            " failed to handle " <>
+            describe_event(event) <>
             ", `handle/2` function returned an invalid value: " <>
-            shown_value <>
+            inspect(RedactedError.reduce(invalid)) <>
             ", expected `:ok` or `{:error, term}`"
         )
 
@@ -1965,11 +1969,22 @@ defmodule Decree.Event.Handler do
         handle_event_error({:error, reason}, events, failure_context, state, events, retry_fun)
 
       invalid ->
+        # `error/3` is still given the value in the error, as it was; the log line names its
+        # class only.
         error =
           {:error,
            "invalid value: #{inspect(invalid, pretty: true)}, expected `:ok` or `{:error, term}`"}
 
-        log_batch_error(error, events, state)
+        Logger.error(
+          describe(state) <>
+            " failed to handle batch from " <>
+            describe_event(List.first(events)) <>
+            " to " <>
+            describe_event(List.last(events)) <>
+            ", `handle_batch/1` returned an invalid value: " <>
+            inspect(RedactedError.reduce(invalid)) <>
+            ", expected `:ok` or `{:error, term}`"
+        )
 
         telemetry_stop(
           start_time,
@@ -2125,16 +2140,17 @@ defmodule Decree.Event.Handler do
       {:stop, reason} ->
         reason = shown_reason(reason, redacted?)
 
-        Logger.warning(describe(state) <> " has requested to stop: #{inspect(reason)}")
+        Logger.warning(
+          describe(state) <> " has requested to stop: " <> inspect(RedactedError.reduce(reason))
+        )
 
         # Stop event handler with given reason
         throw({:error, reason})
 
       invalid ->
-        shown_response = shown_reason(invalid, redacted?)
-
         Logger.warning(
-          describe(state) <> " returned an invalid error response: #{inspect(shown_response)}"
+          describe(state) <>
+            " returned an invalid error response: " <> inspect(RedactedError.reduce(invalid))
         )
 
         # Stop event handler with original error
@@ -2215,35 +2231,39 @@ defmodule Decree.Event.Handler do
   end
 
   defp log_event_error(error, %RecordedEvent{} = failed_event, %Handler{} = state) do
-    reason =
-      case error do
-        {:error, reason} -> inspect(reason, pretty: true)
-        {:error, reason, stacktrace} -> Exception.format(:error, reason, stacktrace)
-      end
-
     Logger.error(
       describe(state) <>
-        " failed to handle event:\n" <>
-        inspect(failed_event, pretty: true) <> ", due to:\n" <> reason
+        " failed to handle " <> describe_event(failed_event) <> ", due to: " <> shown_error(error)
     )
   end
 
   defp log_batch_error(error, events, state) do
-    reason =
-      case error do
-        {:error, reason} -> inspect(reason, pretty: true)
-        {:error, reason, stacktrace} -> Exception.format(:error, reason, stacktrace)
-      end
-
     Logger.error(
       describe(state) <>
         " failed to handle batch from " <>
-        inspect(List.first(events), pretty: true) <>
+        describe_event(List.first(events)) <>
         " to " <>
-        inspect(List.last(events), pretty: true) <>
+        describe_event(List.last(events)) <>
         " due to: " <>
-        inspect(reason, pretty: true)
+        shown_error(error)
     )
+  end
+
+  # What a log line shows of a failure (sparkle-space/sparklespace#8358): an error reply by its
+  # class, and a raise by the exception's module and a scrubbed stacktrace, never its message.
+  defp shown_error({:error, reason}), do: inspect(RedactedError.reduce(reason))
+
+  defp shown_error({:error, exception, stacktrace}),
+    do: RedactedError.format_reduced(exception, stacktrace)
+
+  # An event as a log line names it: its number, its type and the last eight characters of its
+  # stream's id, never its data or metadata (sparkle-space/sparklespace#8358).
+  defp describe_event(%RecordedEvent{} = event) do
+    %RecordedEvent{event_number: event_number, event_type: event_type, stream_id: stream_id} =
+      event
+
+    "event ##{inspect(event_number)} (#{event_type}) of " <>
+      inspect(Decree.Store.LogTerms.suffix(stream_id))
   end
 
   # Confirm receipt of one or more events.
@@ -2258,10 +2278,12 @@ defmodule Decree.Event.Handler do
     last_event = List.last(recorded_events)
     %RecordedEvent{event_number: event_number} = last_event
 
+    # The events' numbers, never the events: their data, metadata and stream id stay out of
+    # the log (sparkle-space/sparklespace#8357, #8358).
     Logger.debug(fn ->
       describe(state) <>
         " confirming receipt of event ##{inspect(event_number)}" <>
-        " of events: #{inspect(recorded_events)}"
+        " of events: #{inspect(Enum.map(recorded_events, & &1.event_number))}"
     end)
 
     # If we have a batch, we only confirm the last event received to the
@@ -2300,7 +2322,12 @@ defmodule Decree.Event.Handler do
     rescue
       error ->
         stacktrace = __STACKTRACE__
-        Logger.error(Exception.format(:error, error, stacktrace))
+
+        Logger.error(
+          inspect(handler_module) <>
+            ".partition_by/2 raised, partitioning by 1: " <>
+            RedactedError.format_reduced(error, stacktrace)
+        )
 
         1
     end

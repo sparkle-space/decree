@@ -66,6 +66,32 @@ defmodule Decree.PersonalFields.RedactedError do
 
   def reduce(_reason), do: :redacted
 
+  @doc """
+  What decree's own log lines may show of a command or an event: a struct's module, and
+  `reduce/1` of any other term.
+  """
+  @spec module_or_reduce(term) :: atom | {atom, :redacted}
+  def module_or_reduce(%{__struct__: module}) when is_atom(module), do: module
+  def module_or_reduce(term), do: reduce(term)
+
+  @doc """
+  What decree's own log lines may show of an exception raised with `stacktrace`:
+  `** (Module)` and the stacktrace scrubbed by `scrub_stacktrace/1`, never the exception's
+  message or fields. A `Decree.PersonalFields.RedactedError` keeps its own message, which
+  names only the module it stands in for; a term that is not an exception is shown by
+  `reduce/1`.
+  """
+  @spec format_reduced(term, Exception.stacktrace()) :: String.t()
+  def format_reduced(exception, stacktrace) when is_list(stacktrace) do
+    "** " <>
+      banner(exception) <> "\n" <> Exception.format_stacktrace(scrub_stacktrace(stacktrace))
+  end
+
+  defp banner(%__MODULE__{} = exception),
+    do: "(" <> inspect(__MODULE__) <> ") " <> message(exception)
+
+  defp banner(exception), do: "(" <> inspect(reduce(exception)) <> ")"
+
   @doc false
   # How a throw leaves code that held a decrypted value: as the exit `{:nocatch, reduced}`, the
   # stacktrace scrubbed. Thrown on out of a `gen_server` callback, a reduced term is read as the

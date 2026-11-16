@@ -98,8 +98,10 @@ defmodule Decree.Store.Streams.Stream do
   end
 
   # A subscription's catch-up read: answers `{:ok, events, nil}`, or, when it meets an event
-  # whose type the serializer does not know, `{:ok, prefix, {event_number, event_type}}` with
-  # the events before it. Never raises for an unknown type.
+  # it must hold before, `{:ok, prefix, {event_number, event_type, cause}}` with the events
+  # before it, the cause `:unknown_type` for a type the serializer does not know or
+  # `{:undecodable, class}` for a known type that would not deserialize
+  # (`RecordedEvent.deserialize_until_hold/2`). Never raises for either.
   def read_stream_forward_known(conn, stream_uuid, start_version, count, opts) do
     with {:ok, stream} <- stream_info(conn, stream_uuid, :stream_exists, opts) do
       %StreamInfo{stream_id: stream_id} = stream
@@ -108,7 +110,7 @@ defmodule Decree.Store.Streams.Stream do
 
       with {:ok, recorded_events} <-
              Storage.read_stream_forward(conn, stream_id, start_version, count, opts) do
-        {events, pending} = RecordedEvent.deserialize_known(recorded_events, serializer)
+        {events, pending} = RecordedEvent.deserialize_until_hold(recorded_events, serializer)
 
         {:ok, events, pending}
       end

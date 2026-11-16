@@ -1924,9 +1924,8 @@ defmodule Decree.Store do
   `system_time` and the metadata `event_store`, `subscription_name`, `stream_uuid`,
   `reason`, `retry_interval` (the wait drawn and scheduled before the next read) and
   `attempt` (the number of consecutive failed reads). An event of a type the event
-  store's serializer does not know is not a read error: see "Unknown event types"
-  below. Any other event that fails to deserialize, such as a corrupt payload, raises in
-  the read and still stops the subscription.
+  store's serializer does not know, or of a known type that fails to deserialize, is not a
+  read error: see "Unknown event types" and "Undecodable events" below.
 
   ## Missed wake-ups
 
@@ -2002,6 +2001,33 @@ defmodule Decree.Store do
   `subscribe/2` subscriber is sent the events of its append before it, never it or the rest
   of that append. An event from a later append is still sent, so such a subscriber checks
   `stream_version` or `event_number` continuity itself.
+
+  ## Undecodable events
+
+  An event of a known type whose stored data or metadata the serializer cannot
+  deserialize (its `deserialize/2` raises or exits, as for a corrupt payload) is held
+  before in the same way as an event of an unknown type: never skipped, and the
+  subscription never crashes on it. A crash in `c:Decree.Store.Serializer.known_type?/1`,
+  or a throw, is not an undecodable event and still raises in the read.
+
+  The subscription delivers and checkpoints the events before it, tells its subscribers it
+  lost its lock, releases the lock and probes on the same backoff. A probe whose row has
+  reached the event waits for the lock as after losing it; otherwise it reads and
+  deserializes that one event again. If it decodes now, is gone, or its type is now
+  unknown, the subscription takes its lock again and catches up; if it still does not
+  decode, the subscription stays held.
+
+  Each hold, and each probe that leaves the subscription held, logs a warning naming the
+  event's number and the class of the error, never the error's message or the event's
+  data, and emits the telemetry event `[:decree, :store, :subscription, :held_undecodable]`
+  (not `[:decree, :store, :subscription, :held]`), with the measurement `system_time` and
+  the metadata `event_store`, `subscription_name`, `stream_uuid`, `event_type`,
+  `event_number`, `error` (the error's class: an exception's module, an atom, or a tuple
+  with its contents redacted), `retry_interval`, `attempt` and `transient`, as for
+  `:held`.
+
+  A transient subscription alarms and stops with reason
+  `{:shutdown, {:undecodable_event, class}}`.
 
   """
   @callback subscribe_to_stream(
