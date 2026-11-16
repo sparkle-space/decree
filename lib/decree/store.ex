@@ -1982,8 +1982,9 @@ defmodule Decree.Store do
   again from its first event, never a refusal.
 
   A running subscription knows the stream it reads by the stream's id, read when it
-  subscribes, by every catch-up read and head check, and when it is sent events at or below
-  its position (one `streams` row read). When it finds another stream, or none, it follows
+  subscribes, by every catch-up read and head check, and with every batch of events it is
+  sent while caught up (one `streams` row read per batch, for a subscription to a single
+  stream only). When it finds another stream, or none, it follows
   the stream: it drops its position and the events it has not yet sent, puts its row back to
   the start, and reads the stream from its first event; with no stream yet it waits for one.
   An event sent to a subscriber before then is not redelivered: its ack is taken and

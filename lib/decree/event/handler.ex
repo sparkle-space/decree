@@ -1448,7 +1448,7 @@ defmodule Decree.Event.Handler do
   @doc false
   # The subscription found its stream hard deleted, and maybe created again under its uuid,
   # and reads it again from version 1 (sparkle-space/sparklespace#8386): see
-  # `stream_recreated/1`. Behind a pending retry wait it is held, as a delivery is, so the
+  # `stream_recreated/2`. Behind a pending retry wait it is held, as a delivery is, so the
   # deleted stream's events before it are handled (and their numbers seen) first.
   @impl GenServer
   def handle_info(

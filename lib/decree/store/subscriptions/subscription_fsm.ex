@@ -105,9 +105,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #   subscribed          check_head (reads the id)            follows
   #   subscribed          notify_events, past events (reads    follows; a failed read asks
   #                         the id)                              for a catch-up read
-  #   subscribed          notify_events, expected events,      adopts the id; with no
-  #                         no id known (reads the id)           stream, enqueues them as
-  #                                                              before, no id known
+  #   subscribed          notify_events, expected events       follows (the batch is
+  #                         (reads the id)                       dropped); with no id known
+  #                                                              adopts the id, or with no
+  #                                                              stream enqueues them as
+  #                                                              before; a failed read asks
+  #                                                              for a catch-up read
   #   any but unsubscribed  ack, checkpoint, unsubscribe,      a checkpoint write after the
   #                         hold, terminate (the write)          delete writes nothing and
   #                                                              sets `stream_gone`; the
@@ -1026,24 +1029,25 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     end
   end
 
-  # The next events, while subscribed. A stream subscription that knows no stream id (its
-  # stream did not exist when it was last read, or has been hard deleted since) reads it
-  # first (one `streams` row, no lock), so its position is known to be in that stream; a
-  # failed read asks for a catch-up read, which reads the id with the events
-  # (sparkle-space/sparklespace#8386). No stream means the events' stream was hard deleted
-  # after their append: they are enqueued as before, with no id known, and the next batch
-  # reads it again.
-  defp expected_events(
-         %SubscriptionState{stream_id: nil, stream_uuid: stream_uuid} = data,
-         events
-       )
+  # The next events, while subscribed. A stream subscription reads its stream's id first
+  # (one `streams` row, no lock) for every such batch (sparkle-space/sparklespace#8386).
+  # Another id than the one followed, or no stream after one was known, is a hard delete:
+  # the batch can be the recreated stream's event after the subscription's position, whose
+  # wake-up for the events before it was lost, and enqueued it would be delivered ahead of
+  # them. So the subscription follows the stream instead, and reads it from version 1.
+  # Otherwise it takes the id when none was known and enqueues the batch; with no stream and
+  # no id known (the events' stream was hard deleted after their append) the batch is
+  # enqueued as before, and the next one reads again. A failed read asks for a catch-up read,
+  # which reads the id with the events. `$all` reads nothing.
+  defp expected_events(%SubscriptionState{stream_uuid: stream_uuid} = data, events)
        when stream_uuid != @all_stream do
     case read_stream_id(data) do
-      {:ok, nil} ->
-        enqueue_expected_events(data, events)
-
       {:ok, stream_id} ->
-        enqueue_expected_events(%SubscriptionState{data | stream_id: stream_id}, events)
+        if stream_changed?(data, stream_id) do
+          follow_stream(data, :notify)
+        else
+          data |> adopt_stream_id(stream_id) |> enqueue_expected_events(events)
+        end
 
       {:error, reason} ->
         Logger.debug(
