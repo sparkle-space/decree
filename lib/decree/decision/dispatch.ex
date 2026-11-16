@@ -451,7 +451,7 @@ defmodule Decree.Decision.Dispatch do
         bounded(dispatch, [], layout(dispatch, []))
 
       items ->
-        with {:ok, parsed} <- Read.parse(own_items(dispatch, items)),
+        with {:ok, parsed} <- Read.parse(own_items(dispatch, items), keys: rule_read?(dispatch)),
              :ok <- replays_in_scope(dispatch, parsed) do
           bounded(dispatch, [], layout(dispatch, parsed))
         end
@@ -466,8 +466,12 @@ defmodule Decree.Decision.Dispatch do
     Read.layout(parsed, framework_items(dispatch))
   end
 
+  # A read in an aggregate's process is a rule's, windowed or not, and its items may carry keys.
+  # A decision's may not.
+  defp rule_read?(%__MODULE__{aggregate: aggregate}), do: not is_nil(aggregate)
+
   # A create's fact item is the decision's own, in the first read only. Anything but a list
-  # makes an improper one here, which `Read.parse/1` refuses as it refuses anything else.
+  # makes an improper one here, which `Read.parse/2` refuses as it refuses anything else.
   defp own_items(%__MODULE__{bounds: %{create: false}}, items), do: items
 
   defp own_items(%__MODULE__{bounds: %{create: types}, stream_tag: stream_tag}, items) do
@@ -511,7 +515,7 @@ defmodule Decree.Decision.Dispatch do
           callback_answer(dispatch, error)
 
         items ->
-          with {:ok, parsed} <- Read.parse(items),
+          with {:ok, parsed} <- Read.parse(items, keys: rule_read?(dispatch)),
                :ok <- replays_in_scope(dispatch, parsed),
                read = layout(dispatch, parsed),
                {:ok, read} <- bounded(dispatch, [first], read) do
@@ -613,28 +617,34 @@ defmodule Decree.Decision.Dispatch do
   end
 
   # What a rule keeps of its reads. The condition's `after` is the first read's, as a
-  # decision's is.
+  # decision's is. `matched_keys` is built from the events `events` is, one entry each.
   defp filter(%__MODULE__{} = dispatch, %Merged{} = merged, reads, read_time, answers) do
     started = System.monotonic_time()
+    business_events = Read.business_events(merged)
 
-    with {:ok, events, _answers} <- readable(dispatch, merged, answers) do
+    with {:ok, events, _answers} <- readable_events(dispatch, business_events, answers) do
       telemetry_read(dispatch, merged, reads, read_time, System.monotonic_time() - started)
 
       condition = [items: Read.condition_items(reads), after: merged.after]
+      matched_keys = Enum.map(business_events, &Read.matched_keys(merged, &1))
 
-      {:ok, %Result{events: events}, %__MODULE__{dispatch | condition: condition}}
+      {:ok, %Result{events: events, matched_keys: matched_keys},
+       %__MODULE__{dispatch | condition: condition}}
     end
   end
 
   # The events the decision's own items matched, as a callback may see them. `fold` is nil for
   # a decision that lists none.
-  defp readable(%__MODULE__{fold: nil}, %Merged{} = merged, answers) do
-    {:ok, merged |> Read.business_events() |> Enum.map(& &1.data), answers}
+  defp readable(%__MODULE__{} = dispatch, %Merged{} = merged, answers) do
+    readable_events(dispatch, Read.business_events(merged), answers)
   end
 
-  defp readable(%__MODULE__{application: application, fold: fold}, %Merged{} = merged, answers) do
-    merged
-    |> Read.business_events()
+  defp readable_events(%__MODULE__{fold: nil}, events, answers) do
+    {:ok, Enum.map(events, & &1.data), answers}
+  end
+
+  defp readable_events(%__MODULE__{application: application, fold: fold}, events, answers) do
+    events
     |> Enum.reduce_while({[], answers}, fn event, {readable, answers} ->
       case PersonalFields.readable_event(application, event, fold, answers) do
         {:ok, data, answers} -> {:cont, {[data | readable], answers}}

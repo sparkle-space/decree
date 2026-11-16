@@ -69,7 +69,8 @@ defmodule Decree.Decision do
   item as finding this command's own earlier work, and sends a resend to `c:decide/2` to say
   what its first answer was: see "Replay safety". Its `:tags` must hold a `command_kind:` tag
   and a tag of the command's scope, the route's stream tag or one of `c:scope_tags/1`, or it
-  answers `{:error, :invalid_query}`.
+  answers `{:error, :invalid_query}`. `:key` is a `Decree.Decision.Rule`'s, and a decision's
+  item naming it answers `{:error, :invalid_query}`.
 
   **Lead with the narrowest tag.** An item's first tag is the one the index searches, and
   what a condition costs under the `$all` lock is that tag's hits after `after`. So a broad
