@@ -102,7 +102,7 @@ defmodule Decree.Store.Notifications.Publisher do
   # A subscription recovers the rest from storage: its next notification shows a gap
   # (`last_received + 1`), and while `subscribed` a head its head check saw and still has not
   # received at the next check starts a catch-up read (`SubscriptionFsm`). That read meets the
-  # same event and raises in the subscription process, which is `:temporary`. An aggregate or
+  # same event and holds before it (sparkle-space/sparklespace#8357). An aggregate or
   # a plain `subscribe/2` subscriber is sent nothing for the event that failed and the events
   # after it in that notification until a later append shows the gap; an aggregate's next
   # append then fails closed on `:wrong_expected_version`, and its rebuild raises on the event.

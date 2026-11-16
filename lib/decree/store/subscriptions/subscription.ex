@@ -368,8 +368,8 @@ defmodule Decree.Store.Subscriptions.Subscription do
   # would shorten the full wait after a lock lost before it fires.
   #
   # Every event is followed by the FSM's `hold` check, so a subscription holds before an
-  # event of an unknown type as soon as the events before it are drained, whichever event
-  # drained them (an ack, a read, a filtered batch).
+  # event of an unknown type, or one it could not deserialize, as soon as the events before
+  # it are drained, whichever event drained them (an ack, a read, a filtered batch).
   defp apply_subscription_to_state(%SubscriptionFsm{} = subscription, %Subscription{} = state) do
     subscription = SubscriptionFsm.hold(subscription)
 
@@ -508,16 +508,18 @@ defmodule Decree.Store.Subscriptions.Subscription do
   # again. Every state past those holds the lock (a persistent subscription) and
   # delivers events.
   defp status(:unsubscribed), do: :unsubscribed
-  # Held before an event of an unknown type: its lock released, it delivers nothing.
+  # Held before an event of an unknown type, or one it could not deserialize: its lock
+  # released, it delivers nothing.
   defp status(fsm_state) when fsm_state in [:initial, :disconnected, :held], do: :parked
   defp status(_fsm_state), do: :subscribed
 
   def unsubscribed?(%Subscription{subscription: %SubscriptionFsm{state: :unsubscribed}}), do: true
   def unsubscribed?(%Subscription{}), do: false
 
-  # A transient subscription held before an event of a type this instance does not know
-  # stops: it has no lock to release for another instance, and its position lives in this
-  # process, so its subscriber resubscribes from its own position.
+  # A transient subscription held before an event of a type this instance does not know, or
+  # one it could not deserialize, stops: it has no lock to release for another instance,
+  # and its position lives in this process, so its subscriber resubscribes from its own
+  # position.
   defp noreply(%Subscription{} = state) do
     case stop_reason(state) do
       nil -> {:noreply, state}
@@ -535,10 +537,18 @@ defmodule Decree.Store.Subscriptions.Subscription do
   defp stop_reason(%Subscription{
          subscription: %SubscriptionFsm{
            state: :held,
-           data: %SubscriptionState{transient: true, held: %{type: type}}
+           data: %SubscriptionState{transient: true, held: %{type: type, cause: :unknown_type}}
          }
        }),
        do: {:shutdown, {:unknown_event_type, type}}
+
+  defp stop_reason(%Subscription{
+         subscription: %SubscriptionFsm{
+           state: :held,
+           data: %SubscriptionState{transient: true, held: %{cause: {:undecodable, class}}}
+         }
+       }),
+       do: {:shutdown, {:undecodable_event, class}}
 
   defp stop_reason(%Subscription{}), do: nil
 

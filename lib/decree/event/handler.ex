@@ -1326,7 +1326,9 @@ defmodule Decree.Event.Handler do
 
   @impl GenServer
   def terminate(reason, state) do
-    Logger.debug(describe(state) <> " is shutting down due to #{inspect(reason)}")
+    Logger.debug(
+      describe(state) <> " is shutting down due to " <> inspect(RedactedError.reduce(reason))
+    )
   end
 
   @doc false
@@ -1479,7 +1481,9 @@ defmodule Decree.Event.Handler do
         {:DOWN, ref, :process, _pid, reason},
         %Handler{subscription: %Subscription{subscription_ref: ref}} = state
       ) do
-    Logger.debug(describe(state) <> " subscription DOWN due to: #{inspect(reason)}")
+    Logger.debug(
+      describe(state) <> " subscription DOWN due to: " <> inspect(RedactedError.reduce(reason))
+    )
 
     # Stop event handler when event store subscription process terminates.
     {:stop, reason, state}
@@ -2258,10 +2262,12 @@ defmodule Decree.Event.Handler do
     last_event = List.last(recorded_events)
     %RecordedEvent{event_number: event_number} = last_event
 
+    # The events' numbers, never the events: their data, metadata and stream id stay out of
+    # the log (sparkle-space/sparklespace#8357, #8358).
     Logger.debug(fn ->
       describe(state) <>
         " confirming receipt of event ##{inspect(event_number)}" <>
-        " of events: #{inspect(recorded_events)}"
+        " of events: #{inspect(Enum.map(recorded_events, & &1.event_number))}"
     end)
 
     # If we have a batch, we only confirm the last event received to the

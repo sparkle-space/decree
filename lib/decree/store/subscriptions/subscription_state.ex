@@ -52,13 +52,15 @@ defmodule Decree.Store.Subscriptions.SubscriptionState do
     acknowledged_event_numbers: MapSet.new(),
     in_flight_event_numbers: [],
     transient: false,
-    # A catch-up read met an event of a type this instance does not know, as
-    # `{event_number, event_type}`: nothing at or after it is read or enqueued, and once
-    # the events before it are drained the subscription holds (see `SubscriptionFsm`).
+    # A catch-up read met an event it must hold before, as `{event_number, event_type,
+    # cause}`, the cause `:unknown_type` for a type this instance does not know or
+    # `{:undecodable, class}` for a known type it could not deserialize: nothing at or after
+    # it is read or enqueued, and once the events before it are drained the subscription
+    # holds (see `SubscriptionFsm`).
     hold_pending: nil,
-    # While held, `%{event_number:, type:, attempt:, wait:}`: the event held before, the
-    # number of the alarm (one per hold and per failed probe), and the wait drawn for
-    # the next probe.
+    # While held, `%{event_number:, type:, cause:, attempt:, wait:}`: the event held before
+    # and why, the number of the alarm (one per hold and per failed probe), and the wait
+    # drawn for the next probe.
     held: nil,
     # The stream's head read at the previous head check, `nil` until the first succeeds.
     # A head check repairs only a head seen at two checks in a row, so a wake-up still on
