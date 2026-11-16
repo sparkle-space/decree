@@ -258,52 +258,80 @@ defmodule Decree.Store.MigrateEventStoreTest do
   end
 
   describe "version bookkeeping" do
-    test "the store knows migration 1.10.0" do
+    test "the store knows migration 1.11.0" do
       assert "1.10.0" in Migrations.available_migrations()
-      assert List.last(Migrations.available_migrations()) == "1.10.0"
+      assert List.last(Migrations.available_migrations()) == "1.11.0"
     end
 
-    test "a new event store records 1.10.0 and has nothing pending", %{config: config} do
+    test "a new event store records 1.11.0 and has nothing pending", %{config: config} do
       create_new_database(config)
 
-      assert schema_versions(config) == [[1, 10, 0]]
+      assert schema_versions(config) == [[1, 11, 0]]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
 
-      assert schema_versions(config) == [[1, 10, 0]]
+      assert schema_versions(config) == [[1, 11, 0]]
     end
 
-    test "the migration records 1.10.0", %{config: config} do
+    test "the migration records 1.10.0 and then 1.11.0", %{config: config} do
       StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
       migrate_eventstore(config, quiet: true, is_mix: false)
 
-      assert List.last(schema_versions(config)) == [1, 10, 0]
+      assert Enum.take(schema_versions(config), -2) == [[1, 10, 0], [1, 11, 0]]
 
       assert capture_io(fn -> migrate_eventstore(config, quiet: false, is_mix: false) end) =~
                "already migrated"
     end
 
-    test "Init creates versioned_snapshots beside snapshots", %{config: config} do
+    test "Init creates versioned_snapshots and no snapshots", %{config: config} do
       create_new_database(config)
 
-      assert snapshot_tables(config) == ["snapshots", "versioned_snapshots"]
-    end
-
-    test "the migration creates versioned_snapshots and leaves snapshots", %{config: config} do
-      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
-      before = snapshots_columns(config)
-
-      migrate_eventstore(config, quiet: true, is_mix: false)
-
-      assert snapshot_tables(config) == ["snapshots", "versioned_snapshots"]
-      assert snapshots_columns(config) == before
+      assert snapshot_tables(config) == ["versioned_snapshots"]
     end
 
     test "Init creates only the latest append function", %{config: config} do
       create_new_database(config)
 
       assert append_function_names(config) == [@latest_append_function]
+    end
+  end
+
+  # Store migration 1.11.0 drops the one-row `snapshots` table, which no pod of the previous
+  # release reads or writes (sparkle-space/sparklespace#8200). It drops the table whatever it
+  # holds: a store whose table still has rows migrates, and loses them with the table.
+  describe "the legacy snapshots table" do
+    test "is dropped with its rows, and versioned_snapshots stays", %{config: config} do
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
+      insert_legacy_rows(config, 3)
+
+      assert legacy_row_count(config, "public") >= 3
+
+      migrate_eventstore(config, quiet: true, is_mix: false)
+
+      assert snapshot_tables(config) == ["versioned_snapshots"]
+      assert List.last(schema_versions(config)) == [1, 11, 0]
+    end
+
+    test "is dropped from a named store only, and another schema's table stays",
+         %{config: config} do
+      config = Keyword.put(config, :schema, "renamed_store")
+
+      StorageInitializer.restore_dump!(config, "test/store/fixture/eventstore.dump")
+      move_public_schema_to(config)
+      insert_legacy_rows(config, 3)
+
+      # A same-named table in another schema, which the migration must not reach.
+      execute_each(config, [
+        "CREATE TABLE public.snapshots (source_uuid text PRIMARY KEY)",
+        "INSERT INTO public.snapshots (source_uuid) VALUES ('elsewhere')"
+      ])
+
+      migrate_eventstore(config, quiet: true, is_mix: false)
+
+      assert snapshot_tables(config) == ["versioned_snapshots"]
+      assert List.last(schema_versions(config)) == [1, 11, 0]
+      assert legacy_row_count(config, "public") == 1
     end
   end
 
@@ -709,6 +737,7 @@ defmodule Decree.Store.MigrateEventStoreTest do
       "1\t7\t0\tNOW" -> true
       "1\t8\t0\tNOW" -> true
       "1\t9\t0\tNOW" -> true
+      "1\t10\t0\tNOW" -> true
       _line -> false
     end)
     |> reject_superseded_append_functions()
@@ -835,18 +864,23 @@ defmodule Decree.Store.MigrateEventStoreTest do
     |> List.flatten()
   end
 
-  defp snapshots_columns(config) do
-    query_rows(
-      config,
+  # Rows of the one-row `snapshots` table, as a pod from before store migration 1.10.0 wrote
+  # them, in the restored dump's `bytea` columns.
+  defp insert_legacy_rows(config, count) do
+    execute_each(config, [
       """
-      SELECT attname, format_type(atttypid, atttypmod), attnotnull
-      FROM pg_attribute
-      WHERE attrelid = format('%I.snapshots', $1::text)::regclass AND attnum > 0
-        AND NOT attisdropped
-      ORDER BY attnum
-      """,
-      [config[:schema]]
-    )
+      INSERT INTO "#{config[:schema]}".snapshots
+        (source_uuid, source_version, source_type, data, metadata)
+      SELECT 'legacy-' || i, 1, 'Elixir.Snapshot', convert_to('{}', 'UTF8'), convert_to('{}', 'UTF8')
+      FROM generate_series(1, #{count}) i
+      """
+    ])
+  end
+
+  defp legacy_row_count(config, schema) do
+    [[count]] = query_rows(config, ~s|SELECT count(*) FROM "#{schema}".snapshots|, [])
+
+    count
   end
 
   defp schema_versions(config) do
