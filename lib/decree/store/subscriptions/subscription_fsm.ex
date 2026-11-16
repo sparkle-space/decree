@@ -388,6 +388,11 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #     subscribe (the catch-up read then finds what the stream holds now); still
   #     undecodable, or the read failed, so stay held, alarm again and wait longer.
   #
+  # A probe whose read finds the stream deleted (`:stream_deleted`) or gone
+  # (`:stream_not_found`, after a hard delete) has not failed: either probe subscribes, and
+  # the catch-up read decides as it does for any subscription, `unsubscribed` for a deleted
+  # stream and `subscribed` for a missing one (sparkle-space/sparklespace#8357).
+  #
   # Every other event is handled by the catch-alls: events and notices track
   # `last_received` only, an ack or a checkpoint is ignored (nothing is in flight), and a
   # late `:lock_released` for the released lock does not match `lock_ref` (now `nil`).
@@ -1044,8 +1049,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # when its row is at or past the held event, or gone (or replaced by a row of another
   # id); else, held on an unknown type, `:known` or `:unknown` for the held event's type,
   # and held on an undecodable event, `:known` or `{:undecodable, class}` for the event
-  # read again; `{:error, reason}` when a read failed. An event no longer there reads as
-  # known, so the subscribe that follows finds out what the stream holds now.
+  # read again; `{:error, reason}` when a read failed. An event no longer there, or a stream
+  # deleted or gone, reads as known, so the subscribe that follows finds out what the stream
+  # holds now.
   defp probe_held(%SubscriptionState{} = data, held) do
     %{event_number: event_number, cause: cause} = held
 
@@ -1112,6 +1118,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
          ) do
       {:ok, _events, {^event_number, _type, {:undecodable, _class} = cause}} -> cause
       {:ok, _events, _pending} -> :known
+      {:error, reason} when reason in [:stream_deleted, :stream_not_found] -> :known
       {:error, _reason} = error -> error
     end
   end
@@ -1135,6 +1142,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
          ) do
       {:ok, nil} -> :known
       {:ok, type} -> if RecordedEvent.known_type?(serializer, type), do: :known, else: :unknown
+      {:error, reason} when reason in [:stream_deleted, :stream_not_found] -> :known
       {:error, _reason} = error -> error
     end
   end
