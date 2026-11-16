@@ -1,0 +1,37 @@
+<%!--
+  A stream subscription's checkpoint, written only while the stream its position is in, by
+  `stream_id`, still exists (sparkle-space/sparklespace#8386). After a hard delete of the
+  stream, an ack of an event of the deleted stream writes nothing, so it cannot put back a
+  position the hard delete reset (`reset_stream_subscriptions`). It answers whether the
+  stream was found and whether the row was written: a stream not found means the stream
+  was hard deleted (and maybe created again, under a new `stream_id`), and a row not
+  written beside a stream found means the row is gone.
+
+  The stream's row is taken FOR KEY SHARE first, in `stream`, which the UPDATE's condition
+  reads, so the lock is taken before the subscription row's. A locking read, unlike a plain
+  one, sees a row deleted by a transaction that committed while it waited: a hard delete
+  that has deleted the row makes it wait, and then it finds no row, whatever its snapshot
+  saw. KEY SHARE does not conflict with an append's NO KEY UPDATE, so appends never wait on
+  a checkpoint, and a checkpoint waits only on the DELETE of the stream's row, the lock a
+  versioned snapshot write takes too (`lock_snapshot_stream`). The hard delete resets the
+  subscription rows after it deletes the stream's row, so it never holds a subscription
+  row this write waits on while waiting on this write's KEY SHARE.
+
+  `stream` is read twice and materialised once, so both reads see the one locking read.
+--%>
+WITH stream AS (
+  SELECT stream_id
+  FROM "<%= schema %>".streams
+  WHERE stream_id = $3
+  FOR KEY SHARE
+),
+acked AS (
+  UPDATE "<%= schema %>".subscriptions
+  SET last_seen = GREATEST(COALESCE(last_seen, 0), $2)
+  WHERE subscription_id = $1
+    AND EXISTS (SELECT 1 FROM stream)
+  RETURNING subscription_id
+)
+SELECT
+  EXISTS (SELECT 1 FROM stream),
+  EXISTS (SELECT 1 FROM acked);

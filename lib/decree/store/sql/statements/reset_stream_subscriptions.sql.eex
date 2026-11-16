@@ -1,0 +1,21 @@
+<%!--
+  The last of a hard delete's five statements: see `DeleteStream.hard_delete/3`. Every
+  subscription to the deleted stream goes back to 0, in place: an append to the same uuid
+  creates the stream again from version 1, and a position kept from the deleted stream would
+  skip the recreated events up to it (sparkle-space/sparklespace#8386). The rows are
+  updated, never deleted: a row's `subscription_id` keys its holder's advisory lock, and a
+  deleted row recreated under a live holder would give the subscription a second owner.
+
+  It comes after the stream's row is deleted, so it never holds a subscription row while it
+  waits on the stream's row. A stream subscription's checkpoint write takes the stream's row
+  FOR KEY SHARE before its subscription row (`subscription_ack_by_id_in_stream`), and the
+  DELETE waits on that KEY SHARE: the write commits first and this statement then resets
+  it, or the write waits for this transaction and then finds no stream and writes nothing.
+  Neither order holds one row while waiting on the other's.
+
+  `$all`'s rows are never reset: `$all` is never hard deleted.
+--%>
+UPDATE "<%= schema %>".subscriptions
+SET last_seen = 0
+WHERE stream_uuid = $1
+  AND stream_uuid <> '$all';

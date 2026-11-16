@@ -11,6 +11,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   require Logger
 
+  @all_stream "$all"
+
   def new(stream_uuid, subscription_name, opts) do
     new(
       data: %SubscriptionState{
@@ -72,12 +74,60 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #
   #   subscribed -> (check_head) -> request_catch_up
   #
+  # A stream subscription follows its stream across a hard delete
+  # (sparkle-space/sparklespace#8386). Its cursor is a position in one stream, known by its
+  # `stream_id` (`SubscriptionState.stream_id`); a hard delete removes the stream, and an
+  # append to the same uuid creates it again, from version 1, under a new `stream_id`. The
+  # hard delete puts every subscription row of the stream back to 0
+  # (`DeleteStream.hard_delete/3`), and a running subscription that finds its stream gone or
+  # replaced follows it (`follow_stream/2`): it drops its position, its queue and the
+  # tracking of what it acknowledged, retires its subscribers' in-flight events (their acks
+  # are taken and dropped, `Subscriber.retire_in_flight/1`), puts its row back to 0 (only
+  # from a position it may have written itself, `reset_checkpoint/1`) and reads the stream
+  # from its start, adopting the `stream_id` that read finds:
+  #
+  #   (any delivering state) -> (follow) -> request_catch_up
+  #
+  # A `$all` subscription never follows: `$all` is never hard deleted, and its
+  # `stream_id` stays `nil`. A stream subscription reads the `stream_id` before its row at
+  # every subscribe, so a hard delete between the two leaves the row at 0 or the read
+  # replaced. Each signal that can learn the stream's id compares it with the one followed:
+  #
+  #   state               signal                               on another id, or no stream
+  #   initial             subscribe (reads the id, then row)   takes the id read
+  #   disconnected, held  subscribe, probe -> resubscribe      follows, unless the row is
+  #                                                             above its own last ack: then
+  #                                                             takes the row (another
+  #                                                             instance delivered it)
+  #   request_catch_up,   the catch-up read (it returns the    follows; the events read
+  #   catching_up,          id it read from)                     are dropped
+  #   catch_up_retry
+  #   subscribed          check_head (reads the id)            follows
+  #   subscribed          notify_events, past events (reads    follows; a failed read asks
+  #                         the id)                              for a catch-up read
+  #   subscribed          notify_events, expected events,      adopts the id; with no
+  #                         no id known (reads the id)           stream, enqueues them as
+  #                                                              before, no id known
+  #   any but unsubscribed  ack, checkpoint, unsubscribe,      a checkpoint write after the
+  #                         hold, terminate (the write)          delete writes nothing and
+  #                                                              sets `stream_gone`; the
+  #                                                              `check_stream` event that
+  #                                                              follows every event then
+  #                                                              follows in a delivering
+  #                                                              state
+  #   any                 ack of a retired event               taken and dropped: `:ok`, no
+  #                                                              position moves
+  #
+  # Every other cell is as before: `notify_events` outside `subscribed` tracks
+  # `last_received` only, and the catch-up read that follows compares the id; a head check
+  # outside `subscribed`, or with a hold pending, changes nothing.
 
   defstate initial do
     defevent subscribe, data: %SubscriptionState{transient: true} = data do
       data = SubscriptionState.reset_event_tracking(data)
 
-      with :ok <- subscribe_to_events(data) do
+      with {:ok, stream_id} <- read_stream_id(data),
+           :ok <- subscribe_to_events(data) do
         last_seen = data.start_from
 
         data = %SubscriptionState{
@@ -85,6 +135,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           | last_received: last_seen,
             last_sent: last_seen,
             last_ack: last_seen,
+            stream_id: stream_id,
+            stream_gone: false,
             subscribe_failures: 0,
             subscribe_wait: nil
         }
@@ -101,7 +153,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       data: %SubscriptionState{} = data do
       data = SubscriptionState.reset_event_tracking(data)
 
-      with {:ok, subscription} <- create_subscription(data),
+      # The stream's id is read before the row: a hard delete in between has reset the row
+      # to 0, and one after it replaces the id the catch-up read then finds.
+      with {:ok, stream_id} <- read_stream_id(data),
+           {:ok, subscription} <- create_subscription(data),
            {:ok, lock_ref} <- try_acquire_exclusive_lock(data, subscription),
            :ok <- subscribe_to_events(data) do
         %Storage.Subscription{subscription_id: subscription_id, last_seen: last_seen} =
@@ -116,6 +171,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
             last_received: last_seen,
             last_sent: last_seen,
             last_ack: last_seen,
+            stream_id: stream_id,
+            stream_gone: false,
             subscribe_failures: 0,
             subscribe_wait: nil
         }
@@ -173,8 +230,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
         past when past < expected_event ->
           Logger.debug(describe(data) <> " received past event(s), ignoring")
 
-          # Ignore already seen events
-          next_state(:subscribed, data)
+          # Ignore already seen events, unless they are a stream's first events after a hard
+          # delete and a recreate under its uuid.
+          past_events(data)
 
         future when future > expected_event ->
           Logger.debug(describe(data) <> " received unexpected event(s), requesting catch up")
@@ -183,21 +241,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
           next_state(:request_catch_up, data)
 
         ^expected_event ->
-          Logger.debug(describe(data) <> " is enqueueing #{length(events)} event(s)")
-
-          # Subscriber is up-to-date, so enqueue events to send
-          data =
-            data
-            |> enqueue_events(events)
-            |> notify_subscribers()
-
-          if over_capacity?(data) do
-            # Too many pending events, must wait for these to be processed.
-            next_state(:max_capacity, data)
-          else
-            # Remain subscribed, waiting for subscriber to ack already sent events.
-            next_state(:subscribed, data)
-          end
+          expected_events(data, events)
       end
     end
 
@@ -261,25 +305,35 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     #
     # A failed read is retried at the next check, without a catch-up error: it is logged
     # at debug level only and leaves `head_seen` as it was.
+    #
+    # The same read gives the stream's id: another id than the one followed, or no stream
+    # after one was known, is a hard delete, and the subscription follows the stream
+    # (sparkle-space/sparklespace#8386).
     defevent check_head, data: %SubscriptionState{hold_pending: nil} = data do
       case read_head(data) do
-        {:ok, head} ->
-          %SubscriptionState{
-            head_seen: target,
-            last_received: last_received,
-            head_repaired: head_repaired
-          } = data
-
-          if is_integer(target) and target > last_received and target > head_repaired do
-            missed_wake_up(data, head, target)
-
-            next_state(:request_catch_up, %SubscriptionState{
-              data
-              | head_repaired: head,
-                head_seen: head
-            })
+        {:ok, head, stream_id} ->
+          if stream_changed?(data, stream_id) do
+            follow_stream(data, :head_check)
           else
-            next_state(:subscribed, %SubscriptionState{data | head_seen: head})
+            data = adopt_stream_id(data, stream_id)
+
+            %SubscriptionState{
+              head_seen: target,
+              last_received: last_received,
+              head_repaired: head_repaired
+            } = data
+
+            if is_integer(target) and target > last_received and target > head_repaired do
+              missed_wake_up(data, head, target)
+
+              next_state(:request_catch_up, %SubscriptionState{
+                data
+                | head_repaired: head,
+                  head_seen: head
+              })
+            else
+              next_state(:subscribed, %SubscriptionState{data | head_seen: head})
+            end
           end
 
         {:error, reason} ->
@@ -494,6 +548,21 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     next_state(state, data)
   end
 
+  # Checked after every event, after `hold` (`Subscription` sends it): a checkpoint write
+  # found no stream with the followed `stream_id`, so the stream was hard deleted. A
+  # delivering state follows it now, rather than at the next read, head check or batch. A
+  # held subscription's resubscribe compares the id itself; any other state does nothing.
+  defevent check_stream,
+    data: %SubscriptionState{stream_gone: true} = data,
+    state: state,
+    when: state in [:request_catch_up, :catching_up, :subscribed, :max_capacity, :catch_up_retry] do
+    follow_stream(data, :checkpoint)
+  end
+
+  defevent check_stream, data: %SubscriptionState{} = data, state: state do
+    next_state(state, data)
+  end
+
   # A probe timer that fired after the subscription left `held`.
   defevent probe, data: %SubscriptionState{} = data, state: state do
     next_state(state, data)
@@ -674,28 +743,64 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   # `last_received` is raised to the row's position. Another instance can have delivered
   # events this one never received (the publisher here cut their batch before an unknown
   # type); left behind, an empty catch-up read would never find the subscription caught up.
+  #
+  # Unless the stream was hard deleted since this instance last held the lock
+  # (sparkle-space/sparklespace#8386). The stream's id is read before the row. Another id,
+  # or no stream, after one was known: a row at or below this instance's own last ack is
+  # the hard delete's reset, or a position in the deleted stream (a hard delete by a release
+  # before this one), so the subscription follows the stream from its start, as it does
+  # whatever the row says when there is no stream; a row above it, beside a recreated
+  # stream, was written by another instance in that stream, and is taken as it is. Either
+  # way `last_received` is not raised: a position received in the deleted stream is not one
+  # in the recreated stream, and an empty read would never reach it. A row below this
+  # instance's own last ack with the same stream was reset under it, by a hard delete or an
+  # operator: its position is taken for all three.
   defp resubscribe(%SubscriptionState{} = data) do
-    with {:ok, subscription} <- create_subscription(data),
+    with {:ok, stream_id} <- read_stream_id(data),
+         {:ok, subscription} <- create_subscription(data),
          {:ok, lock_ref} <- try_acquire_exclusive_lock(data, subscription) do
       %Storage.Subscription{
         subscription_id: subscription_id,
         last_seen: last_seen
       } = subscription
 
-      %SubscriptionState{last_received: last_received} = data
+      %SubscriptionState{last_received: last_received, last_ack: own_last_ack} = data
 
       last_ack = last_seen || 0
+      changed? = stream_changed?(data, stream_id)
 
       data = %SubscriptionState{
         data
         | subscription_id: subscription_id,
           lock_ref: lock_ref,
-          last_received: max(last_received, last_ack),
-          last_sent: last_ack,
-          last_ack: last_ack,
+          stream_gone: false,
           subscribe_failures: 0,
           subscribe_wait: nil
       }
+
+      data =
+        cond do
+          changed? and (is_nil(stream_id) or last_ack <= own_last_ack) ->
+            follow_stream_data(data, :subscribe)
+
+          changed? or last_ack < own_last_ack ->
+            %SubscriptionState{
+              data
+              | last_received: last_ack,
+                last_sent: last_ack,
+                last_ack: last_ack,
+                stream_id: stream_id
+            }
+
+          true ->
+            %SubscriptionState{
+              data
+              | last_received: max(last_received, last_ack),
+                last_sent: last_ack,
+                last_ack: last_ack,
+                stream_id: stream_id
+            }
+        end
 
       notify_subscribed(data)
 
@@ -807,40 +912,26 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       end
 
     case result do
-      # The read met an event of a type this instance does not know, or one it could not
-      # deserialize: send the events before it, and hold before it once they are drained
-      # (the `hold` event).
-      {:ok, events, {_event_number, _event_type, _cause} = pending} ->
-        data =
-          %SubscriptionState{data | hold_pending: pending}
-          |> enqueue_events(events)
-          |> notify_subscribers()
+      # The read found another stream than the one followed: it was hard deleted and created
+      # again. The events read are the recreated stream's, from the old position: dropped,
+      # and the stream is read again from its start (sparkle-space/sparklespace#8386).
+      {:ok, _events, _pending, stream_id}
+      when stream_id != data.stream_id and
+             not is_nil(data.stream_id) ->
+        follow_stream(data, :catch_up)
 
-        next_state(:catching_up, data)
-
-      {:ok, [], nil} ->
-        if last_sent == last_received do
-          # Subscriber is up-to-date with latest published events
-          next_state(:subscribed, data)
-        else
-          # Need to catch-up with events published while catching up
-          next_state(:request_catch_up, data)
-        end
-
-      {:ok, events, nil} ->
-        data = data |> enqueue_events(events) |> notify_subscribers()
-
-        if empty_queue?(data) do
-          # Request next batch of events
-          next_state(:request_catch_up, data)
-        else
-          # Wait until subscribers have ack'd in-flight events
-          next_state(:catching_up, data)
-        end
+      {:ok, events, pending, stream_id} ->
+        data
+        |> adopt_stream_id(stream_id)
+        |> caught_up(events, pending, last_sent, last_received)
 
       {:error, :stream_deleted} ->
         # Don't allow subscriptions to deleted streams to receive any events
         next_state(:unsubscribed, data)
+
+      # The followed stream was hard deleted and not created again (yet).
+      {:error, :stream_not_found} when not is_nil(data.stream_id) ->
+        follow_stream(data, :catch_up)
 
       {:error, :stream_not_found} ->
         # Allow subscriptions to streams which don't yet exist, but might be created later
@@ -859,6 +950,288 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
 
   def catch_up_from_stream(%SubscriptionState{} = data) do
     next_state(:catching_up, data)
+  end
+
+  # A catch-up read of the stream followed: `last_sent` and `last_received` are as they were
+  # before the read.
+  #
+  # The read met an event of a type this instance does not know, or one it could not
+  # deserialize: send the events before it, and hold before it once they are drained (the
+  # `hold` event).
+  defp caught_up(
+         %SubscriptionState{} = data,
+         events,
+         {_event_number, _event_type, _cause} = pending,
+         _sent,
+         _received
+       ) do
+    data =
+      %SubscriptionState{data | hold_pending: pending}
+      |> enqueue_events(events)
+      |> notify_subscribers()
+
+    next_state(:catching_up, data)
+  end
+
+  defp caught_up(%SubscriptionState{} = data, [], nil, last_sent, last_received) do
+    if last_sent == last_received do
+      # Subscriber is up-to-date with latest published events
+      next_state(:subscribed, data)
+    else
+      # Need to catch-up with events published while catching up
+      next_state(:request_catch_up, data)
+    end
+  end
+
+  defp caught_up(%SubscriptionState{} = data, events, nil, _last_sent, _last_received) do
+    data = data |> enqueue_events(events) |> notify_subscribers()
+
+    if empty_queue?(data) do
+      # Request next batch of events
+      next_state(:request_catch_up, data)
+    else
+      # Wait until subscribers have ack'd in-flight events
+      next_state(:catching_up, data)
+    end
+  end
+
+  # Batches the publisher sent with events at or below `last_received`, while subscribed:
+  # usually a late notification of events a catch-up read already delivered, ignored. A
+  # stream recreated after a hard delete starts again from version 1, so its first batch
+  # looks the same: the stream's id is read (one `streams` row, no lock) and, if it is
+  # another than the one followed, or there is no stream, the subscription follows it
+  # (sparkle-space/sparklespace#8386). A failed read asks for a catch-up read, which reads
+  # the id with the events. A subscription that knows no id (`$all`, or a stream subscription
+  # whose stream has not been read since it was created) ignores the batch, as before.
+  defp past_events(%SubscriptionState{stream_id: nil} = data), do: next_state(:subscribed, data)
+
+  defp past_events(%SubscriptionState{} = data) do
+    case read_stream_id(data) do
+      {:ok, stream_id} ->
+        if stream_changed?(data, stream_id),
+          do: follow_stream(data, :notify),
+          else: next_state(:subscribed, data)
+
+      {:error, reason} ->
+        Logger.debug(
+          describe(data) <>
+            " did not read its stream's id due to: " <>
+            inspect(LogTerms.reduce(reason)) <> ", requesting catch up"
+        )
+
+        next_state(:request_catch_up, data)
+    end
+  end
+
+  # The next events, while subscribed. A stream subscription that knows no stream id (its
+  # stream did not exist when it was last read, or has been hard deleted since) reads it
+  # first (one `streams` row, no lock), so its position is known to be in that stream; a
+  # failed read asks for a catch-up read, which reads the id with the events
+  # (sparkle-space/sparklespace#8386). No stream means the events' stream was hard deleted
+  # after their append: they are enqueued as before, with no id known, and the next batch
+  # reads it again.
+  defp expected_events(
+         %SubscriptionState{stream_id: nil, stream_uuid: stream_uuid} = data,
+         events
+       )
+       when stream_uuid != @all_stream do
+    case read_stream_id(data) do
+      {:ok, nil} ->
+        enqueue_expected_events(data, events)
+
+      {:ok, stream_id} ->
+        enqueue_expected_events(%SubscriptionState{data | stream_id: stream_id}, events)
+
+      {:error, reason} ->
+        Logger.debug(
+          describe(data) <>
+            " did not read its stream's id due to: " <>
+            inspect(LogTerms.reduce(reason)) <> ", requesting catch up"
+        )
+
+        next_state(:request_catch_up, data)
+    end
+  end
+
+  defp expected_events(%SubscriptionState{} = data, events),
+    do: enqueue_expected_events(data, events)
+
+  defp enqueue_expected_events(%SubscriptionState{} = data, events) do
+    Logger.debug(describe(data) <> " is enqueueing #{length(events)} event(s)")
+
+    # Subscriber is up-to-date, so enqueue events to send
+    data =
+      data
+      |> enqueue_events(events)
+      |> notify_subscribers()
+
+    if over_capacity?(data) do
+      # Too many pending events, must wait for these to be processed.
+      next_state(:max_capacity, data)
+    else
+      # Remain subscribed, waiting for subscriber to ack already sent events.
+      next_state(:subscribed, data)
+    end
+  end
+
+  # The stream's `stream_id` now, `nil` when there is no stream: one `streams` row, read
+  # without a lock. `$all` is never hard deleted and is never read for it.
+  defp read_stream_id(%SubscriptionState{stream_uuid: @all_stream}), do: {:ok, nil}
+
+  defp read_stream_id(%SubscriptionState{} = data) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      stream_uuid: stream_uuid,
+      query_timeout: query_timeout
+    } = data
+
+    case Storage.stream_info(conn, stream_uuid, schema: schema, timeout: query_timeout) do
+      {:ok, %StreamInfo{stream_id: stream_id}} -> {:ok, stream_id}
+      {:error, _reason} = error -> error
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  # Whether `stream_id`, read now (`nil` for no stream), says the stream followed was hard
+  # deleted: it is another id, or none, after one was known.
+  defp stream_changed?(%SubscriptionState{stream_id: nil}, _stream_id), do: false
+
+  defp stream_changed?(%SubscriptionState{stream_id: followed}, stream_id),
+    do: stream_id != followed
+
+  # Take the id read as the stream followed, when none is known. `$all` never takes one.
+  defp adopt_stream_id(%SubscriptionState{stream_uuid: @all_stream} = data, _stream_id), do: data
+  defp adopt_stream_id(%SubscriptionState{} = data, nil), do: data
+
+  defp adopt_stream_id(%SubscriptionState{stream_id: nil} = data, stream_id),
+    do: %SubscriptionState{data | stream_id: stream_id}
+
+  defp adopt_stream_id(%SubscriptionState{} = data, _stream_id), do: data
+
+  # The stream followed was hard deleted (and maybe created again under its uuid): follow it
+  # from its start (sparkle-space/sparklespace#8386).
+  defp follow_stream(%SubscriptionState{} = data, trigger) do
+    next_state(:request_catch_up, follow_stream_data(data, trigger))
+  end
+
+  # In order: alarm with the positions dropped; cancel a pending checkpoint and drop the
+  # queue, the tracking of acknowledged events and any pending hold, all of the deleted
+  # stream; retire every subscriber's in-flight events (`Subscriber.retire_in_flight/1`:
+  # their acks are taken and dropped, and nothing more is sent to a subscriber until it has
+  # acknowledged them, so a late ack is never one for a recreated event of the same number);
+  # put the row back to 0 (`reset_checkpoint/1`); and reset the cursor, the head check and
+  # the id, which the catch-up read that follows takes from the stream it finds. A hard
+  # delete and no stream yet: that read finds none and the subscription waits in
+  # `subscribed`, at 0, so a recreate is read from its first event.
+  defp follow_stream_data(%SubscriptionState{} = data, trigger) do
+    stream_recreated(data, trigger)
+
+    data =
+      data
+      |> cancel_checkpoint_timer()
+      |> SubscriptionState.reset_event_tracking()
+      |> retire_in_flight_events()
+      |> reset_checkpoint()
+
+    %SubscriptionState{
+      data
+      | last_received: 0,
+        last_sent: 0,
+        last_ack: 0,
+        stream_id: nil,
+        stream_gone: false,
+        head_seen: nil,
+        head_repaired: 0,
+        catch_up_retry_token: nil
+    }
+  end
+
+  defp retire_in_flight_events(%SubscriptionState{subscribers: subscribers} = data) do
+    subscribers =
+      Map.new(subscribers, fn {pid, sub} -> {pid, Subscriber.retire_in_flight(sub)} end)
+
+    %SubscriptionState{data | subscribers: subscribers}
+  end
+
+  # Put a persistent subscription's row back to 0, by its id, when it is at or below this
+  # subscription's last ack in the deleted stream, a position it may have written itself.
+  # The hard delete has normally done so already; a hard delete by a release before this one
+  # has not. A row above it was written by another holder in the recreated stream: a holder
+  # that lost its lock and has not yet heard can still lower a row the new holder wrote at or
+  # below that position, which delivers those events again and loses none. A failed write is
+  # logged: the row then keeps a position of the deleted stream, as before this fix.
+  defp reset_checkpoint(%SubscriptionState{transient: true} = data), do: data
+  defp reset_checkpoint(%SubscriptionState{subscription_id: nil} = data), do: data
+
+  defp reset_checkpoint(%SubscriptionState{} = data) do
+    %SubscriptionState{
+      conn: conn,
+      schema: schema,
+      subscription_id: subscription_id,
+      last_ack: last_ack,
+      query_timeout: query_timeout
+    } = data
+
+    case Storage.Subscription.reset_last_seen_by_id(conn, subscription_id, last_ack,
+           schema: schema,
+           timeout: query_timeout
+         ) do
+      :ok ->
+        data
+
+      {:error, reason} ->
+        Logger.warning(
+          describe(data) <>
+            " did not put its checkpoint back to 0 due to: " <> inspect(LogTerms.reduce(reason))
+        )
+
+        data
+    end
+  catch
+    :exit, reason ->
+      Logger.warning(
+        describe(data) <>
+          " did not put its checkpoint back to 0 due to: " <> inspect(LogTerms.reduce(reason))
+      )
+
+      data
+  end
+
+  # A subscription follows its stream after a hard delete: a warning naming the positions
+  # dropped (never an id or any event data) and the
+  # `[:decree, :store, :subscription, :stream_recreated]` telemetry event (documented on
+  # `c:Decree.Store.subscribe_to_stream/4`).
+  defp stream_recreated(%SubscriptionState{} = data, trigger) do
+    %SubscriptionState{
+      event_store: event_store,
+      stream_uuid: stream_uuid,
+      subscription_name: subscription_name,
+      last_received: last_received,
+      last_ack: last_seen,
+      transient: transient
+    } = data
+
+    Logger.warning(
+      describe(data) <>
+        " found its stream hard deleted, and maybe created again: it drops its position " <>
+        "#{last_seen} (last received #{last_received}) and reads the stream from its start"
+    )
+
+    :telemetry.execute(
+      [:decree, :store, :subscription, :stream_recreated],
+      %{system_time: System.system_time()},
+      %{
+        event_store: event_store,
+        subscription_name: subscription_name,
+        stream_uuid: stream_uuid,
+        last_seen: last_seen,
+        last_received: last_received,
+        transient: transient,
+        trigger: trigger
+      }
+    )
   end
 
   # Keep the cursor and the subscribers, and retry the catch-up read on a timer, never
@@ -1116,8 +1489,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
            correlation_id_type: correlation_id_type,
            causation_id_type: causation_id_type
          ) do
-      {:ok, _events, {^event_number, _type, {:undecodable, _class} = cause}} -> cause
-      {:ok, _events, _pending} -> :known
+      {:ok, _events, {^event_number, _type, {:undecodable, _class} = cause}, _id} -> cause
+      {:ok, _events, _pending, _id} -> :known
       {:error, reason} when reason in [:stream_deleted, :stream_not_found] -> :known
       {:error, _reason} = error -> error
     end
@@ -1259,9 +1632,10 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     )
   end
 
-  # The stream's head, its `stream_version` as stored: a stream not yet created reads as 0.
-  # One statement, without a lock, and read raw, with no expected-version check. A read
-  # that fails, or does not answer, is `{:error, reason}`.
+  # The stream's head, its `stream_version` as stored: a stream not yet created reads as 0,
+  # with its `stream_id` (`nil` for no stream). One statement, without a lock, and read raw,
+  # with no expected-version check. A read that fails, or does not answer, is
+  # `{:error, reason}`.
   defp read_head(%SubscriptionState{} = data) do
     %SubscriptionState{
       conn: conn,
@@ -1271,7 +1645,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     } = data
 
     case Storage.stream_info(conn, stream_uuid, schema: schema, timeout: query_timeout) do
-      {:ok, %StreamInfo{stream_version: head}} -> {:ok, head}
+      {:ok, %StreamInfo{stream_version: head, stream_id: stream_id}} -> {:ok, head, stream_id}
       {:error, _reason} = error -> error
     end
   catch
@@ -1589,9 +1963,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   defp persist_checkpoint(%SubscriptionState{transient: false} = data) do
     %SubscriptionState{checkpoints_pending: checkpoints_pending} = data
 
-    if checkpoints_pending > 0 do
-      write_checkpoint(data)
-    end
+    data = if checkpoints_pending > 0, do: write_checkpoint(data), else: data
 
     %SubscriptionState{data | checkpoints_pending: 0}
   end
@@ -1603,19 +1975,42 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
   #
   # A row that no longer exists is only logged: the subscription keeps running,
   # and its position is not written anywhere.
+  #
+  # A stream subscription that knows its stream's id writes only while that stream exists
+  # (sparkle-space/sparklespace#8386): after a hard delete, an ack of an event of the deleted
+  # stream writes nothing, so it cannot put back a position the hard delete reset, and sets
+  # `stream_gone`, so the subscription follows the stream (`check_stream`). `$all`, and a
+  # stream subscription that knows no id (it has acknowledged nothing since), write as before.
   defp write_checkpoint(%SubscriptionState{subscription_id: subscription_id} = data)
        when is_integer(subscription_id) do
     %SubscriptionState{
       conn: conn,
       schema: schema,
       last_ack: last_ack,
+      stream_id: stream_id,
       query_timeout: query_timeout
     } = data
 
-    case Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, last_ack,
-           schema: schema,
-           timeout: query_timeout
-         ) do
+    reply =
+      case stream_id do
+        nil ->
+          Storage.Subscription.ack_last_seen_event_by_id(conn, subscription_id, last_ack,
+            schema: schema,
+            timeout: query_timeout
+          )
+
+        stream_id ->
+          Storage.Subscription.ack_last_seen_event_in_stream(
+            conn,
+            subscription_id,
+            last_ack,
+            stream_id,
+            schema: schema,
+            timeout: query_timeout
+          )
+      end
+
+    case reply do
       {:error, :subscription_not_found} ->
         Logger.warning(
           describe(data) <>
@@ -1623,8 +2018,18 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
             "(event #{last_ack}): its subscription row no longer exists"
         )
 
+        data
+
+      {:error, :stream_changed} ->
+        Logger.debug(
+          describe(data) <>
+            " did not write its checkpoint (event #{last_ack}): its stream was hard deleted"
+        )
+
+        %SubscriptionState{data | stream_gone: true}
+
       _reply ->
-        :ok
+        data
     end
   end
 
@@ -1644,6 +2049,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
       schema: schema,
       timeout: query_timeout
     )
+
+    data
   end
 
   # Purge all subscriber in-flight events and subscription event queue.

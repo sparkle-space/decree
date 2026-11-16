@@ -1,0 +1,14 @@
+<%!--
+  A stream subscription that follows its stream after a hard delete puts its row back to 0
+  (sparkle-space/sparklespace#8386), so a restart reads the recreated stream from its start.
+  The hard delete has normally done so already (`reset_stream_subscriptions`); this covers a
+  hard delete by a pod of a release before it, which leaves the row where it was.
+
+  It lowers the row only from a position at or below `$2`, the last position the follower
+  acknowledged in the deleted stream: one it may have written itself. A row above it was
+  written by another holder, in the recreated stream, and is left as it is.
+--%>
+UPDATE "<%= schema %>".subscriptions
+SET last_seen = 0
+WHERE subscription_id = $1
+  AND COALESCE(last_seen, 0) <= $2;

@@ -369,9 +369,11 @@ defmodule Decree.Store.Subscriptions.Subscription do
   #
   # Every event is followed by the FSM's `hold` check, so a subscription holds before an
   # event of an unknown type, or one it could not deserialize, as soon as the events before
-  # it are drained, whichever event drained them (an ack, a read, a filtered batch).
+  # it are drained, whichever event drained them (an ack, a read, a filtered batch). Then by
+  # its `check_stream` check, so a subscription whose checkpoint write found its stream hard
+  # deleted follows the stream at once (sparkle-space/sparklespace#8386).
   defp apply_subscription_to_state(%SubscriptionFsm{} = subscription, %Subscription{} = state) do
-    subscription = SubscriptionFsm.hold(subscription)
+    subscription = subscription |> SubscriptionFsm.hold() |> SubscriptionFsm.check_stream()
 
     %SubscriptionFsm{state: fsm} = subscription
 
