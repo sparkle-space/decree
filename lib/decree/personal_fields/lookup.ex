@@ -31,8 +31,8 @@ defmodule Decree.PersonalFields.Lookup do
   @doc """
   Reports a key that a value could not be read with, as a lookup answering `:unknown` does.
   The telemetry event carries the subject's id. The warning shows its last eight characters
-  only, as a subject's id can be a user's own; the stored event's envelope holds the whole id
-  (sparkle-space/sparklespace#8352).
+  only, as a subject's id can be a user's own (sparkle-space/sparklespace#8352). On a read, the
+  stored event's envelope holds the whole id; an append refused here has written no envelope.
   """
   @spec unknown(Application.t(), term) :: :unknown
   def unknown(application, subject_id) when is_binary(subject_id) and subject_id != "" do
