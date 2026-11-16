@@ -8,7 +8,7 @@ defmodule Decree.PersonalFields.Envelope do
   could be for a field a person types into. `$pf` is the format version, and its presence is
   the shape test. A deserialized event body has atom keys and metadata string keys, so the test
   takes both. `k` names the data key, and `s` the subject, so that a read never has to work out
-  the subject again. An id is not personal.
+  the subject again. Both stay in clear, as a read needs them to find the key.
 
   ## The primitive
 

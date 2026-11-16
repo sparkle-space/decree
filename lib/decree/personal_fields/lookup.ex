@@ -30,8 +30,8 @@ defmodule Decree.PersonalFields.Lookup do
 
   @doc """
   Reports a key that a value could not be read with, as a lookup answering `:unknown` does.
-  The telemetry event carries the subject's id, which the runbook needs to find the subject;
-  the warning shows its last eight characters only, as a subject's id can be a user's own
+  The telemetry event carries the subject's id. The warning shows its last eight characters
+  only, as a subject's id can be a user's own; the stored event's envelope holds the whole id
   (sparkle-space/sparklespace#8352).
   """
   @spec unknown(Application.t(), term) :: :unknown
