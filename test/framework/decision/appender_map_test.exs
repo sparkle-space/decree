@@ -683,6 +683,23 @@ defmodule Decree.Decision.AppenderMapTest do
                )
     end
 
+    test "UF-1: an item's `key:` changes nothing it answers" do
+      items = part_one() ++ [[types: [@registered], tags: ["phone:1"]]] ++ part_two()
+
+      keyed =
+        items
+        |> Enum.with_index()
+        |> Enum.map(fn
+          {item, 0} -> item |> Map.new() |> Map.put(:key, nil)
+          {item, index} -> item ++ [key: {:item, index}]
+        end)
+
+      unkeyed_answer = AppenderMap.check([{{:rule, EmailRule}, items}], row())
+
+      assert [_problem | _problems] = unkeyed_answer
+      assert AppenderMap.check([{{:rule, EmailRule}, keyed}], row()) == unkeyed_answer
+    end
+
     defmodule ImportUser do
     end
 

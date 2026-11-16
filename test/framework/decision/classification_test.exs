@@ -902,6 +902,41 @@ defmodule Decree.Decision.ClassificationTest do
     end
   end
 
+  describe "UF-1, a decision's item takes no key:" do
+    setup do
+      attach_telemetry([@read_query])
+      :ok
+    end
+
+    test "UF-1: `query/2` answering an item with `key:` is `:invalid_query`, with no statement" do
+      query = fn command, _context -> [claimed_item(command.scope) ++ [key: :scope]] end
+
+      assert {:error, :invalid_query} = App.dispatch(scripted(query: query))
+
+      refute_received {:telemetry, @read_query, _, _}
+
+      # Valid but for the key: the same item with none reads and appends.
+      plain = fn command, _context -> [claimed_item(command.scope)] end
+
+      assert :ok = App.dispatch(scripted(query: plain))
+    end
+
+    test "UF-1: `followup_query/3` answering an item with `key:` sends no second read" do
+      followup = fn command, _context, _events ->
+        [command.scope |> claimed_item() |> Map.new() |> Map.put(:key, :scope)]
+      end
+
+      assert {:error, :invalid_query} = App.dispatch(scripted(followup: followup))
+
+      assert_received {:telemetry, @read_query, _, _}
+      refute_received {:telemetry, @read_query, _, _}
+
+      plain = fn command, _context, _events -> [Map.new(claimed_item(command.scope))] end
+
+      assert :ok = App.dispatch(scripted(followup: plain))
+    end
+  end
+
   describe "a hard delete on a store where it can reach a decision's stream" do
     setup do
       start_supervised!({DeletableStreamsApp, []})
