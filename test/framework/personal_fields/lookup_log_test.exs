@@ -2,8 +2,8 @@ defmodule Decree.PersonalFields.LookupLogTest do
   use ExUnit.Case, async: false
 
   # A subject with no key is logged by the last eight characters of its id, never the whole
-  # id, which can be a user's own; the telemetry event still carries the whole id for the
-  # runbook (sparkle-space/sparklespace#8352).
+  # id, which can be a user's own; the telemetry event's metadata still carries the whole id
+  # (sparkle-space/sparklespace#8352).
 
   import ExUnit.CaptureLog
 
