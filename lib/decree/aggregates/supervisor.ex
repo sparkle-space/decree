@@ -28,7 +28,7 @@ defmodule Decree.Aggregates.Supervisor do
       when is_atom(application) and is_atom(aggregate_module) and is_binary(aggregate_uuid) do
     Logger.debug(fn ->
       "Locating aggregate process for `#{inspect(aggregate_module)}` with UUID " <>
-        inspect(aggregate_uuid)
+        inspect(Decree.Store.LogTerms.suffix(aggregate_uuid))
     end)
 
     supervisor_name = Module.concat([application, __MODULE__])

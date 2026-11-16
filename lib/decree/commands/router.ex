@@ -845,7 +845,8 @@ defmodule Decree.Commands.Router do
         start_time = Telemetry.start(event_prefix, telemetry_metadata)
 
         Logger.error(fn ->
-          "attempted to dispatch an unregistered command: " <> inspect(command)
+          "attempted to dispatch an unregistered command: " <>
+            inspect(Decree.PersonalFields.RedactedError.module_or_reduce(command))
         end)
 
         Telemetry.stop(

@@ -159,7 +159,8 @@ defmodule Decree.Commands.CompositeRouter do
       # Catch unregistered commands, log and return an error.
       defp do_dispatch(command, _opts) do
         Logger.error(fn ->
-          "attempted to dispatch an unregistered command: " <> inspect(command)
+          "attempted to dispatch an unregistered command: " <>
+            inspect(Decree.PersonalFields.RedactedError.module_or_reduce(command))
         end)
 
         {:error, :unregistered_command}

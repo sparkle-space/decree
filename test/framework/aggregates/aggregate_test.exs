@@ -63,7 +63,8 @@ defmodule Decree.Aggregates.AggregateTest do
 
       captured = capture_log(raise_exception)
 
-      assert captured =~ "(RuntimeError) an exception"
+      # The exception by its module, never its message (sparkle-space/sparklespace#8358).
+      assert captured =~ "** (RuntimeError)\n"
       assert captured =~ "aggregate_test.exs"
       assert captured =~ "Decree.Aggregates.AggregateTest.ExampleAggregate.execute/2"
     end

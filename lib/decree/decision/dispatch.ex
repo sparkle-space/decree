@@ -319,7 +319,10 @@ defmodule Decree.Decision.Dispatch do
   rescue
     error ->
       {error, stacktrace} = PersonalFields.reported_exception(decision, error, __STACKTRACE__)
-      Logger.error(Exception.format(:error, error, stacktrace))
+
+      Logger.error(
+        "#{inspect(decision)} raised: " <> RedactedError.format_reduced(error, stacktrace)
+      )
 
       {{:error, error, stacktrace}, nil}
   catch

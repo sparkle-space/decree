@@ -88,7 +88,8 @@ defmodule Decree.Event.EventHandlerErrorHandlingTest do
 
       captured = capture_log(send_error_message)
 
-      assert captured =~ "(RuntimeError) exception"
+      # The exception by its module, never its message (sparkle-space/sparklespace#8358).
+      assert captured =~ "** (RuntimeError)\n"
       assert captured =~ "error_event_handler.ex"
       assert captured =~ "Decree.Event.ErrorEventHandler.handle/2"
     end
