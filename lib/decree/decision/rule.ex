@@ -50,8 +50,8 @@ defmodule Decree.Decision.Rule do
       found: a list of items, `[]` to skip it, or `{:error, reason}`.
     - `c:index_families/0`, optional, says which tag kinds hold digests. See "Required tags".
 
-  Items are those of `Decree.Decision`, with one difference: `replay: true` answers
-  `{:error, :invalid_query}`, because a rule has no scope to hold one to. A rule's item may also
+  Items are those of `Decree.Decision`, with two differences. `replay: true` answers
+  `{:error, :invalid_query}`, because a rule has no scope to hold one to. And a rule's item may
   name `key:`, any term, once: it says which item matched an event (see "What rides"). A second
   `key:` in one item answers `{:error, :invalid_query}`, with no statement. Both callbacks may run
   several times for one dispatch, so they must have no side effects. They run in the aggregate's
