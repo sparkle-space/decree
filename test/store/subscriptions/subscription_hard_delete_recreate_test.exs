@@ -744,6 +744,69 @@ defmodule Decree.Store.Subscriptions.SubscriptionHardDeleteRecreateTest do
     end
   end
 
+  # The recreated stream's first events append with no wake-up (one lost: the notifications
+  # connection reconnecting, for one), and the next one is notified. Its number is the one
+  # after the subscription's position in the deleted stream, so it arrives as the expected
+  # next event. It must not be delivered ahead of the recreated events before it: the batch's
+  # stream is told apart from the deleted one before it is enqueued. The head check, a minute
+  # away, plays no part.
+  describe "case 14: an expected batch of a recreated stream after a lost wake-up" do
+    test "delivers every recreated event once, in order, before any head check", context do
+      %{
+        conn: conn,
+        postgrex_config: postgrex_config,
+        schema: schema,
+        stream_uuid: stream_uuid,
+        subscription_name: name
+      } = context
+
+      subscription = subscribe(stream_uuid, name, head_check_interval: 60_000)
+
+      :ok = EventStore.append_to_stream(stream_uuid, 0, EventFactory.create_events(3))
+      assert [1, 2, 3] = numbers(receive_and_ack(subscription, 3, 5_000))
+
+      Wait.until(5_000, fn ->
+        assert %Storage.Subscription{last_seen: 3} = row(conn, schema, stream_uuid, name)
+      end)
+
+      :ok = hard_delete(conn, schema, stream_uuid)
+
+      # Versions 1 to 3 of the recreated stream, with their wake-up lost; then version 4,
+      # notified: the number after the subscription's position of 3.
+      unnotified = EventFactory.create_events(3, 100)
+      append_unnotified(postgrex_config, stream_uuid, 0, unnotified)
+
+      notified = EventFactory.create_events(1, 103)
+      :ok = EventStore.append_to_stream(stream_uuid, 3, notified)
+
+      recreated = unnotified ++ notified
+
+      # Everything delivered until a second passes without a delivery.
+      received = receive_and_ack(subscription, 100, 1_000)
+
+      assert numbers(received) == [1, 2, 3, 4] and data(received) == data(recreated),
+             "case 14 (expected batch after a lost wake-up): expected the recreated events " <>
+               "1..4 once each, in order, received numbers #{inspect(numbers(received))}, " <>
+               "data #{inspect(data(received))}; state #{inspect(fsm(subscription).state)}, " <>
+               "cursor #{inspect(cursor(subscription))}"
+    end
+  end
+
+  # Appends `events` with the store's notification trigger off for the transaction
+  # (`session_replication_role = replica`), so no subscription is woken by it: a lost wake-up.
+  defp append_unnotified(postgrex_config, stream_uuid, expected_version, events) do
+    {:ok, conn} = Postgrex.start_link(postgrex_config)
+
+    {:ok, :ok} =
+      Postgrex.transaction(conn, fn transaction ->
+        Postgrex.query!(transaction, "SET LOCAL session_replication_role = replica", [])
+
+        EventStore.append_to_stream(stream_uuid, expected_version, events, conn: transaction)
+      end)
+
+    :ok = GenServer.stop(conn)
+  end
+
   def forward_telemetry(_event, _measurements, %{subscription_name: name} = metadata, config) do
     %{test: test, subscription_name: subscription_name} = config
 
