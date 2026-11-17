@@ -558,6 +558,49 @@ defmodule Decree.Aggregates.CommandWindowTest do
       assert notes(account_id) == ["opened", "ruled"]
     end
 
+    test "UF-1: a rule's item keys ride in `matched_keys` beside the command item" do
+      account_id = opened!()
+      flush_recorded()
+
+      test = self()
+      scope = Decree.DecisionStoreCase.scope()
+      release = "release:" <> UUID.uuid4()
+
+      seed(%Read{scope: scope, note: "first"}, ["scope:" <> scope], App, nil)
+      seed(%Read{scope: scope, note: "both"}, ["scope:" <> scope, release], App, nil)
+      seed(%Read{scope: scope, note: "follow-up"}, [release], App, nil)
+
+      query = fn _command, _context -> [read_item(scope) ++ [key: :scope]] end
+
+      followup = fn _command, _context, _events ->
+        [[types: [Atom.to_string(Read)], tags: [release], key: {:release, release}]]
+      end
+
+      execute = fn _state, %RuledNote{rule_result: %Result{} = result} ->
+        send(test, {:rode, result})
+        %Noted{account_id: account_id, note: "ruled"}
+      end
+
+      command =
+        ruled_note(account_id,
+          scope: scope,
+          script: %{query: query, followup: followup, execute: execute}
+        )
+
+      assert :ok = App.dispatch(command)
+
+      assert_received {:rode, %Result{events: events} = result}
+      assert Enum.map(events, & &1.note) == ["first", "both", "follow-up"]
+
+      assert Map.fetch!(result, :matched_keys) == [
+               [:scope],
+               [:scope, {:release, release}],
+               [{:release, release}]
+             ]
+
+      assert notes(account_id) == ["opened", "ruled"]
+    end
+
     test "a rule whose query answers `[]` still reads the window, under a condition" do
       account_id = opened!()
       flush_recorded()

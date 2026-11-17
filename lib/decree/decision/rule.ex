@@ -50,8 +50,10 @@ defmodule Decree.Decision.Rule do
       found: a list of items, `[]` to skip it, or `{:error, reason}`.
     - `c:index_families/0`, optional, says which tag kinds hold digests. See "Required tags".
 
-  Items are those of `Decree.Decision`, with one difference: `replay: true` answers
-  `{:error, :invalid_query}`, because a rule has no scope to hold one to. Both callbacks may run
+  Items are those of `Decree.Decision`, with two differences. `replay: true` answers
+  `{:error, :invalid_query}`, because a rule has no scope to hold one to. And a rule's item may
+  name `key:`, any term, once: it says which item matched an event (see "What rides"). A second
+  `key:` in one item answers `{:error, :invalid_query}`, with no statement. Both callbacks may run
   several times for one dispatch, so they must have no side effects. They run in the aggregate's
   process and hold up its mailbox, as a rebuild does.
 
@@ -104,6 +106,12 @@ defmodule Decree.Decision.Rule do
   The command's `:rule_result` field holds a `Decree.Decision.Rule.Result`, its `events` being
   the data of the events the rule's own items matched, both reads', in position order. A caller's
   value there is overwritten. A route with no rule leaves the field as sent.
+
+  Its `matched_keys` is parallel to `events`: for each event, the keys of the rule's own items
+  that matched it, each once, in item order, the first read's before the follow-up's. An item
+  with no `key:` adds none, so an event only unkeyed items matched has `[]`. A key never reaches
+  the store, the condition or telemetry: it is taken off the item before the read. So a key may
+  name an id. `c:followup_query/3` gets the first read's events alone, with no keys.
 
   It is set on a copy, for one call. `Decree.Aggregates.ExecutionContext` keeps the plain
   command, so nothing the framework does after the call holds a read: no reply, no metadata, no
@@ -274,6 +282,8 @@ defmodule Decree.Decision.Rule do
     What a rule's reads answered, for one call of `execute/2`.
 
       - `events` - the data of the events the rule's own items matched, in position order.
+      - `matched_keys` - parallel to `events`: for each, the keys of the rule's own items that
+        matched it, each once, in item order. An unkeyed item adds none.
 
     `Inspect` shows nothing of them, so it cannot reach a log by accident. `Jason` refuses to
     encode it, which fences an event only while the serializer is JSON and the event's encoder
@@ -281,9 +291,9 @@ defmodule Decree.Decision.Rule do
     """
 
     @derive {Inspect, only: []}
-    defstruct events: []
+    defstruct events: [], matched_keys: []
 
-    @type t :: %__MODULE__{events: [struct()]}
+    @type t :: %__MODULE__{events: [struct()], matched_keys: [[term()]]}
 
     if Code.ensure_loaded?(Jason.Encoder) do
       # The default answer for a struct is a `Protocol.UndefinedError` holding the value, and an

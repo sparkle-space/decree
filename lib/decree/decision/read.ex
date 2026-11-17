@@ -5,7 +5,8 @@ defmodule Decree.Decision.Read do
   # the decision's own at 0..n-1, then the framework's, the command item first, then the
   # index item and any activation item, then read-only narrowing items, which are read and
   # never go in the condition. A second read's indexes are offset by the first read's item
-  # count.
+  # count. A rule's item may carry a key, which parsing takes off the item: `keys` holds it by
+  # the item's index, and nothing sent to the store or put in the condition carries one.
   #
   # The struct is one read's layout. `Merged` is what the reads answered, together.
 
@@ -25,7 +26,8 @@ defmodule Decree.Decision.Read do
     :index_index,
     :activation_index,
     :replay_indexes,
-    :probes
+    :probes,
+    keys: %{}
   ]
 
   defmodule Merged do
@@ -37,7 +39,7 @@ defmodule Decree.Decision.Read do
     # `activation` and `replay` are sets of merged item indexes. `first_commands` is the first
     # read's command matches. `tags` is both reads' tags of the positions a framework item
     # matched, each read answering its own: a tag row takes no update, so where both hold a
-    # position either copy will do.
+    # position either copy will do. `keys` is the rule items' keys, by merged item index.
     defstruct [
       :events,
       :after,
@@ -52,11 +54,12 @@ defmodule Decree.Decision.Read do
       :activation,
       :replay,
       :offset,
-      :first_commands
+      :first_commands,
+      keys: %{}
     ]
   end
 
-  @type parsed :: %{item: keyword() | map(), replay: boolean()}
+  @type parsed :: %{item: keyword() | map(), replay: boolean(), key: {:ok, term()} | :none}
 
   @doc """
   Checks a decision's items: each a keyword list or a map naming `:types` and at most
@@ -65,51 +68,67 @@ defmodule Decree.Decision.Read do
   store checks the rest, so a repeated key is left for it.
   """
   @spec parse(term()) :: {:ok, [parsed()]} | {:error, :invalid_query}
-  def parse([_item | _items] = items) do
+  def parse(items), do: parse(items, keys: false)
+
+  @doc """
+  Checks items as `parse/1` does. With `keys: true`, a rule's, an item may also name `:key`,
+  any term, once: the store never sees it, so a repeat is refused here. The parsed item has it
+  taken off, and `key` holds it.
+  """
+  @spec parse(term(), keys: boolean()) :: {:ok, [parsed()]} | {:error, :invalid_query}
+  def parse([_item | _items] = items, keys: keys?) when is_boolean(keys?) do
     if List.improper?(items) do
       {:error, :invalid_query}
     else
-      parsed = Enum.map(items, &parse_item/1)
+      parsed = Enum.map(items, &parse_item(&1, keys?))
 
       if :error in parsed, do: {:error, :invalid_query}, else: {:ok, parsed}
     end
   end
 
-  def parse(_items), do: {:error, :invalid_query}
+  def parse(_items, keys: keys?) when is_boolean(keys?), do: {:error, :invalid_query}
 
-  defp parse_item(item) when is_list(item) do
+  defp parse_item(item, keys?) when is_list(item) do
     if Keyword.keyword?(item) do
       with {:ok, replay} <- replay_flag(Keyword.get_values(item, :replay)),
+           {:ok, key} <- key_entry(Keyword.get_values(item, :key), keys?),
            :ok <- names_types(List.keyfind(item, :types, 0)),
-           :ok <- known_keys(Keyword.keys(item)),
+           :ok <- known_keys(Keyword.keys(item), keys?),
            :ok <- replay_shape(replay, item_tags(item)) do
-        %{item: Keyword.delete(item, :replay), replay: replay}
+        %{item: Keyword.drop(item, [:replay, :key]), replay: replay, key: key}
       end
     else
       :error
     end
   end
 
-  defp parse_item(item) when is_map(item) and not is_struct(item) do
+  defp parse_item(item, keys?) when is_map(item) and not is_struct(item) do
     with {:ok, replay} <- replay_flag(item |> Map.take([:replay]) |> Map.values()),
+         {:ok, key} <- key_entry(item |> Map.take([:key]) |> Map.values(), keys?),
          :ok <- names_types(item |> Map.take([:types]) |> Map.to_list() |> List.first()),
-         :ok <- known_keys(Map.keys(item)),
+         :ok <- known_keys(Map.keys(item), keys?),
          :ok <- replay_shape(replay, item_tags(item)) do
-      %{item: Map.delete(item, :replay), replay: replay}
+      %{item: Map.drop(item, [:replay, :key]), replay: replay, key: key}
     end
   end
 
-  defp parse_item(_item), do: :error
+  defp parse_item(_item, _keys?), do: :error
 
   defp replay_flag([]), do: {:ok, false}
   defp replay_flag([flag]) when is_boolean(flag), do: {:ok, flag}
   defp replay_flag(_flags), do: :error
 
+  defp key_entry([], _keys?), do: {:ok, :none}
+  defp key_entry([key], true), do: {:ok, {:ok, key}}
+  defp key_entry(_keys, _keys?), do: :error
+
   defp names_types({:types, [_type | _types]}), do: :ok
   defp names_types(_types), do: :error
 
-  defp known_keys(keys) do
-    if Enum.all?(keys, &(&1 in [:types, :tags, :replay])), do: :ok, else: :error
+  defp known_keys(keys, keys?) do
+    known = if keys?, do: [:types, :tags, :replay, :key], else: [:types, :tags, :replay]
+
+    if Enum.all?(keys, &(&1 in known)), do: :ok, else: :error
   end
 
   defp replay_shape(false, _tags), do: :ok
@@ -169,6 +188,9 @@ defmodule Decree.Decision.Read do
     replay_indexes =
       for {%{replay: true}, index} <- Enum.with_index(parsed), do: index
 
+    keys =
+      for {%{key: {:ok, key}}, index} <- Enum.with_index(parsed), into: %{}, do: {index, key}
+
     index_index = index_item_index(framework_items, n)
 
     %__MODULE__{
@@ -179,7 +201,8 @@ defmodule Decree.Decision.Read do
       framework_indexes: Enum.to_list(n..(n + length(framework_items) - 1)//1),
       index_index: index_index,
       activation_index: activation_index(framework_items, n, index_index),
-      replay_indexes: replay_indexes
+      replay_indexes: replay_indexes,
+      keys: keys
     }
   end
 
@@ -300,7 +323,8 @@ defmodule Decree.Decision.Read do
       replay: MapSet.new(read.replay_indexes),
       offset: length(read.items),
       first_commands:
-        result.matched_items |> positions_matching(command_indexes(read)) |> MapSet.new()
+        result.matched_items |> positions_matching(command_indexes(read)) |> MapSet.new(),
+      keys: read.keys
     }
   end
 
@@ -334,7 +358,9 @@ defmodule Decree.Decision.Read do
         index: MapSet.union(merged.index, shift.(List.wrap(read.index_index))),
         activation: MapSet.union(merged.activation, shift.(List.wrap(read.activation_index))),
         replay: MapSet.union(merged.replay, shift.(read.replay_indexes)),
-        offset: offset + length(read.items)
+        offset: offset + length(read.items),
+        keys:
+          Map.merge(merged.keys, Map.new(read.keys, fn {index, key} -> {index + offset, key} end))
     }
   end
 
@@ -360,6 +386,24 @@ defmodule Decree.Decision.Read do
       |> Map.get(position(event), [])
       |> Enum.any?(&MapSet.member?(merged.decision, &1))
     end)
+  end
+
+  @doc """
+  The keys of the items that matched an event: by merged item index, each once, an unkeyed
+  item adding none.
+  """
+  @spec matched_keys(%Merged{}, RecordedEvent.t()) :: [term()]
+  def matched_keys(%Merged{keys: keys, matched_items: matched_items}, event) do
+    matched_items
+    |> Map.get(position(event), [])
+    |> Enum.sort()
+    |> Enum.flat_map(fn index ->
+      case Map.fetch(keys, index) do
+        {:ok, key} -> [key]
+        :error -> []
+      end
+    end)
+    |> Enum.uniq()
   end
 
   @doc """

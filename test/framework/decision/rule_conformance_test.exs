@@ -395,6 +395,250 @@ defmodule Decree.Decision.RuleConformanceTest do
     end
   end
 
+  describe "UF-1, item keys" do
+    # Sends what rode to the test. `matched_keys` is read in the test process, so a result with
+    # no such field fails the test there, not the aggregate.
+    defp riding(test) do
+      fn %RuledAggregate{}, %{id: id, rule_result: %Result{} = result} ->
+        send(test, {:rode, result})
+
+        %Noted{id: id, note: "keyed"}
+      end
+    end
+
+    defp keyed(tags, key), do: [types: [Atom.to_string(Read)], tags: tags, key: key]
+
+    defp unkeyed(tags), do: [types: [Atom.to_string(Read)], tags: tags]
+
+    defp rode do
+      assert_received {:rode, %Result{events: events} = result}
+
+      matched_keys = Map.fetch!(result, :matched_keys)
+      assert length(matched_keys) == length(events)
+
+      {events, matched_keys}
+    end
+
+    defp notes(events), do: Enum.map(events, & &1.note)
+
+    test "UF-1: an event two keyed items match carries both keys, parallel to `events`" do
+      email = "email:" <> digest()
+      uid = "uid:" <> scope()
+
+      seed(%Read{note: "both"}, [email, uid], App)
+      seed(%Read{note: "email"}, [email], App)
+      seed(%Read{note: "uid"}, [uid], App)
+      seed(%Read{note: "unrelated"}, ["uid:" <> scope()], App)
+
+      query = fn _command, _context -> [keyed([email], :email), keyed([uid], :oauth_uid)] end
+
+      assert :ok = App.dispatch(ruled(query: query, execute: riding(self())))
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["both", "email", "uid"]
+      assert matched_keys == [[:email, :oauth_uid], [:email], [:oauth_uid]]
+    end
+
+    test "UF-1: a follow-up item's key rides after the first read's, a tuple key included" do
+      email = "email:" <> digest()
+      candidate = UUID.uuid4()
+      release = "release:" <> candidate
+
+      seed(%Read{note: "first only"}, [email], App)
+      seed(%Read{note: "both reads"}, [email, release], App)
+      seed(%Read{note: "follow-up only"}, [release], App)
+
+      command =
+        ruled(
+          query: fn _command, _context -> [keyed([email], :email)] end,
+          followup: fn _command, _context, _events ->
+            [keyed([release], {:release, candidate})]
+          end,
+          execute: riding(self())
+        )
+
+      assert :ok = App.dispatch(command)
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["first only", "both reads", "follow-up only"]
+
+      assert matched_keys == [
+               [:email],
+               [:email, {:release, candidate}],
+               [{:release, candidate}]
+             ]
+    end
+
+    test "UF-1: an unkeyed item contributes nothing, and a rule with no key gives `[]` each" do
+      scope = scope()
+
+      seed(%Read{note: "one"}, ["scope:" <> scope], App)
+      seed(%Read{note: "two"}, ["scope:" <> scope], App)
+
+      assert :ok = App.dispatch(ruled(scope: scope, execute: riding(self())))
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["one", "two"]
+      assert matched_keys == [[], []]
+    end
+
+    test "UF-1: an event matched by a keyed and an unkeyed item carries the key alone" do
+      tag = "scope:" <> scope()
+      plain = "plain:" <> scope()
+
+      seed(%Read{note: "both items"}, [tag], App)
+      seed(%Read{note: "unkeyed only"}, [plain], App)
+
+      query = fn _command, _context ->
+        [keyed([tag], :scope), unkeyed([tag]), unkeyed([plain])]
+      end
+
+      assert :ok = App.dispatch(ruled(query: query, execute: riding(self())))
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["both items", "unkeyed only"]
+      assert matched_keys == [[:scope], []]
+    end
+
+    test "UF-1: keys come in item order, each once, across both reads" do
+      a = "a:" <> scope()
+      b = "b:" <> scope()
+      c = "c:" <> scope()
+
+      seed(%Read{note: "all"}, [a, b, c], App)
+      seed(%Read{note: "c"}, [c], App)
+
+      # Item order is the reverse of term order, and `:z` names two items of the first read and
+      # one of the follow-up.
+      command =
+        ruled(
+          query: fn _command, _context -> [keyed([a], :z), keyed([b], :a), keyed([c], :z)] end,
+          followup: fn _command, _context, _events -> [keyed([c], :z), keyed([a], :y)] end,
+          execute: riding(self())
+        )
+
+      assert :ok = App.dispatch(command)
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["all", "c"]
+      assert matched_keys == [[:z, :a, :y], [:z]]
+    end
+
+    test "UF-1: a `nil` key is a key" do
+      tag = "keyed:" <> scope()
+      plain = "plain:" <> scope()
+
+      seed(%Read{note: "nil key"}, [tag], App)
+      seed(%Read{note: "no key"}, [plain], App)
+
+      query = fn _command, _context -> [keyed([tag], nil), unkeyed([plain])] end
+
+      assert :ok = App.dispatch(ruled(query: query, execute: riding(self())))
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["nil key", "no key"]
+      assert matched_keys == [[nil], []]
+    end
+
+    test "UF-1: a map item's `:key` works as the keyword one, in either read" do
+      first = "first:" <> scope()
+      second = "second:" <> scope()
+      type = Atom.to_string(Read)
+
+      seed(%Read{note: "first"}, [first], App)
+      seed(%Read{note: "second"}, [second], App)
+
+      command =
+        ruled(
+          query: fn _command, _context -> [%{types: [type], tags: [first], key: :first}] end,
+          followup: fn _command, _context, _events ->
+            [%{types: [type], tags: [second], key: :second}]
+          end,
+          execute: riding(self())
+        )
+
+      assert :ok = App.dispatch(command)
+
+      assert {events, matched_keys} = rode()
+      assert notes(events) == ["first", "second"]
+      assert matched_keys == [[:first], [:second]]
+    end
+
+    test "UF-1: `key:` twice in one item is `:invalid_query`, with no read and nothing stored" do
+      Process.register(self(), :rule_recorder)
+
+      tags = ["scope:" <> scope()]
+      twice = unkeyed(tags) ++ [key: :one, key: :two]
+
+      command = ruled(query: fn _command, _context -> [twice] end)
+
+      assert {:error, :invalid_query} = App.dispatch(command)
+
+      refute_received {:read_query, _items, _opts}
+      assert [] = received(@read)
+      assert stored(ruled_stream(command), App) == []
+
+      # The repeat is what refuses: the same item with one `key:` appends.
+      once = ruled(query: fn _command, _context -> [unkeyed(tags) ++ [key: :one]] end)
+
+      assert :ok = App.dispatch(once)
+      assert [_one] = stored(ruled_stream(once), App)
+    end
+
+    test "UF-1: the condition's items carry no key, and equal the same items unkeyed" do
+      Process.register(self(), :rule_recorder)
+
+      tag = "scope:" <> scope()
+      uid = "uid:" <> scope()
+      release = "release:" <> scope()
+      type = Atom.to_string(Read)
+
+      seed(%Read{note: "read"}, [tag, uid], App)
+
+      first = [unkeyed([tag]), %{types: [type], tags: [uid]}]
+      second = [unkeyed([release])]
+
+      keyed_first = [unkeyed([tag]) ++ [key: :scope], %{types: [type], tags: [uid], key: :uid}]
+      keyed_second = [unkeyed([release]) ++ [key: {:release, "r"}]]
+
+      condition = fn first, second ->
+        command =
+          ruled(
+            query: fn _command, _context -> first end,
+            followup: fn _command, _context, _events -> second end
+          )
+
+        assert :ok = App.dispatch(command)
+
+        stream = ruled_stream(command)
+        assert_received {:append_to_stream, ^stream, 0, 1, opts}
+
+        opts |> Keyword.fetch!(:condition) |> Keyword.fetch!(:items)
+      end
+
+      keyed_items = condition.(keyed_first, keyed_second)
+      unkeyed_items = condition.(first, second)
+
+      index_item = [tags: [Decree.Store.TagIndex.fact_tag()]]
+
+      assert unkeyed_items == first ++ second ++ [index_item]
+      assert keyed_items == unkeyed_items
+
+      refute Enum.any?(keyed_items, fn
+               item when is_list(item) -> Keyword.has_key?(item, :key)
+               item when is_map(item) -> Map.has_key?(item, :key)
+             end)
+    end
+
+    test "UF-1: `[]` from `query/2` gives empty `events` and `matched_keys`" do
+      command = ruled(query: fn _command, _context -> [] end, execute: riding(self()))
+
+      assert :ok = App.dispatch(command)
+
+      assert {[], []} = rode()
+    end
+  end
+
   # The `$all` head: the last position anything wrote.
   defp head do
     store = Module.concat([App, "FrameworkEventStore"])
