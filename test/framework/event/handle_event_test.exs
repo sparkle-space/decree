@@ -111,6 +111,7 @@ defmodule Decree.Event.HandleEventTest do
 
       send_unexpected_mesage = fn ->
         send(handler, :unexpected_message)
+        :sys.get_state(handler)
 
         refute_receive {:DOWN, ^ref, :process, ^handler, _}
       end
