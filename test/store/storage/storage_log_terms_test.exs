@@ -469,6 +469,11 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
 
     defp text({:string, chardata}), do: IO.chardata_to_string(chardata)
     defp text({:report, report}), do: inspect(report)
-    defp text({format, args}), do: IO.chardata_to_string(:io_lib.format(format, args))
+
+    defp text({format, args}) do
+      IO.chardata_to_string(:io_lib.format(format, args))
+    rescue
+      _ -> inspect({format, args})
+    end
   end
 end
