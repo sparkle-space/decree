@@ -41,9 +41,10 @@ config :decree, Decree.PersonalFields.Fixtures.EnvApp,
   personal_metadata_keys: [:email]
 
 # Store suite (test/store), as upstream EventStore configured it, without its
-# `idle_interval: 100`: Postgrex 0.22.4 drops a notification that arrives during a
+# `idle_interval: 100`: Postgrex 0.22.4 dropped a notification that arrived during a
 # connection's idle ping, so pinging every 100 ms lost about 1 in 150 notifications
-# after an idle spell (elixir-ecto/postgrex#795, merged, not yet released).
+# after an idle spell (elixir-ecto/postgrex#795). Postgrex is now pinned to the fix,
+# which `test/store/notifications/idle_ping_notification_test.exs` proves directly.
 store_config =
   pg ++
     [

@@ -68,7 +68,12 @@ defmodule Decree.MixProject do
       # Store layer
       {:fsm, "~> 0.3"},
       {:gen_stage, "~> 1.2"},
-      {:postgrex, "~> 0.17"},
+      # Pinned to elixir-ecto/postgrex#795, the idle-ping notification fix, until a
+      # release carries it; back to Hex then (UPSTREAM.md, Dependency pins).
+      {:postgrex,
+       git: "https://github.com/elixir-ecto/postgrex.git",
+       ref: "bd402a5310d0a7b5e7ab1db1d53309876691b3da",
+       override: true},
 
       # Framework layer
       {:backoff, "~> 1.1"},
