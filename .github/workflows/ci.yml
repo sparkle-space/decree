@@ -116,6 +116,15 @@ jobs:
       - name: Hex retirement and advisory audit
         run: mix hex.audit
 
+      # mix_audit ignores a failed clone of its advisory repository and then
+      # reports an empty advisory list as "No vulnerabilities found", so the
+      # step fails unless the clone left advisories behind.
       - name: Deps audit (mix_audit)
         if: success() || failure()
-        run: mix deps.audit
+        run: |
+          mix deps.audit
+          advisories="$HOME/.local/share/elixir-security-advisories-mirego/packages"
+          if [ -z "$(find "$advisories" -name '*.yml' -print -quit 2>/dev/null)" ]; then
+            echo "::error::mix_audit found no advisories in $advisories; its clone failed"
+            exit 1
+          fi

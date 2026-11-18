@@ -82,4 +82,4 @@ mix hex.audit
 mix deps.audit
 ```
 
-`mix hex.audit` reports retired Hex packages and, from Hex 2.5, packages with security advisories. `mix deps.audit` (`mix_audit`, a dev and test dependency) checks `mix.lock` against its own advisory list. The two lists differ, so CI runs both. Neither scans a git dependency; `UPSTREAM.md` (Dependency pins) lists those.
+`mix hex.audit` reports retired Hex packages and, from Hex 2.5, packages with security advisories. `mix deps.audit` (`mix_audit`, a dev and test dependency) checks `mix.lock` against its own advisory list. The two lists differ, so CI runs both. `mix_audit` ignores a failed clone of its advisory repository and then reports no vulnerabilities, so the CI step also fails when the clone left no advisories. Neither audit scans a git dependency; `UPSTREAM.md` (Dependency pins) lists those.
