@@ -43,6 +43,9 @@ defmodule Decree.Store.Notifications.IdlePingNotificationTest do
     channel = "idle_ping_#{System.unique_integer([:positive])}"
     {:ok, ref} = Postgrex.Notifications.listen(listener, channel)
 
+    # The tapped handshake carries authentication bytes, which a failing assertion would print.
+    :ok = flush_taps()
+
     [proxy: proxy, listener: listener, conn: conn, channel: channel, ref: ref]
   end
 
@@ -91,6 +94,15 @@ defmodule Decree.Store.Notifications.IdlePingNotificationTest do
       {:tcp_proxy_received, _data} -> await_paused()
     after
       5_000 -> flunk("the proxied connection did not pause")
+    end
+  end
+
+  defp flush_taps do
+    receive do
+      {:tcp_proxy_sent, _data} -> flush_taps()
+      {:tcp_proxy_received, _data} -> flush_taps()
+    after
+      0 -> :ok
     end
   end
 
