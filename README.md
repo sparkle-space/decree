@@ -72,3 +72,14 @@ mix compile --warnings-as-errors
 ```
 
 `Decree.Store.Subscriptions.GeneratedFsm` wraps the `fsm` dependency's `use Fsm`, marking its expansion as generated code so Elixir 1.20's type checker does not report warnings from the dependency's macro against decree.
+
+## Dependency audit
+
+CI's Deps Audit job fails the build on either check:
+
+```bash
+mix hex.audit
+mix deps.audit
+```
+
+`mix hex.audit` reports retired Hex packages and, from Hex 2.5, packages with security advisories. `mix deps.audit` (`mix_audit`, a dev and test dependency) checks `mix.lock` against its own advisory list. The two lists differ, so CI runs both. `mix_audit` ignores a failed clone of its advisory repository and then reports no vulnerabilities, so the CI step also fails when the clone left no advisories. Neither audit scans a git dependency; `UPSTREAM.md` (Dependency pins) lists those.

@@ -89,7 +89,10 @@ defmodule Decree.MixProject do
       {:phoenix_pubsub, "~> 2.1", optional: true},
 
       # Test tooling
-      {:mox, "~> 1.1", only: :test}
+      {:mox, "~> 1.1", only: :test},
+
+      # CI's Deps Audit job runs `mix deps.audit`
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end
 
