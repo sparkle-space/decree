@@ -104,7 +104,7 @@ RIG=7752 STORE=small2k ./setup.sh && RIG=7752 STORE=small2k ./run.sh
 Run order: **`small2k`, then `small20k`, then `large`**, each after a fresh `./setup.sh` with the same `STORE`.
 
 ```bash
-git fetch origin main fix/7752-read-index-lookups   # the commits must be present
+(source ./env.sh && git fetch origin "$MAIN_SHA" "$BRANCH_SHA" "$FW6_SHA")   # the commits must be present; their branches were deleted on merge, so fetch by SHA (set RIG=fw6 for FW-6)
 STORE=small2k ./setup.sh    # exports and builds the sides, makes a fresh small store
 SMOKE=1 STORE=small2k ./run.sh   # optional: checks the run path in a minute or so; its numbers mean nothing
 STORE=small2k ./setup.sh         # again: a fresh store for the real run

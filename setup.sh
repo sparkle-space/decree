@@ -5,7 +5,7 @@ source "$(dirname "$0")/env.sh"
 cd "$GATE_HOME"
 
 git cat-file -e "$MAIN_SHA^{commit}" && git cat-file -e "$BRANCH_SHA^{commit}" && git cat-file -e "$FW6_SHA^{commit}" || {
-  echo "missing a commit: run 'git fetch origin main fix/7752-read-index-lookups' first"; exit 1; }
+  echo "missing a commit: run 'git fetch origin $MAIN_SHA $BRANCH_SHA $FW6_SHA' first (the fix and FW-6 branches were deleted on merge; GitHub serves the commits by SHA)"; exit 1; }
 
 rm -rf "${WORK:?}"
 mkdir -p "$WORK/main" "$WORK/fix"
