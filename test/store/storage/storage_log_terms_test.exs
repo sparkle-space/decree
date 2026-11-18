@@ -252,17 +252,18 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
     end
 
     test "a failed read", %{conn: conn, stream_uuid: stream_uuid} do
-      log =
-        capture_log([level: :debug], fn ->
-          Postgrex.query!(conn, "SELECT pg_notify($1, $2)", [
-            @marker_schema <> ".events",
-            stream_uuid <> ",1,1,1"
-          ])
+      Postgrex.query!(conn, "SELECT pg_notify($1, $2)", [
+        @marker_schema <> ".events",
+        stream_uuid <> ",1,1,1"
+      ])
 
-          assert_receive {:logged, "Decree.Store notifications failed to read events" <> _rest}
-        end)
+      {_line, seen} = await_logged("Decree.Store notifications failed to read events")
 
-      assert_reduced(log, stream_uuid, "Decree.Store notifications failed to read events")
+      assert_reduced(
+        Enum.join(seen, "\n"),
+        stream_uuid,
+        "Decree.Store notifications failed to read events"
+      )
     end
   end
 
@@ -303,36 +304,33 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
     test "logs a failed probe by its class", %{conn: conn, schema: schema} do
       name = UUID.uuid4()
 
-      {line, log} =
-        with_log([level: :debug], fn ->
-          {:ok, subscription} =
-            TestEventStore.subscribe_to_all_streams(name, self(),
-              name: @old,
-              start_from: :origin,
-              retry_interval: 200
-            )
+      {:ok, subscription} =
+        TestEventStore.subscribe_to_all_streams(name, self(),
+          name: @old,
+          start_from: :origin,
+          retry_interval: 200
+        )
 
-          assert_receive {:subscribed, ^subscription}
+      assert_receive {:subscribed, ^subscription}
 
-          :ok =
-            TestEventStore.append_to_stream(UUID.uuid4(), 0, [
-              EventFactory.create_event(nil, 2),
-              %EventData{event_type: @new_type, data: %NewReleaseEvent{event: 3}, metadata: %{}}
-            ])
+      :ok =
+        TestEventStore.append_to_stream(UUID.uuid4(), 0, [
+          EventFactory.create_event(nil, 2),
+          %EventData{event_type: @new_type, data: %NewReleaseEvent{event: 3}, metadata: %{}}
+        ])
 
-          ack_through(subscription, 2)
+      ack_through(subscription, 2)
 
-          # Held, with its checkpoint written: only now is the table swapped.
-          await_logged("is held before event 3")
+      # Held, with its checkpoint written: only now is the table swapped.
+      {_held, seen} = await_logged("is held before event 3")
 
-          refuse(conn, schema, {:view, "subscriptions"})
+      refuse(conn, schema, {:view, "subscriptions"})
 
-          await_logged("the probe failed due to")
-        end)
+      {line, seen} = await_logged("the probe failed due to", seen)
 
       assert line =~ "the probe failed due to: {Postgrex.Error, :check_violation}"
       refute line =~ @marker
-      refute log =~ @marker
+      refute Enum.join(seen, "\n") =~ @marker
     end
   end
 
@@ -445,10 +443,13 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
       else: ack_through(subscription, last)
   end
 
-  # Waits for a forwarded log line containing `text`, and answers it.
-  defp await_logged(text) do
+  # Waits for a forwarded log line containing `text`, and answers it with every forwarded line
+  # seen so far, in arrival order, the matched line last.
+  defp await_logged(text, seen \\ []) do
     receive do
-      {:logged, line} -> if line =~ text, do: line, else: await_logged(text)
+      {:logged, line} ->
+        seen = seen ++ [line]
+        if line =~ text, do: {line, seen}, else: await_logged(text, seen)
     after
       5_000 -> flunk("no log line containing #{inspect(text)}")
     end
@@ -464,9 +465,10 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
   defmodule Forward do
     @moduledoc false
 
-    def log(%{msg: {:string, text}}, %{config: %{pid: pid}}),
-      do: send(pid, {:logged, IO.chardata_to_string(text)})
+    def log(%{msg: msg}, %{config: %{pid: pid}}), do: send(pid, {:logged, text(msg)})
 
-    def log(_event, _config), do: :ok
+    defp text({:string, chardata}), do: IO.chardata_to_string(chardata)
+    defp text({:report, report}), do: inspect(report)
+    defp text({format, args}), do: IO.chardata_to_string(:io_lib.format(format, args))
   end
 end

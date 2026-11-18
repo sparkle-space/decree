@@ -39,6 +39,7 @@ defmodule Decree.Aggregates.AggregateTest do
     test "ignore unexpected messages", %{pid: pid, ref: ref} do
       send_unexpected_mesage = fn ->
         send(pid, :unexpected_message)
+        :sys.get_state(pid)
 
         refute_receive {:DOWN, ^ref, :process, ^pid, _reason}
       end
