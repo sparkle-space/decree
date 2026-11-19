@@ -1,0 +1,108 @@
+name: Prepare release
+
+# Opens the release PR: mix.exs's version bumped, and the CHANGELOG's Unreleased section
+# moved under it (scripts/release.exs bump). Merging it starts the Publish workflow.
+# CONTRIBUTING.md, "Releases", describes the flow and the pre-1.0 version rules.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "patch: a fix or an additive change. minor: a breaking change (before 1.0). major: 1.0.0, the founder's call."
+        type: choice
+        options: [patch, minor, major]
+        required: true
+      confirm_1_0:
+        description: "Confirm a major bump from 0.x to 1.0.0 (founder only)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+env:
+  ELIXIR_VERSION: "1.20.4"
+  OTP_VERSION: "29.1.2"
+
+jobs:
+  prepare:
+    name: Prepare release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Bump the version and move the Unreleased section
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+          CONFIRM_1_0: ${{ inputs.confirm_1_0 }}
+        run: |
+          args=(bump "$BUMP")
+          if [ "$CONFIRM_1_0" = "true" ]; then
+            args+=(--confirm-1-0)
+          fi
+          version=$(elixir scripts/release.exs "${args[@]}")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git diff
+
+      - name: Refuse a version that is already tagged or has a branch
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::the tag v$VERSION already exists"
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/release/v$VERSION" > /dev/null; then
+            echo "::error::the branch release/v$VERSION already exists; close its PR and delete it first"
+            exit 1
+          fi
+
+      - name: Write the PR body
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Bumps decree to $VERSION ($BUMP) and moves the CHANGELOG's Unreleased section under it. Opened by the [Prepare release]($RUN_URL) workflow."
+            echo
+            echo "Before merging:"
+            echo
+            echo "- CI does not start on a PR that the workflow's token opens. Close and reopen this PR to run it."
+            echo "- For a minor bump, update README.md's version references in this PR: the Status line and the install line's \`~> X.Y.0\`."
+            echo "- Check the notes below. They become the GitHub release body."
+            echo
+            echo "Merging starts the Publish workflow. It runs the gates, then waits for approval in the \`hex-publish\` environment before it tags v$VERSION and publishes to Hex."
+            echo
+            echo "## Release notes"
+            echo
+            elixir scripts/release.exs notes "$VERSION"
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md"
+
+      - name: Push the release branch and open the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add mix.exs CHANGELOG.md
+          git commit -m ":bookmark: Release decree $VERSION"
+          gh auth setup-git
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title ":bookmark: Release decree $VERSION" --body-file "$RUNNER_TEMP/body.md"

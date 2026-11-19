@@ -19,11 +19,33 @@ While decree is pre-1.0, pull requests are by arrangement: open an issue first a
 ## What a change needs
 
 - **A test that fails first.** A fix or a feature lands with a test that fails on the code before it, in its own earlier commit, and passes after.
-- **The suites, on Postgres.** `README.md`, "Running the tests", says how to run them. CI runs `mix test --include migration` on Postgres 18, `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix run --no-start scripts/check_layers.exs` and the dependency audits.
+- **The suites, on Postgres.** `README.md`, "Running the tests", says how to run them. CI runs `mix test --include migration` on Postgres 18, `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix run --no-start scripts/check_layers.exs`, the dependency audits and a dry run of the Hex package (`mix hex.build`).
 - **The upstream ledger.** A change to code copied from Commanded or EventStore gets a row in `UPSTREAM.md`: "Carried fixes" for an upstream defect, "Departures" for anything else.
 - **The design's limits.** decree has no process managers (a multi-step flow is an event handler that dispatches commands) and no in-memory event store. A change that adds either will not be merged.
 
+- **A CHANGELOG entry.** A change a user of the package would notice adds its entry under "Unreleased" in `CHANGELOG.md`, in the same pull request. A change to tests, CI or docs only needs none.
+
 `AGENTS.md` holds the full review checklist.
+
+## Releases
+
+A merge to `main` publishes nothing by itself. A release is a pull request that changes the version in `mix.exs`, and two workflows make and publish it.
+
+### Version rules before 1.0
+
+- **A breaking change is a minor bump** (0.1.x to 0.2.0): a change to the API, the store schema or a behaviour a caller relies on. `~> 0.1.0` takes 0.1.x only, so a user opts in to it.
+- **A fix or an additive change is a patch** (0.1.0 to 0.1.1).
+- **1.0 is the founder's call.** A major bump from 0.x is refused unless the founder confirms it (`confirm_1_0`).
+
+### The flow
+
+1. **Prepare.** A maintainer runs the "Prepare release" workflow on `main` with `bump` set to patch, minor or major (Actions, "Prepare release", "Run workflow"; or `gh workflow run prepare-release.yml -f bump=patch`). It runs `scripts/release.exs bump`. That bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under the new version and today's date (UTC). It then opens a pull request from `release/vX.Y.Z`. An empty "Unreleased" section, or a version that is already tagged, stops it.
+2. **Review the release PR.** GitHub starts no CI on a pull request that a workflow's token opened, so close and reopen the PR to run it. For a minor bump, update README.md's version references in the same PR. The CHANGELOG section becomes the GitHub release body. Merge it like any PR.
+3. **Publish.** The merge starts the "Publish" workflow:
+   - "Release check" goes on only when the merge changed `mix.exs`'s version and that version is not the latest `v*` tag. A later merge that lands while the release waits for approval does not release again.
+   - "Gates" runs the CI workflow's jobs again on the commit to publish.
+   - "Publish to Hex" waits for approval in the `hex-publish` environment. It then tags `vX.Y.Z`, creates the GitHub release and runs `mix hex.publish` (package and docs). It authenticates with Hex Workload Identity, so no Hex key is stored. Last, it reads the release back from hex.pm.
+4. **If a step fails,** re-run the failed jobs of that run. Each step first checks what is already done: a tag at this commit, an existing release, or the version already on Hex with its docs is skipped. A version on Hex without its docs gets its docs. A tag at another commit stops the run. If the release's run cannot finish because a fix had to land first, run "Publish" by hand on `main` (Actions, "Publish", "Run workflow"). A manual run releases main's commit when its version is not the latest `v*` tag.
 
 ## Licence
 

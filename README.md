@@ -237,7 +237,7 @@ mix test
 
 CI runs the same suites on stock Postgres, with no durability options. Turning off `fsync`, `synchronous_commit` and `full_page_writes` on CI's Linux runners was measured on 2026-10-29: six runs of each averaged 117.5 s stock and 118.0 s tuned. That is no gain, so the options were not kept. Almost all of the suite's time is synchronous tests, not flushes.
 
-The `test` alias creates and initialises every test event store (`decree.store.create`, `decree.store.init`) and the projections repo's database (`ecto.create`), then runs four suites in one VM:
+The `test` alias creates and initialises every test event store (`decree.store.create`, `decree.store.init`) and the projections repo's database (`ecto.create`), then runs five suites in one VM:
 
 | Suite | Path | Covers |
 |---|---|---|
@@ -245,6 +245,7 @@ The `test` alias creates and initialises every test event store (`decree.store.c
 | store | `test/store` | EventStore's suite: storage, streams, subscriptions, notifications, advisory locks, schemas, config |
 | conformance | `test/conformance` | the store conformance suite (below) |
 | projections | `test/projections` | Commanded Ecto projections: projection versions, schema prefixes, error and after-update callbacks |
+| release | `test/release` | `scripts/release.exs`, which the release workflows run (`CONTRIBUTING.md`, "Releases") |
 
 Framework and projections tests run their applications on `Decree.FrameworkEventStore` (or a test store that wraps it) over the `decree_framework_test` database; `Decree.PostgresCase` empties it before each test. Tests tagged `:migration` (they restore old database dumps with `pg_restore` and compare schemas with `pg_dump`), `:manual`, `:ignore` and `:distributed` are excluded. CI installs the Postgres 18 client and runs `mix test --include migration`; run the same locally when a Postgres 18 `pg_restore` and `pg_dump` are on `PATH`. `DROPPED_TESTS.md` lists every upstream test not carried over, and why.
 

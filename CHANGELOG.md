@@ -2,6 +2,8 @@
 
 decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor version (0.2.0) may change the API or the store schema, and its entry here says what changed and how to upgrade. A patch version (0.1.1) does neither. Depend on `~> 0.1.0` to take patches only.
 
+## Unreleased
+
 ## 0.1.0
 
 The first release on Hex. decree is pre-1.0 and has one production user, sparkle.space.

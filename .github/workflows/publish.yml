@@ -1,0 +1,195 @@
+name: Publish
+
+# Publishes decree to Hex when a merge to main changes mix.exs's version, normally by
+# merging the PR the Prepare release workflow opens. CONTRIBUTING.md, "Releases",
+# describes the flow.
+#
+# - check: a push releases only when it changed mix.exs's version and that version is
+#   not the latest v* tag (scripts/release.exs plan). Every other push to main stops
+#   here, including one that lands while a release waits for approval: it keeps the
+#   untagged version and must not publish its own commit under it.
+# - gates: the CI workflow's jobs, run again on the commit to publish.
+# - publish: waits for approval in the hex-publish environment, then tags vX.Y.Z,
+#   creates the GitHub release from the CHANGELOG section and runs mix hex.publish
+#   (package and docs) with Hex Workload Identity: the job's OIDC token, exchanged for a
+#   short-lived token that can only publish decree. No Hex key is stored.
+#
+# A re-run is safe. Each publish step checks first: a tag at this commit, an existing
+# release, or a version already on Hex with its docs is skipped; a version on Hex
+# without docs gets its docs; a tag at another commit fails. Re-run the failed jobs of
+# the release's own run. When that run cannot finish (a fix had to land first), run
+# this workflow by hand on main: a manual run releases main's commit when its version is
+# not the latest v* tag, whichever push changed it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  ELIXIR_VERSION: "1.20.4"
+  OTP_VERSION: "29.1.2"
+
+jobs:
+  check:
+    name: Release check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Compare mix.exs's version with the latest v* tag
+        id: plan
+        # decree has had v0.1.0 since its first release, so no tags means a checkout
+        # without them, not a first release. On a push, the pushed-over commit's mix.exs
+        # says whether this push changed the version.
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          tags=()
+          while IFS= read -r tag; do
+            tags+=("$tag")
+          done < <(git tag --list 'v*')
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "::error::the checkout has no v* tags"
+            exit 1
+          fi
+          args=(plan)
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            git show "$BEFORE:mix.exs" > "$RUNNER_TEMP/previous-mix.exs"
+            args+=(--previous-mix-exs "$RUNNER_TEMP/previous-mix.exs")
+          fi
+          elixir scripts/release.exs "${args[@]}" "${tags[@]}" > "$RUNNER_TEMP/plan"
+          cat "$RUNNER_TEMP/plan"
+          cat "$RUNNER_TEMP/plan" >> "$GITHUB_OUTPUT"
+
+  gates:
+    name: Gates
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to Hex
+    needs: [check, gates]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: hex-publish
+    concurrency:
+      group: hex-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      MIX_ENV: dev
+      VERSION: ${{ needs.check.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      # No deps cache in the job that publishes.
+      - name: Install dependencies
+        run: mix deps.get --check-locked
+
+      - name: Check the version and write the release notes
+        run: |
+          if [ "$(elixir scripts/release.exs version)" != "$VERSION" ]; then
+            echo "::error::mix.exs's version is not $VERSION"
+            exit 1
+          fi
+          elixir scripts/release.exs notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+
+      - name: Tag the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            tagged=$(git rev-parse "$tag^{commit}")
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::$tag already points at $tagged, not at this commit ($GITHUB_SHA)"
+              exit 1
+            fi
+            echo "$tag already points at this commit"
+          else
+            object=$(gh api "repos/$GH_REPO/git/tags" -f tag="$tag" -f message="decree $VERSION" -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$object" > /dev/null
+            echo "Tagged $GITHUB_SHA as $tag"
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "The release $tag already exists"
+          else
+            gh release create "$tag" --verify-tag --title "decree $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+      # Workload Identity: with id-token: write and no Hex credential configured,
+      # mix hex.publish exchanges the job's OIDC token. A HEX_API_KEY would take
+      # precedence, so the step refuses one. mix hex.publish uploads the package, then
+      # the docs, so a re-run after a docs failure publishes the docs alone.
+      - name: Publish to Hex (package and docs)
+        run: |
+          if [ -n "${HEX_API_KEY:-}" ]; then
+            echo "::error::HEX_API_KEY is set; this job publishes with Workload Identity"
+            exit 1
+          fi
+          code=$(curl -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' "https://hex.pm/api/packages/decree/releases/$VERSION")
+          step=$(elixir scripts/release.exs hex-step "$code" "$RUNNER_TEMP/release.json")
+          case "$step" in
+            publish) mix hex.publish --yes ;;
+            docs)
+              echo "decree $VERSION is on Hex without its docs; publishing the docs"
+              mix hex.publish docs --yes
+              ;;
+            none) echo "decree $VERSION and its docs are already on Hex; not publishing again" ;;
+          esac
+
+      - name: Read back from hex.pm
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' "https://hex.pm/api/packages/decree/releases/$VERSION" || true)
+            step=$(elixir scripts/release.exs hex-step "$code" "$RUNNER_TEMP/release.json" 2> /dev/null || true)
+            if [ "$step" = "none" ]; then
+              echo "hex.pm answers 200 for decree $VERSION, with its docs"
+              exit 0
+            fi
+            echo "hex.pm answered $code, next step '$step' (attempt $attempt); retrying"
+            sleep 10
+          done
+          echo "::error::hex.pm does not show decree $VERSION with its docs. If Hex staged the release, approve it under Staged releases on hex.pm, then re-run this job."
+          exit 1
