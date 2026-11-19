@@ -67,6 +67,8 @@ defmodule MyApp.EventStore do
 end
 
 defmodule MyApp.RegisterAccount do
+  use Decree.Command
+
   defstruct [:command_id, :account_id, :handle, :rule_result]
 end
 
@@ -110,6 +112,8 @@ defmodule MyApp.Account do
 end
 
 defmodule MyApp.EnableTagIndex do
+  use Decree.Command
+
   defstruct [:command_id, :ledger_id, :family]
 end
 
@@ -194,10 +198,10 @@ end
 
 `MyApp.Welcome` logs "welcome, @ada" and "welcome, @grace".
 
-What the rule route needs, beyond a plain one:
+Every command carries a `command_id`, a lowercase canonical UUID its sender mints: a dispatch refuses a command without one (`Decree.Command`). What the rule route needs, beyond a plain one:
 
 - **The store must declare the aggregate** in `conditional_appends: [targets: ...]`. The application refuses to start when a rule route's aggregate is missing there.
-- **The command needs a `:rule_result` field**, where `execute/2` finds what the rule's query matched, and a `command_id` (a UUID): an event appended under a rule's condition must carry the framework's `command` tag.
+- **The command needs a `:rule_result` field**, where `execute/2` finds what the rule's query matched.
 - **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.TagIndexEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`. Enable it on an empty store, so every later event is covered.
 
 `Decree.Decision.Rule` covers the rest: a follow-up query, keys, bounds, retries and the required tags.
@@ -285,7 +289,7 @@ mix deps.audit
 decree is derived from [Commanded](https://github.com/commanded/commanded), [EventStore](https://github.com/commanded/eventstore), [Commanded EventStore Adapter](https://github.com/commanded/commanded-eventstore-adapter) and [Commanded Ecto Projections](https://github.com/commanded/commanded-ecto-projections), all by Ben Smith under the MIT License. It copies the code sparkle.space uses, with no fork and no upstream history, and has changed it since.
 
 - `LICENSE`: decree's MIT License.
-- `NOTICE`: the upstream MIT notices, unchanged.
+- `NOTICE`: what decree is derived from, and the upstream MIT notices, unchanged.
 - `PROVENANCE.tsv`: the upstream file and its SHA-256 for every copied file.
 - `UPSTREAM.md`: the upstream versions, the fixes carried from upstream, every departure from it, and the dependency pins.
 - `DROPPED_TESTS.md`: the upstream tests decree does not run, and why.
