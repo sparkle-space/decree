@@ -11,6 +11,8 @@ decree was copied from four MIT-licensed repositories, reviewed at these tags on
 
 `PROVENANCE.tsv` names the upstream file and its SHA-256 for every copied file.
 
+The `sparkle-space/sparklespace#N` references below point at sparkle.space's own tracker, which is private.
+
 ## Dependency pins
 
 A dependency taken from a git commit rather than a Hex release, because the release decree needs does not exist yet. The pin is the exact commit, never a branch. It moves back to Hex at the first release that contains the commit. sparklespace pins the same commit, since `mix` refuses two specs for one dependency.
