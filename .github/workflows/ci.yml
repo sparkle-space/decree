@@ -84,6 +84,39 @@ jobs:
       - name: Test (framework, store, conformance, projections)
         run: mix test --include migration
 
+  # The Hex package's docs: ex_doc is a dev dependency, and a reference to an undefined or
+  # hidden type, module or function is a warning, so the step fails on it.
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MIX_ENV: dev
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Cache deps
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: deps
+          key: ${{ runner.os }}-deps-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+
+      - name: Install dependencies
+        run: mix deps.get --check-locked
+
+      - name: Build the docs
+        run: mix docs --warnings-as-errors
+
   deps_audit:
     name: Deps Audit
     runs-on: ubuntu-latest

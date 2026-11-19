@@ -33,4 +33,6 @@ For an application that pinned a decree commit before this release:
   config :decree, :tag_index_named_families, ["tenant_slug", "plan_slug", "email", "oauth_uid"]
   ```
 
-  Without that line, a tag of one of those kinds falls into the `entity` family and requires that family's fact instead, with no error.
+  Without that line, a tag of one of those kinds falls into the `entity` family, and a decision requires `entity`'s fact in place of the kind's own. Where `entity` is not enabled, the decision refuses with `{:error, :tag_index_not_enabled}`. Where it is enabled, the decision goes on, and a later disable of the kind's own family no longer stops it, with no error.
+
+- **Elixir 1.20 or later.** `mix.exs` required `~> 1.18`; it now requires `~> 1.20`, the version CI tests.
