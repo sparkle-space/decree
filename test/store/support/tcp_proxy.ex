@@ -27,6 +27,10 @@ defmodule Decree.Store.TcpProxy do
   # before those of the chunks it holds. `resume_sent/1` forwards the held chunks in
   # order and forwarding goes on as before.
   #
+  # With `filter_sent: fun`, every chunk a client sends goes through `fun.(data)` after
+  # it is tapped: a binary is forwarded (or held) in its place, `:drop` discards it, so
+  # the server never answers it, and `:close` closes both sides of that connection.
+  #
   # Changing the mode affects new connections only; connections already forwarded
   # stay up. Connections are accepted one at a time, so a held one is handled by the
   # mode that follows `:hold`, and those behind it wait in the listen backlog.
@@ -75,6 +79,7 @@ defmodule Decree.Store.TcpProxy do
   def init(opts) do
     upstream = Keyword.fetch!(opts, :upstream)
     tap = {Keyword.get(opts, :tap), Keyword.get(opts, :tap_received, false)}
+    filter = Keyword.get(opts, :filter_sent, & &1)
 
     {:ok, listen} =
       :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
@@ -82,7 +87,7 @@ defmodule Decree.Store.TcpProxy do
     {:ok, port} = :inet.port(listen)
 
     proxy = self()
-    acceptor = spawn_link(fn -> accept(proxy, listen, upstream, tap) end)
+    acceptor = spawn_link(fn -> accept(proxy, listen, upstream, {tap, filter}) end)
 
     {:ok,
      %{
@@ -157,7 +162,7 @@ defmodule Decree.Store.TcpProxy do
 
   # Runs linked to the proxy; each forwarded connection's pump is linked to it, so
   # stopping the proxy closes every connection.
-  defp accept(proxy, listen, upstream, tap) do
+  defp accept(proxy, listen, upstream, pipe) do
     {:ok, client} = :gen_tcp.accept(listen)
 
     case GenServer.call(proxy, :mode, :infinity) do
@@ -165,22 +170,22 @@ defmodule Decree.Store.TcpProxy do
         :gen_tcp.close(client)
 
       :forward ->
-        start_pump(proxy, client, upstream, 0, tap)
+        start_pump(proxy, client, upstream, 0, pipe)
 
       {:delay, delay} ->
-        start_pump(proxy, client, upstream, delay, tap)
+        start_pump(proxy, client, upstream, delay, pipe)
     end
 
-    accept(proxy, listen, upstream, tap)
+    accept(proxy, listen, upstream, pipe)
   end
 
-  defp start_pump(proxy, client, upstream, delay, tap) do
-    pump = spawn_link(fn -> pump(proxy, client, upstream, delay, tap) end)
+  defp start_pump(proxy, client, upstream, delay, pipe) do
+    pump = spawn_link(fn -> pump(proxy, client, upstream, delay, pipe) end)
     _ = :gen_tcp.controlling_process(client, pump)
     send(pump, :go)
   end
 
-  defp pump(proxy, client, {host, port}, delay, tap) do
+  defp pump(proxy, client, {host, port}, delay, {tap, filter}) do
     receive do
       :go -> :ok
     end
@@ -197,7 +202,7 @@ defmodule Decree.Store.TcpProxy do
           end
 
         _ = :inet.setopts(client, active: true)
-        copy(client, server, tap, held)
+        copy(client, server, {tap, filter}, held)
 
       {:error, _reason} ->
         :gen_tcp.close(client)
@@ -206,34 +211,43 @@ defmodule Decree.Store.TcpProxy do
 
   # `held` is `nil` while forwarding, and the client chunks held so far, newest first,
   # while paused.
-  defp copy(client, server, {sent_tap, received_tap} = tap, held) do
+  defp copy(client, server, {{sent_tap, received_tap}, filter} = pipe, held) do
     receive do
       {:tcp, ^client, data} ->
         if sent_tap, do: send(sent_tap, {:tcp_proxy_sent, data})
 
-        if held do
-          copy(client, server, tap, [data | held])
-        else
-          _ = :gen_tcp.send(server, data)
-          copy(client, server, tap, held)
+        case filter.(data) do
+          :close ->
+            :gen_tcp.close(client)
+            :gen_tcp.close(server)
+
+          :drop ->
+            copy(client, server, pipe, held)
+
+          data when is_list(held) ->
+            copy(client, server, pipe, [data | held])
+
+          data ->
+            _ = :gen_tcp.send(server, data)
+            copy(client, server, pipe, held)
         end
 
       {:tcp, ^server, data} ->
         if sent_tap && received_tap, do: send(sent_tap, {:tcp_proxy_received, data})
 
         _ = :gen_tcp.send(client, data)
-        copy(client, server, tap, held)
+        copy(client, server, pipe, held)
 
       {:pause_sent, caller, ref} ->
         if sent_tap, do: send(sent_tap, {:tcp_proxy_paused, self()})
 
         send(caller, {ref, self()})
-        copy(client, server, tap, held || [])
+        copy(client, server, pipe, held || [])
 
       :resume_sent ->
         for data <- Enum.reverse(held || []), do: :gen_tcp.send(server, data)
 
-        copy(client, server, tap, nil)
+        copy(client, server, pipe, nil)
 
       {:tcp_closed, _socket} ->
         :gen_tcp.close(client)
