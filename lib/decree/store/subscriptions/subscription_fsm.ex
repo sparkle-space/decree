@@ -286,9 +286,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionFsm do
     # and a wake-up can be lost: the notifications connection reconnects
     # (`auto_reconnect`) and listens again with no catch-up, the publisher's read of a
     # notification's events fails and is only logged, and Postgrex 0.22.4 dropped a
-    # notification that arrived during an idle ping (elixir-ecto/postgrex#795; the pin in
-    # `UPSTREAM.md` carries the fix). Each would leave the subscription behind until the
-    # next append to its stream.
+    # notification that arrived during an idle ping (elixir-ecto/postgrex#795; decree's own
+    # notifications connection sends none, `UPSTREAM.md` Departures). Each would leave the
+    # subscription behind until the next append to its stream.
     #
     # `Subscription` sends this every quarter to half of `head_check_interval`. It reads
     # the stream's head: one statement on the main pool, no lock, and no cache, as a head
