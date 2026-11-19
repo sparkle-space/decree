@@ -12,9 +12,9 @@ defmodule Decree.Store.Notifications.Listener do
   require Logger
 
   alias Decree.Store.LogTerms
-  alias Decree.Store.Notifications.{Listener, Notification}
+  alias Decree.Store.Notifications.{Connection, Listener, Notification}
 
-  defstruct [:listen_to, :query_timeout, :schema, :ref, demand: 0, queue: :queue.new()]
+  defstruct [:listen_to, :query_timeout, demand: 0, queue: :queue.new()]
 
   def start_link(opts) do
     {start_opts, listener_opts} =
@@ -22,9 +22,8 @@ defmodule Decree.Store.Notifications.Listener do
 
     listen_to = Keyword.fetch!(listener_opts, :listen_to)
     query_timeout = Keyword.fetch!(listener_opts, :query_timeout)
-    schema = Keyword.fetch!(listener_opts, :schema)
 
-    state = %Listener{listen_to: listen_to, query_timeout: query_timeout, schema: schema}
+    state = %Listener{listen_to: listen_to, query_timeout: query_timeout}
 
     GenStage.start_link(__MODULE__, state, start_opts)
   end
@@ -55,18 +54,19 @@ defmodule Decree.Store.Notifications.Listener do
     dispatch_events([], state)
   end
 
+  # The connection listens on every connect by itself once this process is registered, so
+  # neither answer nor an exit from the call (a connection that is down, or restarting) needs
+  # handling here.
   defp listen_for_events(%Listener{} = state) do
-    %Listener{listen_to: listen_to, query_timeout: query_timeout, schema: schema} = state
+    %Listener{listen_to: listen_to, query_timeout: query_timeout} = state
 
-    channel = schema <> ".events"
+    try do
+      Connection.listen(listen_to, query_timeout)
+    catch
+      :exit, _reason -> :ok
+    end
 
-    ref =
-      case Postgrex.Notifications.listen(listen_to, channel, timeout: query_timeout) do
-        {:ok, ref} -> ref
-        {:eventually, ref} -> ref
-      end
-
-    %Listener{state | ref: ref}
+    state
   end
 
   defp dispatch_events(events, %Listener{demand: 0} = state) do
