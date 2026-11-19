@@ -22,6 +22,27 @@ Flag these as **P0** (must fix before merge):
 - sparklespace pins decree at a full commit SHA. Only a sparklespace "tree PR" moves it, and each adopts one decree child. A fix to an adopted child lands on a branch cut from that child's merge commit and is merged forward, so every pin descends from the previous one. A decree PR that bundles two children, or reverts or drops an earlier merge, breaks this.
 - decree's PRs are one writer's chain, merged in order. Rebase onto `main` instead of merging around the chain.
 
+## Releases
+
+`CONTRIBUTING.md`, "Releases", describes the flow. In short: the "Prepare release" workflow opens a PR that bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under it (`scripts/release.exs bump`). Merging that PR starts "Publish". Publish runs only when the version is not the latest `v*` tag. It runs CI's jobs as gates, then waits for the founder's approval in the `hex-publish` environment, then tags, creates the GitHub release and runs `mix hex.publish` with Hex Workload Identity.
+
+The version rules before 1.0:
+
+- a breaking change (API, store schema, a behaviour callers rely on) is a minor bump;
+- a fix or an additive change is a patch;
+- 1.0 is the founder's call.
+
+Flag these on a decree PR:
+
+- **A version or CHANGELOG release section changed by hand.** Only the Prepare release PR changes `@version` in `mix.exs` or adds a `## X.Y.Z` heading. A breaking change in a release whose bump is a patch is the finding.
+- **A user-visible change with no entry under "Unreleased".** Changes to tests, CI and docs alone need none.
+- **A wider release workflow.** These are findings in `prepare-release.yml` or `publish.yml`:
+  - a job given a permission it does not use (`contents: write` and `id-token: write` belong to the publish job only);
+  - a stored Hex key or `HEX_API_KEY`;
+  - the publish job without the `hex-publish` environment;
+  - an action not pinned to a full commit SHA with its version as a comment;
+  - an input interpolated into a `run:` script instead of passed through `env:`.
+
 ## Do not flag
 
 - Formatting and warnings: CI runs `mix format --check-formatted` and `mix compile --warnings-as-errors`.
