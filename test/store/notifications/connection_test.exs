@@ -103,6 +103,19 @@ defmodule Decree.Store.Notifications.ConnectionTest do
     end
   end
 
+  describe "a store timeout of :infinity" do
+    # The store's config parser accepts `timeout: :infinity`: then no query is bounded,
+    # this connection's included.
+    @tag query_timeout: :infinity, idle_interval: 50
+    test "listens, keeps alive and delivers", ctx do
+      assert Connection.listen(ctx.conn, 5_000) == :ok
+      :ok = flush_taps()
+
+      assert_receive {:tcp_proxy_sent, <<?Q, _len::32, "SELECT 1", 0>>}
+      assert_delivered(ctx)
+    end
+  end
+
   describe "keepalive" do
     @tag idle_interval: 50
     test "a notification that arrives during the keepalive query is delivered", ctx do
