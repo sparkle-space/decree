@@ -75,6 +75,8 @@ defmodule Decree.Application.Supervisor do
   end
 
   def init({application, otp_app, config, name, opts}) do
+    refuse_removed_env!()
+
     case runtime_config(application, otp_app, config, opts) do
       {:ok, config} ->
         {event_store_child_spec, config} = event_store_child_spec(name, config)
@@ -95,6 +97,19 @@ defmodule Decree.Application.Supervisor do
       :ignore ->
         :ignore
     end
+  end
+
+  # Config keys of the removed `consistency:` option (sparkle-space/sparklespace#8559): an
+  # application refuses to start with one set, rather than ignore it.
+  @removed_env [:default_consistency, :dispatch_consistency_timeout]
+
+  defp refuse_removed_env! do
+    for key <- @removed_env, match?({:ok, _value}, Application.fetch_env(:decree, key)) do
+      raise ArgumentError,
+            Decree.Commands.Router.consistency_removed("`config :decree, #{inspect(key)}`")
+    end
+
+    :ok
   end
 
   # A rule route's half and the store's half of one declaration, checked by a child started right
@@ -197,8 +212,6 @@ defmodule Decree.Application.Supervisor do
   defp app_child_spec(name, config) do
     task_dispatcher_name = Module.concat([name, Decree.Commands.TaskDispatcher])
     aggregates_supervisor_name = Module.concat([name, Decree.Aggregates.Supervisor])
-    subscriptions_name = Module.concat([name, Decree.Subscriptions])
-    registry_name = Module.concat([name, Decree.Subscriptions.Registry])
     snapshotting = Keyword.get(config, :snapshotting, %{})
     hibernate_after = Keyword.get(config, :hibernate_after, :infinity)
 
@@ -210,11 +223,7 @@ defmodule Decree.Application.Supervisor do
        name: aggregates_supervisor_name,
        application: name,
        snapshotting: snapshotting,
-       hibernate_after: hibernate_after},
-      {Decree.Subscriptions.Registry,
-       application: name, name: registry_name, hibernate_after: hibernate_after},
-      {Decree.Subscriptions,
-       application: name, name: subscriptions_name, hibernate_after: hibernate_after}
+       hibernate_after: hibernate_after}
     ]
   end
 

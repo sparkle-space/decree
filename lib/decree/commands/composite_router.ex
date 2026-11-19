@@ -63,9 +63,11 @@ defmodule Decree.Commands.CompositeRouter do
 
       application = Keyword.get(unquote(opts), :application)
 
+      # Evaluated here, not in the macro: `Decree.Application` passes its options as a value.
       default_dispatch_opts =
         unquote(opts)
         |> Keyword.get(:default_dispatch_opts, [])
+        |> Router.refuse_consistency!()
         |> Keyword.put(:application, application)
 
       @default_dispatch_opts default_dispatch_opts
@@ -143,7 +145,7 @@ defmodule Decree.Commands.CompositeRouter do
         do: do_dispatch(command, timeout: timeout)
 
       def dispatch(command, opts),
-        do: do_dispatch(command, opts)
+        do: do_dispatch(command, Router.refuse_consistency!(opts))
 
       for {command_module, router} <- @registered_commands do
         @command_module command_module

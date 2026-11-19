@@ -11,7 +11,7 @@ decree is pre-1.0 (version 0.1.0). Until 1.0, a minor version (0.2.0) may change
 It has one production user, sparkle.space. What that use proves, and what it does not:
 
 - **In production:** the Postgres store and its migrations, aggregates and snapshots, the command router and middleware, event handlers, Ecto projections, upcasting, personal fields with per-subject keys, and decision rules on an aggregate's own stream (`Decree.Decision.Rule`).
-- **Built and tested, with no production user yet:** decisions that own their streams (`Decree.Decision`), the multi-stream conditional append, the command window (`Decree.Aggregate`, "Command window"), `mix decree.verify.eventless`, and `:strong` dispatch consistency.
+- **Built and tested, with no production user yet:** decisions that own their streams (`Decree.Decision`), the multi-stream conditional append, the command window (`Decree.Aggregate`, "Command window"), and `mix decree.verify.eventless`.
 
 ## Installation
 

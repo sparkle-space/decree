@@ -8,14 +8,10 @@ defmodule Decree.Commands.DispatchLogTermsTest do
 
   import ExUnit.CaptureLog
 
-  alias Decree.Commands.{AggregateRouter, ConsistencyApp, UnregisteredCommand}
+  alias Decree.Commands.{AggregateRouter, UnregisteredCommand}
   alias Decree.Commands.Composite.ExampleCompositeRouter
   alias Decree.Commands.Composite.UnregisteredCommand, as: CompositeUnregisteredCommand
-  alias Decree.Commands.ConsistencyAggregateRoot.ConsistencyCommand
-  alias Decree.Commands.StronglyConsistentEventHandler
   alias Decree.DefaultApp
-  alias Decree.Helpers.Wait
-  alias Decree.UUID
 
   @marker "dispatch-log-terms-marker"
 
@@ -57,45 +53,4 @@ defmodule Decree.Commands.DispatchLogTermsTest do
       refute log =~ @marker
     end
   end
-
-  describe "a consistency timeout" do
-    setup do
-      start_supervised!(ConsistencyApp)
-      start_supervised!(StronglyConsistentEventHandler, shutdown: :brutal_kill)
-
-      event_store = Module.concat([ConsistencyApp, "FrameworkEventStore"])
-
-      Wait.until(15_000, fn ->
-        assert {subscriptions, 0} =
-                 Decree.FrameworkEventStore.local_subscriptions(name: event_store)
-
-        assert "StronglyConsistentEventHandler" in for(
-                 %{subscription_name: name, status: :subscribed} <- subscriptions,
-                 do: name
-               )
-      end)
-
-      :ok
-    end
-
-    test "names the aggregate's stream by suffix" do
-      uuid = UUID.uuid4()
-
-      log =
-        capture_log(fn ->
-          # The handler takes longer than the configured one-second consistency timeout.
-          command = %ConsistencyCommand{command_id: UUID.uuid4(), uuid: uuid, delay: 5_000}
-
-          assert {:error, :consistency_timeout} =
-                   ConsistencyApp.dispatch(command, consistency: :strong)
-        end)
-
-      assert log =~
-               "Consistency timeout waiting for aggregate #{inspect(suffix(uuid))} at version 1"
-
-      refute log =~ uuid
-    end
-  end
-
-  defp suffix(id), do: "..." <> String.slice(id, -8, 8)
 end

@@ -14,43 +14,22 @@ defmodule Decree.Event.HandlerConfigTest do
     :ok
   end
 
-  test "should default to `:eventual` consistency and start from `:origin`" do
+  test "should default to start from `:origin`" do
     {:ok, handler} = DefaultConfigHandler.start_link()
 
     assert_config(handler,
       application: Decree.DefaultApp,
       name: "Decree.Event.HandlerConfigTest.DefaultConfigHandler",
       concurrency: 1,
-      consistency: :eventual,
       start_from: :origin,
       subscribe_to: :all
     )
-  end
-
-  describe "global config change to default consistency" do
-    test "should use overridden default consistency" do
-      Application.put_env(:decree, :default_consistency, :strong)
-
-      {:ok, handler} = DefaultConfigHandler.start_link()
-
-      assert_config(handler,
-        application: Decree.DefaultApp,
-        name: "Decree.Event.HandlerConfigTest.DefaultConfigHandler",
-        concurrency: 1,
-        consistency: :strong,
-        start_from: :origin,
-        subscribe_to: :all
-      )
-
-      Application.put_env(:decree, :default_consistency, :eventual)
-    end
   end
 
   defmodule ExampleHandler do
     use Decree.Event.Handler,
       application: Decree.DefaultApp,
       name: __MODULE__,
-      consistency: :strong,
       start_from: :current,
       subscribe_to: "stream1"
   end
@@ -63,7 +42,6 @@ defmodule Decree.Event.HandlerConfigTest do
         application: Decree.DefaultApp,
         name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
-        consistency: :strong,
         start_from: :current,
         subscribe_to: "stream1"
       )
@@ -73,7 +51,6 @@ defmodule Decree.Event.HandlerConfigTest do
       {:ok, handler} =
         ExampleHandler.start_link(
           concurrency: 10,
-          consistency: :eventual,
           index: 0,
           start_from: :origin,
           subscribe_to: "stream2"
@@ -83,7 +60,6 @@ defmodule Decree.Event.HandlerConfigTest do
         application: Decree.DefaultApp,
         name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 10,
-        consistency: :eventual,
         start_from: :origin,
         subscribe_to: "stream2"
       )
@@ -96,7 +72,6 @@ defmodule Decree.Event.HandlerConfigTest do
         application: Decree.DefaultApp,
         name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
-        consistency: :strong,
         start_from: :origin,
         subscribe_to: "stream1"
       )
@@ -109,7 +84,6 @@ defmodule Decree.Event.HandlerConfigTest do
         application: Decree.DefaultApp,
         name: "handler_name",
         concurrency: 1,
-        consistency: :strong,
         start_from: :current,
         subscribe_to: "stream1"
       )
@@ -124,7 +98,6 @@ defmodule Decree.Event.HandlerConfigTest do
         application: :dynamic_app,
         name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
-        consistency: :strong,
         start_from: :current,
         subscribe_to: "stream1"
       )
@@ -139,7 +112,6 @@ defmodule Decree.Event.HandlerConfigTest do
         application: Decree.DefaultApp,
         name: "Decree.Event.HandlerConfigTest.ExampleHandler",
         concurrency: 1,
-        consistency: :strong,
         start_from: :current,
         subscribe_to: "stream1"
       )
@@ -150,18 +122,13 @@ defmodule Decree.Event.HandlerConfigTest do
 
       handler =
         start_supervised!(
-          {ExampleHandler,
-           application: :dynamic_app,
-           name: "handler_name",
-           consistency: :eventual,
-           start_from: :origin}
+          {ExampleHandler, application: :dynamic_app, name: "handler_name", start_from: :origin}
         )
 
       assert_config(handler,
         application: :dynamic_app,
         name: "handler_name",
         concurrency: 1,
-        consistency: :eventual,
         start_from: :origin,
         subscribe_to: "stream1"
       )
@@ -190,7 +157,6 @@ defmodule Decree.Event.HandlerConfigTest do
       name: __MODULE__,
       concurrency: 1,
       batch_size: 5,
-      consistency: :strong,
       start_from: :current,
       subscribe_to: "stream1"
   end
@@ -248,7 +214,6 @@ defmodule Decree.Event.HandlerConfigTest do
     %Handler{
       application: application,
       handler_name: name,
-      consistency: consistency,
       subscription: %Subscription{
         concurrency: concurrency,
         subscribe_from: subscribe_from,
@@ -260,7 +225,6 @@ defmodule Decree.Event.HandlerConfigTest do
       application: application,
       name: name,
       concurrency: concurrency,
-      consistency: consistency,
       start_from: subscribe_from,
       subscribe_to: subscribe_to
     ]

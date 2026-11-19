@@ -22,9 +22,6 @@ defmodule Decree.Middleware.Pipeline do
 
     - `command_uuid` - UUID assigned to the command being dispatched.
 
-    - `consistency` - requested dispatch consistency, either: `:eventual`
-       (default) or `:strong`.
-
     - `halted` - flag indicating whether the pipeline was halted.
 
     - `identity` - an atom specifying a field in the command containing the
@@ -49,7 +46,6 @@ defmodule Decree.Middleware.Pipeline do
     :correlation_id,
     :command,
     :command_uuid,
-    :consistency,
     :identity,
     :identity_prefix,
     :metadata,

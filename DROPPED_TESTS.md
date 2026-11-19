@@ -78,7 +78,7 @@ Files (7), each with its reason:
 Test cases removed from files that stay (4):
 
 - `test/framework/commands/correlation_causation_test.exs`: "`causation_id` should be copied onto commands/events by process manager" and "`correlation_id` should be copied onto commands/events by process manager" (both drive `TransferMoneyProcessManager`). The setup no longer starts the process manager.
-- `test/framework/commands/dispatch_consistency_test.exs`: "process manager consistency should successfully dispatch command" (drives `StronglyConsistentProcessManager`).
+- `test/framework/commands/dispatch_consistency_test.exs`: "process manager consistency should successfully dispatch command" (drives `StronglyConsistentProcessManager`). The rest of the file went with `consistency:` (see "Deleted with `consistency:`").
 - `test/framework/event/upcaster_test.exs`: "upcast events received by process manager will receive upcasted events".
 
 ## Deleted with the dead surface
@@ -139,6 +139,30 @@ Kept and rewritten, with the same assertions at snapshot version 1, each source'
 
 `test/store/migrated_event_store_test.exs` "read a snapshot" is "drops the legacy snapshot table, and an unversioned read is refused": the dump's ten rows were rows of `snapshots`, which store migration 1.11.0 drops with them, so its assertions on their source, version, type and data are gone with the table; it checks that the migrated store has no `snapshots` table, that an unversioned read of each of the ten sources answers `{:error, :invalid_snapshot_version}`, and that a read at version 1 answers `{:error, :snapshot_not_found}`. `test/store/manual/seed_eventstore.exs`, a script and not a test, loses its snapshot step; the committed dumps keep their rows.
 
+## Deleted with `consistency:`
+
+`consistency:` is removed (X-11 in the toolkit target model, founder ruling 2026-11-19, sparkle-space/sparklespace#8559): `Decree.Middleware.ConsistencyGuarantee`, the framework's `Decree.Subscriptions` and `Decree.Subscriptions.Registry`, and the dispatch, route, handler and config options. Their upstream tests go with them. `test/framework/commands/consistency_removed_test.exs` pins the refusal at every door.
+
+Files (9):
+
+- `test/framework/commands/dispatch_consistency_test.exs` (9 tests): `:strong` and handler-list dispatch waits through `ConsistencyGuarantee`. Its "aggregate identity prefix" case "should append events to stream using prefixed aggregate uuid" ran on `ConsistencyPrefixRouter`; `test/framework/commands/routing_commands_test.exs` "should append events to stream using identity prefix" pins the same stream read.
+- `test/framework/subscriptions/subscriptions_test.exs` (19 tests): `Decree.Subscriptions` and its registry.
+- `test/framework/commands/support/consistency/`: `consistency_aggregate_root.ex`, `consistency_app.ex`, `consistency_prefix_router.ex`, `consistency_router.ex`, `eventually_consistent_event_handler.ex`, `optional_strongly_consistent_handler.ex` and `strongly_consistent_event_handler.ex`, support for the two files above and for the `dispatch_log_terms_test.exs` case below.
+
+Test cases removed from files that stay (11):
+
+- `test/framework/commands/dispatch_log_terms_test.exs`: "a consistency timeout names the aggregate's stream by suffix". Its subject, `ConsistencyGuarantee`'s timeout log line, is gone.
+- `test/framework/decision/middleware_parity_test.exs`, the "`ConsistencyGuarantee` on a decision route" describe (decree's own, sparkle-space/sparklespace#7623): "`:strong` waits for the handler on a single stream", "`:strong` answers a timeout when the handler holds the stream", "a route's own `consistency:` applies", "`:strong` waits for every member of a batch", "`:strong` answers a timeout when the handler holds a later member", "`:strong` answers a batch within one timeout", "a batch takes an infinite timeout" and "a member with no time left answers the timeout, with no wait". `:dispatcher_pid`, which only `ConsistencyGuarantee` assigned, leaves the assigns both routes share; `Decree.DecisionFixtures.StrongHandler` goes from `test/framework/decision/support/fixtures.ex`.
+- `test/framework/event/handler_config_test.exs`: "global config change to default consistency should use overridden default consistency". `config :decree, :default_consistency` now refuses the application's start.
+- `test/framework/event/event_handler_concurrency_test.exs`: "concurrent event handler should error when handler started with `:strong` consistency". The check went with the option.
+
+Kept and rewritten, with their other assertions:
+
+- `test/framework/event/handler_config_test.exs`: "should default to `:eventual` consistency and start from `:origin`" is "should default to start from `:origin`", and seven `start_link/1` and `child_spec` cases lose only their `consistency:` input or expectation; its fixtures lose `consistency: :strong`.
+- `test/framework/application/application_supervisor_test.exs` "children are hibernated after inactivity": the expected children no longer include the two removed processes.
+- `test/framework/commands/routing_commands_test.exs` "should show a helpful message when bad argument given to a `dispatch/2` function": the listed params no longer end in `consistency`.
+- `consistency: :eventual` leaves the `%Decree.Event.Handler{}` literals of `test/framework/event/batch_timeout_integration_test.exs`, `batch_timeout_telemetry_test.exs`, `batch_timeout_test.exs`, `event_handler_batch_telemetry_test.exs` and `event_handler_batch_test.exs`, and the `default_dispatch_opts` of `test/framework/commands/support/returning/default_dispatch_return_app.ex`.
+
 ## Upstream test configurations not run
 
 - eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.
@@ -166,7 +190,7 @@ Not dropped; listed so the port can be audited:
 
 Flaky upstream tests made deterministic (test changes, not drops):
 
-- `test/framework/subscriptions/subscriptions_test.exs`, "should not remove PID when process terminates": it spawned the registering process with `spawn_link` and monitored it afterwards, so a process that had already exited produced a `:noproc` `:DOWN` instead of `:normal` (seen on CI). It now uses `spawn_monitor`; the assertions are unchanged.
+- `test/framework/subscriptions/subscriptions_test.exs`, "should not remove PID when process terminates": it spawned the registering process with `spawn_link` and monitored it afterwards, so a process that had already exited produced a `:noproc` `:DOWN` instead of `:normal` (seen on CI). It now uses `spawn_monitor`; the assertions are unchanged. The file went with `consistency:` (see "Deleted with `consistency:`").
 - The same spawn-then-monitor order, asserting any exit reason (so it could not fail, but raced the same way): `test/framework/aggregates/execute_command_test.exs` (`assert_aggregate_exit/4` now uses `spawn_monitor`) and `test/framework/helpers/process_helper.ex` (`shutdown/2` now monitors before it sends the exit, as `test/store/support/process_helper.ex` already did).
 - `test/store/storage/append_events_test.exs`, "append single event with a db connection error": the append used `timeout: 0`, which raced the client timeout against the server. It returned `{:error, %DBConnection.ConnectionError{}}`, `{:error, :query_canceled}` (seen on CI) or, when a fast server finished first, `{:error, :not_found}` (seen locally; stream 1 does not exist, so the insert fails its foreign key). The last outcome means no timeout happened, so the test could pass without exercising its subject. It is now deterministic: a second connection holds `LOCK TABLE events IN ACCESS EXCLUSIVE MODE` in an open transaction (released after the assertion and in `on_exit`), the append uses `timeout: 100`, blocks on the lock, and the test accepts only `%DBConnection.ConnectionError{}` or `:query_canceled`. Its point, an error tuple instead of a raise, is unchanged.
 
@@ -180,10 +204,10 @@ decree runs the four suites in one VM with one `config/test.exs`, so each suite'
 | ExUnit `refute_receive_timeout` | 100 (default) | 100 | 100 (default) | 100 (default) | 100 |
 | `assert_receive_event_timeout` (`Decree.Assertions.EventAssertions`) | 100 | not used | 1_000 | not used | 1_000 |
 | `refute_receive_event_timeout` | 100 | not used | 1_000 | not used | 100 |
-| `dispatch_consistency_timeout` | 100 | not used | not set | not set | 100 |
+| `dispatch_consistency_timeout` | 100 | not used | not set | not set | removed with `consistency:` (sparkle-space/sparklespace#8559); a set value now refuses the application's start |
 
 So: `assert_receive_timeout` rose from 1_000 to 2_000 for framework and conformance and from 100 to 2_000 for projections; framework's `assert_receive_event_timeout` rose from 100 to 1_000; conformance's `refute_receive_event_timeout` fell from 1_000 to 100 (no conformance test case calls `refute_receive_event`); the store's values and every `refute_receive_timeout` are unchanged.
 
 ## Audit
 
-`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port", the 4 under "Deleted with the dead surface" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.
+`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port", the 4 under "Deleted with the dead surface", the 1 under "Deleted with the adapter layer", the 9 under "Deleted with `consistency:`" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.

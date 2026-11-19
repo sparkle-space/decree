@@ -307,9 +307,6 @@ defmodule Decree.Event.Handler do
   concurrently by another instance. An attempt will be made to distribute
   events as evenly as possible to all running event handler instances.
 
-  Only `:eventual` consistency is supported when multiple handler processes are
-  configured with a `:concurrency` of greater than one.
-
   ### Example
 
       defmodule ConcurrentProcessingEventHandler do
@@ -337,43 +334,6 @@ defmodule Decree.Event.Handler do
 
           stream_id
         end
-      end
-
-  ## Consistency
-
-  For each event handler you can define its consistency, as one of either
-  `:strong` or `:eventual`.
-
-  This setting is used when dispatching commands and specifying the
-  `consistency` option.
-
-  When you dispatch a command using `:strong` consistency, after successful
-  command dispatch the process will block until all event handlers configured to
-  use `:strong` consistency have processed the domain events created by the
-  command. This is useful when you have a read model updated by an event handler
-  that you wish to query for data affected by the command dispatch. With
-  `:strong` consistency you are guaranteed that the read model will be
-  up-to-date after the command has successfully dispatched. It can be safely
-  queried for data updated by any of the events created by the command.
-
-  The default setting is `:eventual` consistency. Command dispatch will return
-  immediately upon confirmation of event persistence, not waiting for any event
-  handlers.
-
-  Note strong consistency does not imply a transaction covers the command
-  dispatch and event handling. It only guarantees that the event handler will
-  have processed all events produced by the command: if event handling fails
-  the events will have still been persisted.
-
-  ### Example
-
-  Define an event handler with `:strong` consistency:
-
-      defmodule ExampleHandler do
-        use Decree.Event.Handler,
-          application: ExampleApp,
-          name: "ExampleHandler",
-          consistency: :strong
       end
 
   ## Batching
@@ -447,17 +407,6 @@ defmodule Decree.Event.Handler do
   * `:size` — batch reached `batch_size`
   * `:timeout` — `batch_timeout` elapsed before the batch filled
   * `:immediate` — no `batch_timeout` configured; events processed as delivered
-
-  ### Example
-
-  Define an event handler with `:strong` consistency:
-
-      defmodule ExampleHandler do
-        use Decree.Event.Handler,
-          application: ExampleApp,
-          name: "ExampleHandler",
-          consistency: :strong
-      end
 
   ## Dynamic application
 
@@ -600,13 +549,11 @@ defmodule Decree.Event.Handler do
   alias Decree.EventStore.Subscription
   alias Decree.PersonalFields
   alias Decree.PersonalFields.RedactedError
-  alias Decree.Subscriptions
   alias Decree.Telemetry
 
   @type domain_event :: struct()
   @type metadata :: map()
   @type subscribe_from :: :origin | :current | non_neg_integer()
-  @type consistency :: :eventual | :strong
 
   @doc deprecated: "Use the after_start/1 callback instead."
   @callback init() :: :ok | {:stop, reason :: any()}
@@ -847,6 +794,8 @@ defmodule Decree.Event.Handler do
       # attribute of this module.
       @personal_fields_option Keyword.get(unquote(using_opts), :personal_fields)
 
+      Decree.Commands.Router.refuse_consistency!(unquote(using_opts))
+
       @doc """
       Start an event handler `GenServer` process linked to the current process.
 
@@ -859,8 +808,6 @@ defmodule Decree.Event.Handler do
 
         - `:concurrency` - determines how many processes are started to
           concurrently process events. The default is one process.
-
-        - `:consistency` - one of either `:eventual` (default) or `:strong`.
 
         - `:start_from` - where to start the event store subscription from when
           first created (default: `:origin`).
@@ -964,7 +911,6 @@ defmodule Decree.Event.Handler do
     :application,
     :name,
     :concurrency,
-    :consistency,
     :index,
     :start_from,
     :subscribe_to,
@@ -977,7 +923,11 @@ defmodule Decree.Event.Handler do
 
   @doc false
   def parse_config!(module, config) do
+    Decree.Commands.Router.refuse_consistency!(config)
+
     {:ok, config} = module.init(config)
+
+    Decree.Commands.Router.refuse_consistency!(config)
 
     {_valid, invalid} = Keyword.split(config, @start_opts ++ @handler_opts)
 
@@ -1260,7 +1210,6 @@ defmodule Decree.Event.Handler do
   @doc false
   defstruct [
     :application,
-    :consistency,
     :handler_callback,
     :handler_name,
     :handler_module,
@@ -1289,11 +1238,12 @@ defmodule Decree.Event.Handler do
 
   @doc false
   def start_link(application, handler_name, handler_module, opts \\ []) do
+    Decree.Commands.Router.refuse_consistency!(opts)
+
     {start_opts, handler_opts} = Keyword.split(opts, @start_opts)
 
     index = Keyword.get(handler_opts, :index)
     name = name(application, handler_name, index)
-    consistency = consistency(handler_opts)
     subscription = new_subscription(application, handler_name, handler_module, handler_opts)
 
     handler = %Handler{
@@ -1302,7 +1252,6 @@ defmodule Decree.Event.Handler do
       handler_module: handler_module,
       handler_callback: Keyword.fetch!(handler_opts, :handler_callback),
       handler_state: Keyword.get(handler_opts, :state),
-      consistency: consistency,
       subscription: subscription,
       batch_size: Keyword.get(handler_opts, :batch_size),
       batch_timeout: Keyword.get(handler_opts, :batch_timeout, :infinity),
@@ -1310,12 +1259,7 @@ defmodule Decree.Event.Handler do
       batch_buffer: []
     }
 
-    with {:ok, pid} <- Registration.start_link(application, name, __MODULE__, handler, start_opts) do
-      # Register the started event handler as a subscription with the given consistency
-      :ok = Subscriptions.register(application, handler_name, handler_module, pid, consistency)
-
-      {:ok, pid}
-    end
+    Registration.start_link(application, name, __MODULE__, handler, start_opts)
   end
 
   @doc false
@@ -2329,12 +2273,7 @@ defmodule Decree.Event.Handler do
 
   # Confirm receipt of one or more events.
   defp confirm_receipt(recorded_events, %Handler{} = state) when is_list(recorded_events) do
-    %Handler{
-      application: application,
-      consistency: consistency,
-      handler_name: handler_name,
-      subscription: subscription
-    } = state
+    %Handler{subscription: subscription} = state
 
     last_event = List.last(recorded_events)
     %RecordedEvent{event_number: event_number} = last_event
@@ -2350,7 +2289,6 @@ defmodule Decree.Event.Handler do
     # If we have a batch, we only confirm the last event received to the
     # subscription.
     :ok = Subscription.ack_event(subscription, last_event)
-    :ok = Subscriptions.ack_event(application, handler_name, consistency, last_event)
 
     %Handler{state | last_seen_event: event_number}
   end
@@ -2493,24 +2431,6 @@ defmodule Decree.Event.Handler do
 
   defp shown_handler_state(%Handler{sensitive_state: true}), do: :redacted
   defp shown_handler_state(%Handler{handler_state: handler_state}), do: handler_state
-
-  defp consistency(opts) do
-    case opts[:consistency] || Application.get_env(:decree, :default_consistency, :eventual) do
-      :eventual ->
-        :eventual
-
-      :strong ->
-        if Keyword.get(opts, :concurrency, 1) > 1 do
-          # Strong consistency is not supported for event handlers with concurrency
-          raise ArgumentError, message: "cannot use `:strong` consistency with concurrency"
-        else
-          :strong
-        end
-
-      invalid ->
-        raise ArgumentError, message: "invalid `consistency` option: #{inspect(invalid)}"
-    end
-  end
 
   defp new_subscription(application, handler_name, handler_module, handler_opts) do
     partition_by =
