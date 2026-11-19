@@ -70,8 +70,13 @@ defmodule Decree.ReadmeExampleTest do
     :telemetry.attach(
       handler_id,
       [:decree, :event, :handle, :stop],
-      fn _event, _measurements, %{handler_module: MyApp.Welcome, recorded_event: event}, _ ->
-        send(test_pid, {:handled, event.data})
+      fn
+        _event, _measurements, %{handler_module: MyApp.Welcome, recorded_event: event}, _ ->
+          send(test_pid, {:handled, event.data})
+
+        # Another handler's stop: a raise here would detach this handler.
+        _event, _measurements, _metadata, _ ->
+          :ok
       end,
       nil
     )
