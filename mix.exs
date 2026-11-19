@@ -10,7 +10,13 @@ defmodule Decree.MixProject do
       version: @version,
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
-      test_paths: ["test/framework", "test/store", "test/conformance", "test/projections"],
+      test_paths: [
+        "test/framework",
+        "test/store",
+        "test/conformance",
+        "test/projections",
+        "test/release"
+      ],
       test_ignore_filters: [
         &String.contains?(&1, "/support/"),
         &String.starts_with?(&1, "test/framework/helpers/"),
