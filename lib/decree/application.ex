@@ -43,7 +43,7 @@ defmodule Decree.Application do
   Could be configured with:
 
       # config/config.exs
-      config :my_app, MyApp.Application
+      config :my_app, MyApp.Application,
         event_store: [event_store: MyApp.EventStore],
         pubsub: :local,
         registry: :local
