@@ -1,3 +1,8 @@
+Portions of this software are derived from Commanded, EventStore,
+Commanded EventStore Adapter and Commanded Ecto Projections, each
+Copyright (c) Ben Smith, under the MIT License. decree as a whole is
+licensed under the MIT License in LICENSE.
+
 decree includes code copied from the following MIT-licensed projects, at the
 tags and commits named. Their notices follow, unchanged.
 
