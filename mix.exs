@@ -110,7 +110,6 @@ defmodule Decree.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      maintainers: ["sparkle.space"],
       links: %{
         "GitHub" => @source_url,
         "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
