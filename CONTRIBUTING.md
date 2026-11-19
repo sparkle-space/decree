@@ -6,7 +6,7 @@ decree is built for sparkle.space and the projects sparkle.space produces, and i
 
 Open an issue for a bug, a question, or a gap in the docs. A useful bug report names:
 
-- the decree commit you depend on;
+- the decree version you depend on, or the commit if you run `main`;
 - your Elixir, Erlang/OTP and Postgres versions;
 - what you did, what you expected and what happened, ideally as a failing test or a small script against a fresh store.
 

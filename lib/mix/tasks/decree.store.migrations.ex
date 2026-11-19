@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Decree.Store.Migrations do
 
   ## Command line options
 
-    * `-e`, `--eventstore` - the event store to create
+    * `-e`, `--eventstore` - the event store to inspect
     * `--quiet` - do not log output
 
   """

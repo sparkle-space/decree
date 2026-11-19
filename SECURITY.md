@@ -10,10 +10,10 @@ If that button is not there, open an issue that asks for a private contact and l
 
 Include what you can of:
 
-- the decree commit you tested;
+- the decree version you tested, or the commit if you run `main`;
 - the component: the store (`Decree.Store`), the framework (`Decree`), or a Mix task;
 - the steps to reproduce it, and what an attacker gains.
 
 ## Supported versions
 
-decree is pre-1.0 and has no releases. Fixes land on `main`; there are no maintained older versions.
+decree is pre-1.0. Fixes land on `main` and ship in the next patch release of the latest minor version, 0.1.x today. Older versions are not maintained.

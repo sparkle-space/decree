@@ -80,7 +80,7 @@ defmodule Decree.PersonalFields do
   alias Decree.PersonalFields.Lookup
   alias Decree.PersonalFields.RedactedError
 
-  @type answers :: Lookup.answers()
+  @type answers :: %{optional(term) => {:ok, String.t(), binary} | :erased | :unknown}
 
   # The event type of a snapshot, in place of a stored one.
   @snapshot "snapshot"

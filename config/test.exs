@@ -34,6 +34,9 @@ config :decree,
   refute_receive_event_timeout: 100,
   dispatch_consistency_timeout: 1_000
 
+# Decree's suite exercises named families with these kinds.
+config :decree, :tag_index_named_families, ~w(tenant_slug plan_slug email oauth_uid)
+
 # Neither of these takes effect: the two options are read from the `use` line alone, which is
 # what `Decree.PersonalFields.KeySourceTest` proves with this entry.
 config :decree, Decree.PersonalFields.Fixtures.EnvApp,

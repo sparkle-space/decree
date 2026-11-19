@@ -26,11 +26,19 @@ defmodule Decree.Store.TagIndex do
 
   ## The families
 
-  A tag of a kind in `named_families/0`, `command`, `command_kind`, `correlation`,
-  `tenant_slug`, `plan_slug`, `email` and `oauth_uid`, is in the family of that kind, and so
-  is a tag of a kind a decision lists in its `index_families/0`. Any other kind is in the
-  `entity` family. A kind listed `:digest` holds `<fingerprint>:<digest>`, and its family's
-  key is that fingerprint: `digest_key/1` reads it. Every other family has no key.
+  A tag of a kind in `named_families/0` is in the family of that kind, and so is a tag of a
+  kind a decision lists in its `index_families/0`. Any other kind is in the `entity` family.
+  Decree's own named families are `command`, `command_kind` and `correlation`; the
+  application adds its own kinds through the application environment:
+
+      config :decree, :tag_index_named_families, ["tenant_slug", "plan_slug"]
+
+  Every node must run the same list for the store's life. The list decides which facts a
+  decision requires, so changing it changes what an existing fact covers, and a kind left out
+  falls into the `entity` family without a word.
+
+  A kind listed `:digest` holds `<fingerprint>:<digest>`, and its family's key is that
+  fingerprint: `digest_key/1` reads it. Every other family has no key.
 
   ## The fold
 
@@ -69,15 +77,7 @@ defmodule Decree.Store.TagIndex do
 
   @fact_tag "tag_index:fact"
   @reserved_kinds ["tag_index", "tag_index_state"]
-  @named_families [
-    "command",
-    "command_kind",
-    "correlation",
-    "tenant_slug",
-    "plan_slug",
-    "email",
-    "oauth_uid"
-  ]
+  @named_families ["command", "command_kind", "correlation"]
   @states %{enabled: "enabled", disabled: "disabled"}
   @fingerprint_message "tag-digest-fingerprint"
 
@@ -98,10 +98,22 @@ defmodule Decree.Store.TagIndex do
   def reserved_kinds, do: @reserved_kinds
 
   @doc """
-  The families that are their own kind's, whatever a decision lists.
+  The families that are their own kind's, whatever a decision lists: decree's own `command`,
+  `command_kind` and `correlation`, then the application's `:tag_index_named_families`, in
+  order. Raises an `ArgumentError` when that is not a list of tag kinds that are not reserved.
   """
   @spec named_families() :: [family()]
-  def named_families, do: @named_families
+  def named_families do
+    configured = Application.get_env(:decree, :tag_index_named_families, [])
+
+    if not (is_list(configured) and Enum.all?(configured, &family?/1)) do
+      raise ArgumentError,
+            "config :decree, :tag_index_named_families must be a list of tag kinds that are " <>
+              "not reserved, got: #{inspect(configured)}"
+    end
+
+    @named_families ++ configured
+  end
 
   @doc """
   A fact's state tag. `key` is nil for a family with no key. Raises an `ArgumentError` for a

@@ -42,7 +42,8 @@ defmodule Decree.ReadmeExampleTest do
     assert is_binary(requirement)
     refute List.keymember?(readme_deps, :postgrex, 0)
 
-    assert {:decree, [git: "https://github.com/sparkle-space/decree.git", branch: "main"]} in readme_deps
+    assert {:decree, "~> 0.1.0"} in readme_deps
+    assert Version.match?(Mix.Project.config()[:version], "~> 0.1.0")
 
     assert List.keymember?(readme_deps, :jason, 0)
   end

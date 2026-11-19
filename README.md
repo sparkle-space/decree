@@ -6,7 +6,7 @@ decree is built for sparkle.space and for the projects sparkle.space produces. T
 
 ## Status
 
-decree is pre-1.0 (version 0.1.0). It has no tags, no releases, no changelog and no compatibility promise yet: a commit on `main` may change the API or the store schema. Pin a commit.
+decree is pre-1.0 (version 0.1.0). Until 1.0, a minor version (0.2.0) may change the API or the store schema; a patch version (0.1.1) does neither. `CHANGELOG.md` records each release and how to upgrade, and a commit on `main` between releases promises nothing.
 
 It has one production user, sparkle.space. What that use proves, and what it does not:
 
@@ -15,19 +15,23 @@ It has one production user, sparkle.space. What that use proves, and what it doe
 
 ## Installation
 
-decree is not on Hex. Add it as a git dependency, with [Jason](https://hex.pm/packages/jason) for the JSON serializer:
+Add decree from Hex, with [Jason](https://hex.pm/packages/jason) for the JSON serializer:
 
 ```elixir
 # mix.exs
 defp deps do
   [
-    {:decree, git: "https://github.com/sparkle-space/decree.git", branch: "main"},
+    {:decree, "~> 0.1.0"},
     {:jason, "~> 1.4"}
   ]
 end
 ```
 
-For a build you deploy, replace `branch: "main"` with `ref:` and a full commit SHA.
+`~> 0.1.0` takes patch versions only, since a minor version may break (Status). To format the router's `dispatch` and `identify` without parentheses, add `:decree` to `import_deps` in your `.formatter.exs`.
+
+### Compatibility
+
+decree needs Elixir 1.20 or later. CI tests one combination: Elixir 1.20.4 on Erlang/OTP 29.1.2, against PostgreSQL 18. Other versions of Erlang/OTP and PostgreSQL are not tested.
 
 ## A minimal application
 
