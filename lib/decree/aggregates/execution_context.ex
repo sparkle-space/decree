@@ -64,6 +64,8 @@ defmodule Decree.Aggregates.ExecutionContext do
   alias Decree.Aggregates.ExecutionContext
   alias Decree.Commands.ExecutionResult
 
+  @type t :: %__MODULE__{}
+
   defstruct [
     :command,
     :causation_id,
