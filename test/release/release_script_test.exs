@@ -260,6 +260,47 @@ defmodule Decree.ReleaseScriptTest do
     end
   end
 
+  # On a push, the Publish workflow passes the pushed-over commit's mix.exs: only the push
+  # that changed the version releases. A later push while that release waits for approval
+  # keeps the untagged version and must not release it from its own commit.
+  describe "plan --previous-mix-exs" do
+    defp previous(dir, version) do
+      path = Path.join(dir, "previous-mix.exs")
+      File.write!(path, String.replace(@mix_exs, "VERSION", version))
+      path
+    end
+
+    test "the push that bumped the version releases", %{tmp_dir: dir} do
+      project(dir, "0.1.1")
+
+      assert release(dir, ["plan", "--previous-mix-exs", previous(dir, "0.1.0"), "v0.1.0"]) ==
+               {"version=0.1.1\nrelease=true\n", 0}
+    end
+
+    test "a later push with the same untagged version does not release", %{tmp_dir: dir} do
+      project(dir, "0.1.1")
+
+      assert release(dir, ["plan", "--previous-mix-exs", previous(dir, "0.1.1"), "v0.1.0"]) ==
+               {"version=0.1.1\nrelease=false\n", 0}
+    end
+
+    test "a bump to an already tagged version does not release", %{tmp_dir: dir} do
+      project(dir, "0.1.1")
+
+      assert release(dir, ["plan", "--previous-mix-exs", previous(dir, "0.1.0"), "v0.1.1"]) ==
+               {"version=0.1.1\nrelease=false\n", 0}
+    end
+
+    test "a previous mix.exs without one @version is refused", %{tmp_dir: dir} do
+      project(dir, "0.1.1")
+      path = Path.join(dir, "previous-mix.exs")
+      File.write!(path, "defmodule Empty do\nend\n")
+
+      assert {output, 1} = release(dir, ["plan", "--previous-mix-exs", path, "v0.1.0"])
+      assert output =~ "exactly one @version"
+    end
+  end
+
   test "an unknown command is refused", %{tmp_dir: dir} do
     assert {output, 1} = release(dir, ["publish"])
     assert output =~ "usage:"
