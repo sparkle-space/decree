@@ -55,7 +55,6 @@ defmodule Decree.MixProject do
       "test/framework/event_store/support",
       "test/framework/example_domain",
       "test/framework/middleware/support",
-      "test/framework/pubsub/support",
       "test/framework/registration/support",
       "test/framework/verify/support",
       "test/store/support",
@@ -88,7 +87,6 @@ defmodule Decree.MixProject do
 
       # Optional dependencies
       {:jason, "~> 1.4", optional: true},
-      {:phoenix_pubsub, "~> 2.1", optional: true},
 
       # Test tooling
       {:mox, "~> 1.1", only: :test},

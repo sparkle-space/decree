@@ -60,7 +60,6 @@ defmodule Decree.Aggregates.LostAppendApp do
     otp_app: :decree,
     event_store:
       Decree.FrameworkStorage.event_store_config(event_store: Decree.Aggregates.LostAppendStore),
-    pubsub: :local,
     registry: :local
 
   router(Decree.Aggregates.LostAppendRouter)

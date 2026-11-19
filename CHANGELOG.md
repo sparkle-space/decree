@@ -42,4 +42,11 @@ For an application that pinned a decree commit before this release:
 
   To upgrade, delete the option and the config keys. A caller that needs its own write back reads it from the dispatch's answer (`returning:`), and a view that needs a handler's result is pushed it from the handler's event.
 
+- **The application's `pubsub:` option is removed.** Nothing in decree published on it once `consistency:` went. `Decree.PubSub`, its `Adapter` behaviour, `Decree.PubSub.LocalPubSub` and `Decree.PubSub.PhoenixPubSub` are gone, with the pub-sub child an application started and the optional `phoenix_pubsub` dependency. The store's `Decree.Store.PubSub` is unchanged. `pubsub:`, whatever its value, now raises an `ArgumentError`:
+
+  - at build: on `use Decree.Application`, or in the application's config (`config :my_app, MyApp.App, pubsub: ...`);
+  - at start: given to the application's `start_link/1`, or returned from its `init/1`.
+
+  To upgrade, delete the option. An application that broadcasts its own messages starts its own `Phoenix.PubSub` and depends on `phoenix_pubsub` itself.
+
 - **Elixir 1.20 or later.** `mix.exs` required `~> 1.18`; it now requires `~> 1.20`, the version CI tests.

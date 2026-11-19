@@ -101,7 +101,6 @@ defmodule Decree.DecisionFixtures.PersonalApp do
       event_store: Decree.FrameworkEventStore,
       conditional_appends: [stream_prefixes: ["personal-", "bare-", "tight-personal-"]]
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.PersonalRouter

@@ -601,7 +601,6 @@ defmodule Decree.RuleFixtures.App do
     otp_app: :decree,
     key_source: Decree.PersonalFields.Fixtures.Keys,
     event_store: Decree.RuleFixtures.Stores.store(),
-    pubsub: :local,
     registry: :local
 
   router Decree.RuleFixtures.Router
@@ -618,7 +617,6 @@ defmodule Decree.RuleFixtures.PlainApp do
     otp_app: :decree,
     event_store:
       Decree.FrameworkStorage.event_store_config(event_store: Decree.RuleFixtures.RecordingStore),
-    pubsub: :local,
     registry: :local
 
   router Decree.RuleFixtures.PlainRouter
@@ -633,7 +631,6 @@ defmodule Decree.RuleFixtures.UndeclaredApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: Decree.FrameworkStorage.event_store_config(),
-    pubsub: :local,
     registry: :local
 
   router Decree.RuleFixtures.Router
@@ -654,7 +651,6 @@ defmodule Decree.RuleFixtures.StrayTargetApp do
             Decree.RuleFixtures.Stores.targets() ++ [Decree.RuleFixtures.OutsideRouter.Target]
         ]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.RuleFixtures.Router
@@ -672,7 +668,6 @@ defmodule Decree.RuleFixtures.PlainDeclaringApp do
       Decree.FrameworkStorage.event_store_config(
         conditional_appends: [targets: [Decree.RuleFixtures.User]]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.RuleFixtures.PlainRouter

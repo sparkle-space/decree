@@ -6,7 +6,6 @@ defmodule Decree.ExampleDomain.BankApp do
     event_store: [
       event_store: Decree.FrameworkEventStore
     ],
-    pubsub: :local,
     registry: :local
 
   router(BankRouter)

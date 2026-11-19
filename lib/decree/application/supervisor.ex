@@ -23,6 +23,8 @@ defmodule Decree.Application.Supervisor do
 
     config = opts |> Keyword.merge(env_opts) |> Keyword.drop(@source_opts)
 
+    refuse_pubsub!(application, config)
+
     {otp_app, config}
   end
 
@@ -57,8 +59,10 @@ defmodule Decree.Application.Supervisor do
       |> Keyword.put(:otp_app, otp_app)
       |> Keyword.put(:application, application)
 
+    refuse_pubsub!(application, config)
+
     case application_init(application, config) do
-      {:ok, config} -> {:ok, config}
+      {:ok, config} -> {:ok, refuse_pubsub!(application, config)}
       :ignore -> :ignore
     end
   end
@@ -80,7 +84,6 @@ defmodule Decree.Application.Supervisor do
     case runtime_config(application, otp_app, config, opts) do
       {:ok, config} ->
         {event_store_child_spec, config} = event_store_child_spec(name, config)
-        {pubsub_child_spec, config} = pubsub_child_spec(name, config)
         {registry_child_spec, config} = registry_child_spec(name, config)
 
         :ok = Config.associate(self(), name, config)
@@ -88,7 +91,6 @@ defmodule Decree.Application.Supervisor do
         children =
           event_store_child_spec ++
             conditional_targets_child_spec(application, name) ++
-            pubsub_child_spec ++
             registry_child_spec ++
             app_child_spec(name, config)
 
@@ -110,6 +112,19 @@ defmodule Decree.Application.Supervisor do
     end
 
     :ok
+  end
+
+  # The removed `pubsub:` option (sparkle-space/sparklespace#8566): the build or the start
+  # refuses it, whatever its value, rather than ignore it.
+  defp refuse_pubsub!(application, config) do
+    if Keyword.has_key?(config, :pubsub) do
+      raise ArgumentError,
+            "the `pubsub:` option of application #{inspect(application)} was removed from " <>
+              "decree: drop it. Nothing in decree published on it; an application that " <>
+              "broadcasts its own messages starts its own Phoenix.PubSub"
+    end
+
+    config
   end
 
   # A rule route's half and the store's half of one declaration, checked by a child started right
@@ -307,17 +322,6 @@ defmodule Decree.Application.Supervisor do
     behaviours = Keyword.take(module.__info__(:attributes), [:behaviour])
 
     [behaviour] in Keyword.values(behaviours)
-  end
-
-  defp pubsub_child_spec(name, config) do
-    {adapter, adapter_config} =
-      Decree.PubSub.adapter(name, Keyword.get(config, :pubsub, :local))
-
-    {:ok, child_spec, adapter_meta} = adapter.child_spec(name, adapter_config)
-
-    config = Keyword.put(config, :pubsub, {adapter, adapter_meta})
-
-    {child_spec, config}
   end
 
   defp registry_child_spec(name, config) do

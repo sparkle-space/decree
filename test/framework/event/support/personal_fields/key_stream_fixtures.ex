@@ -184,7 +184,6 @@ defmodule Decree.PersonalFields.Fixtures.LedgerApp do
         pool_size: 12,
         deletable: [stream_prefixes: [KeyStreams.prefix()], event_types: KeyStream.event_types()]
       ),
-    pubsub: :local,
     registry: :local
 
   router(Router)

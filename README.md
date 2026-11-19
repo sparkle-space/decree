@@ -53,7 +53,6 @@ config :my_app, MyApp.EventStore,
 
 config :my_app, MyApp.App,
   event_store: [event_store: MyApp.EventStore],
-  pubsub: :local,
   registry: :local
 ```
 

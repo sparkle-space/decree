@@ -66,7 +66,6 @@ defmodule Decree.Aggregates.AppendResultStoreTest do
           returning: :append_result,
           conditional_appends: [stream_prefixes: ["decided-result-"]]
         ),
-      pubsub: :local,
       registry: :local
 
     router Router

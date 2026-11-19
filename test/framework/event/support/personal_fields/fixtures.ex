@@ -633,7 +633,6 @@ defmodule Decree.PersonalFields.Fixtures.App do
     otp_app: :decree,
     key_source: Keys,
     event_store: Decree.FrameworkStorage.event_store_config(),
-    pubsub: :local,
     registry: :local
 
   router(Router)
@@ -651,7 +650,6 @@ defmodule Decree.PersonalFields.Fixtures.FencedApp do
     key_source: Keys,
     personal_metadata_keys: [:email, :password_hash],
     event_store: Decree.FrameworkStorage.event_store_config(),
-    pubsub: :local,
     registry: :local
 
   router(Router)
@@ -666,7 +664,6 @@ defmodule Decree.PersonalFields.Fixtures.EnvApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: Decree.FrameworkStorage.event_store_config(),
-    pubsub: :local,
     registry: :local
 
   def init(config) do

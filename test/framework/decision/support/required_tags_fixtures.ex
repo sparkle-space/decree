@@ -317,7 +317,6 @@ defmodule Decree.RequiredTagsFixtures.App do
     otp_app: :decree,
     key_source: Decree.PersonalFields.Fixtures.Keys,
     event_store: Decree.FrameworkStorage.event_store_config(),
-    pubsub: :local,
     registry: :local
 
   router Decree.RequiredTagsFixtures.Router
@@ -337,7 +336,6 @@ defmodule Decree.RequiredTagsFixtures.DecisionApp do
           stream_prefixes: ["creating-", "indexed-", "injected-", "keyed-", "two-", "unindexed-"]
         ]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.RequiredTagsFixtures.DecisionRouter
@@ -352,7 +350,6 @@ defmodule Decree.RequiredTagsFixtures.MockedDecisionApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: Decree.FrameworkStorage.event_store_config(event_store: Decree.EventStore.Mock),
-    pubsub: :local,
     registry: :local
 
   router Decree.RequiredTagsFixtures.DecisionRouter

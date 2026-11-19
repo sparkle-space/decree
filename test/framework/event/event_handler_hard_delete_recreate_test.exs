@@ -18,7 +18,6 @@ defmodule Decree.Event.EventHandlerHardDeleteRecreateTest do
         event_store: Decree.FrameworkEventStore,
         enable_hard_deletes: true
       ],
-      pubsub: :local,
       registry: :local
 
     def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}

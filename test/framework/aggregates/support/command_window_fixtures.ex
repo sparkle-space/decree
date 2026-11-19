@@ -208,7 +208,6 @@ defmodule Decree.CommandWindowFixtures.App do
   use Decree.Application,
     otp_app: :decree,
     event_store: Decree.CommandWindowFixtures.Stores.store(),
-    pubsub: :local,
     registry: :local
 
   router Decree.CommandWindowFixtures.Router
@@ -224,7 +223,6 @@ defmodule Decree.CommandWindowFixtures.UndeclaredWindowApp do
   use Decree.Application,
     otp_app: :decree,
     event_store: Decree.FrameworkStorage.event_store_config(),
-    pubsub: :local,
     registry: :local
 
   router Decree.CommandWindowFixtures.WindowOnlyRouter
@@ -247,7 +245,6 @@ defmodule Decree.CommandWindowFixtures.DeclaredWindowApp do
           ]
         ]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.CommandWindowFixtures.WindowOnlyRouter
@@ -265,7 +262,6 @@ defmodule Decree.CommandWindowFixtures.FunctionIdentityApp do
       Decree.FrameworkStorage.event_store_config(
         conditional_appends: [targets: [Decree.CommandWindowFixtures.Account]]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.CommandWindowFixtures.FunctionIdentityRouter
@@ -282,7 +278,6 @@ defmodule Decree.CommandWindowFixtures.TaggedFunctionApp do
       Decree.FrameworkStorage.event_store_config(
         conditional_appends: [targets: [Decree.CommandWindowFixtures.Account]]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.CommandWindowFixtures.TaggedFunctionRouter
@@ -299,7 +294,6 @@ defmodule Decree.CommandWindowFixtures.OpaqueApp do
       Decree.FrameworkStorage.event_store_config(
         conditional_appends: [targets: [Decree.CommandWindowFixtures.Account]]
       ),
-    pubsub: :local,
     registry: :local
 
   router Decree.CommandWindowFixtures.OpaqueRouter

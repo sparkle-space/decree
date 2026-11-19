@@ -163,6 +163,25 @@ Kept and rewritten, with their other assertions:
 - `test/framework/commands/routing_commands_test.exs` "should show a helpful message when bad argument given to a `dispatch/2` function": the listed params no longer end in `consistency`.
 - `consistency: :eventual` leaves the `%Decree.Event.Handler{}` literals of `test/framework/event/batch_timeout_integration_test.exs`, `batch_timeout_telemetry_test.exs`, `batch_timeout_test.exs`, `event_handler_batch_telemetry_test.exs` and `event_handler_batch_test.exs`, and the `default_dispatch_opts` of `test/framework/commands/support/returning/default_dispatch_return_app.ex`.
 
+## Deleted with `pubsub:`
+
+The framework's application pub-sub is removed (founder ruling 2026-11-19, sparkle-space/sparklespace#8566): `Decree.PubSub`, its `Adapter` behaviour, `LocalPubSub` and `PhoenixPubSub`, `Decree.Application.pubsub_adapter/1` and the application's `pubsub:` option and child. Its last user in decree was `consistency: :strong`'s ack topic. Their upstream tests go with them. `test/framework/application/pubsub_removed_test.exs` pins the refusal at every door. The store's own `Decree.Store.PubSub` is not this, and its tests stay.
+
+Files (3):
+
+- `test/framework/pubsub/local_pubsub_test.exs` (3 tests) and `test/framework/pubsub/phoenix_pubsub_test.exs` (3 tests): the shared case on each adapter, "should receive broadcast message", "should list tracked processes" and "should ignore duplicate tracks for existing process".
+- `test/framework/pubsub/support/pubsub_test_case.ex`: that shared case.
+
+Test cases removed from files that stay (2):
+
+- `test/framework/application/application_test.exs`: "should expose a pubsub adapter".
+- `test/framework/application/config_test.exs`: "should get application pubsub config".
+
+Kept and rewritten, with their other assertions:
+
+- `test/framework/application/application_test.exs` "should allow application config to be provided by `init/1` callback function" loses its `pubsub_adapter/1` assertion, and `Decree.RuntimeConfiguredApplication`'s `init/1` no longer puts a Phoenix `pubsub:` config. The event store and registry assertions stay.
+- `pubsub: :local` leaves every test application and fixture that set it, and the framework application config in `config/test.exs`.
+
 ## Upstream test configurations not run
 
 - eventstore's `test.jsonb` (`MIX_ENV=jsonb`): runs the store suite with `EventStore.JsonbSerializer`, which was not kept.
@@ -210,4 +229,4 @@ So: `assert_receive_timeout` rose from 1_000 to 2_000 for framework and conforma
 
 ## Audit
 
-`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port", the 4 under "Deleted with the dead surface", the 1 under "Deleted with the adapter layer", the 9 under "Deleted with `consistency:`" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.
+`git diff -M --diff-filter=D --name-only 6e97aeb -- test` (6e97aeb is the copy commit) lists the 7 files under "Deleted in the test port", the 4 under "Deleted with the dead surface", the 1 under "Deleted with the adapter layer", the 9 under "Deleted with `consistency:`", the 3 under "Deleted with `pubsub:`" and `test/conformance/support/test_event_store.ex`, which is not deleted: it became `test/conformance/support/conformance_event_store.ex`, a file too small for git to pair as a rename.
