@@ -2,25 +2,97 @@ defmodule Decree.Projections.Ecto do
   @moduledoc """
   Read model projections for Decree using Ecto.
 
-  ## Example usage
+  A projector is an event handler (`Decree.Event.Handler`) that writes each event it handles
+  into an Ecto read model. It runs your `Ecto.Multi` in one transaction with an update to its
+  row in the `projection_versions` table, which holds the number of the last event it
+  projected, so an event delivered again is skipped.
 
-      defmodule Projector do
-        use Decree.Projections.Ecto,
-          application: MyApp.Application,
-          name: "my-projection",
-          repo: MyApp.Repo,
-          schema_prefix: "my-prefix",
-          timeout: :infinity
+  ## Example
 
-        project %Event{}, _metadata, fn multi ->
-          Ecto.Multi.insert(multi, :my_projection, %MyProjection{...})
-        end
+  A projector for the README's minimal application. It writes each `MyApp.AccountRegistered`
+  into an `accounts` table:
 
-        project %AnotherEvent{}, fn multi ->
-          Ecto.Multi.insert(multi, :my_projection, %MyProjection{...})
+      # lib/my_app/accounts.ex
+      defmodule MyApp.Accounts.Account do
+        use Ecto.Schema
+
+        @primary_key {:account_id, :binary_id, autogenerate: false}
+        schema "accounts" do
+          field :handle, :string
         end
       end
 
+      defmodule MyApp.Accounts.Projector do
+        use Decree.Projections.Ecto,
+          application: MyApp.App,
+          repo: MyApp.Repo,
+          name: "accounts"
+
+        project %MyApp.AccountRegistered{} = event, _metadata, fn multi ->
+          Ecto.Multi.insert(multi, :account, %MyApp.Accounts.Account{
+            account_id: event.account_id,
+            handle: event.handle
+          })
+        end
+      end
+
+  `application:` is your `Decree.Application`, `MyApp.App`. `repo:` is your `Ecto.Repo`;
+  without it, the projector takes `config :decree, repo: MyApp.Repo` at compile time. `name:`
+  names the projector's subscription and its row in `projection_versions`. `schema_prefix:`
+  (below) and `timeout:`, the transaction's timeout (`:infinity` by default), are the
+  projector's own. Every other option goes to `Decree.Event.Handler`.
+
+  ## The `projection_versions` table
+
+  decree ships no migration for this table. It lives in your repo's database, so create it
+  with an Ecto migration of your own before any projector starts. Every projector on the repo
+  shares it, one row per `name:`. This migration creates it and the example's read model:
+
+      # priv/repo/migrations/20261120000000_create_accounts.exs
+      defmodule MyApp.Repo.Migrations.CreateAccounts do
+        use Ecto.Migration
+
+        def change do
+          create table(:projection_versions, primary_key: false) do
+            add :projection_name, :text, primary_key: true
+            add :last_seen_event_number, :bigint
+
+            timestamps(type: :naive_datetime_usec)
+          end
+
+          create table(:accounts, primary_key: false) do
+            add :account_id, :uuid, primary_key: true
+            add :handle, :text, null: false
+          end
+        end
+      end
+
+  Run it with `mix ecto.migrate`, which needs `config :my_app, ecto_repos: [MyApp.Repo]`.
+
+  With `schema_prefix:`, a projector reads and writes `projection_versions` in that schema, so
+  each schema it names needs the table too: create it there with
+  `table(:projection_versions, primary_key: false, prefix: "my_prefix")`. The option sets only
+  that table's schema. Your read model's own queries take their own `prefix:`.
+
+  ## Starting it
+
+  Start the projector in your OTP application's supervision tree, after the repo and the
+  decree application:
+
+      # lib/my_app/application.ex
+      defmodule MyApp.Application do
+        use Application
+
+        @impl Application
+        def start(_type, _args) do
+          children = [MyApp.Repo, MyApp.App, MyApp.Accounts.Projector]
+
+          Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+        end
+      end
+
+  `MyApp.Application` is the OTP application module, named by `mod:` in `mix.exs`. `MyApp.App`
+  is the decree application. They are two modules.
   """
 
   defmacro __using__(opts) do
@@ -126,19 +198,26 @@ defmodule Decree.Projections.Ecto do
 
   ## Example
 
-      defmodule MyApp.ExampleProjector do
-        use Decree.Projections.Ecto,
-          application: MyApp.Application,
-          repo: MyApp.Projections.Repo,
-          name: "MyApp.ExampleProjector"
+  The moduledoc's projector, with the callback:
 
-        project %AnEvent{name: name}, fn multi ->
-          Ecto.Multi.insert(multi, :example_projection, %ExampleProjection{name: name})
+      # lib/my_app/accounts.ex
+      defmodule MyApp.Accounts.Projector do
+        use Decree.Projections.Ecto,
+          application: MyApp.App,
+          repo: MyApp.Repo,
+          name: "accounts"
+
+        project %MyApp.AccountRegistered{} = event, _metadata, fn multi ->
+          Ecto.Multi.insert(multi, :account, %MyApp.Accounts.Account{
+            account_id: event.account_id,
+            handle: event.handle
+          })
         end
 
         @impl Decree.Projections.Ecto
-        def after_update(event, metadata, changes) do
-          # Use the event, metadata, or `Ecto.Multi` changes and return `:ok`
+        def after_update(_event, _metadata, %{account: %MyApp.Accounts.Account{}}) do
+          # Use the event, metadata, or `Ecto.Multi` changes, such as to broadcast the
+          # account with Phoenix.PubSub, and return `:ok`
           :ok
         end
       end

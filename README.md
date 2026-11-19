@@ -172,6 +172,8 @@ mix decree.store.init
 
 ```elixir
 # On a fresh store, before anything else is appended
+{:ok, %Decree.Store.Streams.StreamInfo{stream_version: 0}} = MyApp.EventStore.stream_info(:all)
+
 :ok =
   MyApp.App.dispatch(%MyApp.EnableTagIndex{
     command_id: Decree.UUID.uuid4(),
@@ -198,7 +200,7 @@ Every command carries a `command_id`, a lowercase canonical UUID its sender mint
 
 - **The store must declare the aggregate** in `conditional_appends: [targets: ...]`. The application refuses to start when a rule route's aggregate is missing there.
 - **The command needs a `:rule_result` field**, where `execute/2` finds what the rule's query matched.
-- **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.TagIndexEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`. Enable it on an empty store, so every later event is covered.
+- **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.TagIndexEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`. Enable it on an empty store, so every later event is covered: `MyApp.EventStore.stream_info(:all)` answers `$all`'s `stream_version`, 0 while no event has been appended. decree does not refuse an enable on a store with history, so the check is yours. `Decree.Store.TagIndex`, "The lifecycle", says why it matters.
 
 `Decree.Decision.Rule` covers the rest: a follow-up query, keys, bounds, retries and the required tags.
 
