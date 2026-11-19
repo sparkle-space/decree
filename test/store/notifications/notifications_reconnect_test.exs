@@ -2,6 +2,7 @@ defmodule Decree.Store.Notifications.NotificationsReconnectTest do
   use Decree.Store.StorageCase
 
   alias Decree.Store.{EventFactory, PubSub, ProcessHelper, Wait}
+  alias Decree.Store.Notifications.Connection
 
   describe "notifications reconnect" do
     test "resume after disconnect" do
@@ -9,14 +10,12 @@ defmodule Decree.Store.Notifications.NotificationsReconnectTest do
 
       :ok = PubSub.subscribe(TestEventStore, stream_uuid)
 
-      shutdown_postgrex_notifications_connection(TestEventStore.Postgrex.Notifications)
+      sock = shutdown_postgrex_notifications_connection(TestEventStore.Postgrex.Notifications)
 
-      # Wait for notifications to reconnect
-      Wait.until(fn ->
-        assert {:ok, ref} =
-                 Postgrex.Notifications.listen(TestEventStore.Postgrex.Notifications, "channel")
-
-        assert is_reference(ref)
+      # Wait for notifications to reconnect on a new socket and listen again
+      Wait.until(5_000, fn ->
+        assert socket(TestEventStore.Postgrex.Notifications) not in [nil, sock]
+        assert Connection.listen(TestEventStore.Postgrex.Notifications, 1_000) == :ok
       end)
 
       :ok = append_events(stream_uuid, 3)
@@ -64,7 +63,15 @@ defmodule Decree.Store.Notifications.NotificationsReconnectTest do
 
     {_, %{protocol: %{sock: {:gen_tcp, sock}}}} = :sys.get_state(conn)
 
-    :gen_tcp.shutdown(sock, :read_write)
+    :ok = :gen_tcp.shutdown(sock, :read_write)
+    sock
+  end
+
+  defp socket(name) do
+    case :sys.get_state(name) do
+      {_, %{protocol: %{sock: {:gen_tcp, sock}}}} -> sock
+      _ -> nil
+    end
   end
 
   defp append_events(stream_uuid, count, expected_version \\ 0) do

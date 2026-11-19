@@ -22,19 +22,12 @@ decree is not on Hex. Add it as a git dependency, with [Jason](https://hex.pm/pa
 defp deps do
   [
     {:decree, git: "https://github.com/sparkle-space/decree.git", branch: "main"},
-    {:jason, "~> 1.4"},
-    # While decree pins Postgrex to a commit (UPSTREAM.md, Dependency pins), repeat its pin:
-    {:postgrex,
-     git: "https://github.com/elixir-ecto/postgrex.git",
-     ref: "bd402a5310d0a7b5e7ab1db1d53309876691b3da",
-     override: true}
+    {:jason, "~> 1.4"}
   ]
 end
 ```
 
 For a build you deploy, replace `branch: "main"` with `ref:` and a full commit SHA.
-
-The Postgrex line is needed as soon as your project, or another of its dependencies, asks for Postgrex or `ecto_sql` itself, as a Phoenix application does. decree's own `override: true` covers only decree's dependencies, so Mix stops with "Dependencies have diverged" until your `mix.exs` repeats the pin. The line goes when decree's pin moves back to a Postgrex release.
 
 ## A minimal application
 
