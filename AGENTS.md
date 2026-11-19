@@ -24,7 +24,7 @@ Flag these as **P0** (must fix before merge):
 
 ## Releases
 
-`CONTRIBUTING.md`, "Releases", describes the flow. In short: the "Prepare release" workflow opens a PR that bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under it (`scripts/release.exs bump`). Merging that PR starts "Publish". Publish runs only when the version is not the latest `v*` tag. It runs CI's jobs as gates, then waits for the founder's approval in the `hex-publish` environment, then tags, creates the GitHub release and runs `mix hex.publish` with Hex Workload Identity.
+`CONTRIBUTING.md`, "Releases", describes the flow. In short: the "Prepare release" workflow opens a PR that bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under it (`scripts/release.exs bump`). Merging that PR starts "Publish". Publish releases only from the push that changed the version, and only when that version is not the latest `v*` tag; a manual run on `main` releases main's commit when its version is not the latest tag. It runs CI's jobs as gates, then waits for the founder's approval in the `hex-publish` environment, then tags, creates the GitHub release and runs `mix hex.publish` with Hex Workload Identity.
 
 The version rules before 1.0:
 
@@ -37,7 +37,7 @@ Flag these on a decree PR:
 - **A version or CHANGELOG release section changed by hand.** Only the Prepare release PR changes `@version` in `mix.exs` or adds a `## X.Y.Z` heading. A breaking change in a release whose bump is a patch is the finding.
 - **A user-visible change with no entry under "Unreleased".** Changes to tests, CI and docs alone need none.
 - **A wider release workflow.** These are findings in `prepare-release.yml` or `publish.yml`:
-  - a job given a permission it does not use (`contents: write` and `id-token: write` belong to the publish job only);
+  - a job given a permission it does not use. `id-token: write` belongs to the publish job only. `contents: write` belongs to the publish job, which tags and creates the release, and to the prepare job, which pushes the release branch;
   - a stored Hex key or `HEX_API_KEY`;
   - the publish job without the `hex-publish` environment;
   - an action not pinned to a full commit SHA with its version as a comment;

@@ -42,10 +42,10 @@ A merge to `main` publishes nothing by itself. A release is a pull request that 
 1. **Prepare.** A maintainer runs the "Prepare release" workflow on `main` with `bump` set to patch, minor or major (Actions, "Prepare release", "Run workflow"; or `gh workflow run prepare-release.yml -f bump=patch`). It runs `scripts/release.exs bump`. That bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under the new version and today's date (UTC). It then opens a pull request from `release/vX.Y.Z`. An empty "Unreleased" section, or a version that is already tagged, stops it.
 2. **Review the release PR.** GitHub starts no CI on a pull request that a workflow's token opened, so close and reopen the PR to run it. For a minor bump, update README.md's version references in the same PR. The CHANGELOG section becomes the GitHub release body. Merge it like any PR.
 3. **Publish.** The merge starts the "Publish" workflow:
-   - "Release check" compares `mix.exs`'s version with the latest `v*` tag and stops when they match.
+   - "Release check" goes on only when the merge changed `mix.exs`'s version and that version is not the latest `v*` tag. A later merge that lands while the release waits for approval does not release again.
    - "Gates" runs the CI workflow's jobs again on the commit to publish.
    - "Publish to Hex" waits for approval in the `hex-publish` environment. It then tags `vX.Y.Z`, creates the GitHub release and runs `mix hex.publish` (package and docs). It authenticates with Hex Workload Identity, so no Hex key is stored. Last, it reads the release back from hex.pm.
-4. **If a step fails,** re-run the failed jobs of that run. Each step first checks what is already done: a tag at this commit, an existing release, or the version already on Hex is skipped. A tag at another commit stops the run.
+4. **If a step fails,** re-run the failed jobs of that run. Each step first checks what is already done: a tag at this commit, an existing release, or the version already on Hex with its docs is skipped. A version on Hex without its docs gets its docs. A tag at another commit stops the run. If the release's run cannot finish because a fix had to land first, run "Publish" by hand on `main` (Actions, "Publish", "Run workflow"). A manual run releases main's commit when its version is not the latest `v*` tag.
 
 ## Licence
 

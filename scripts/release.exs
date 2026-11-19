@@ -6,7 +6,8 @@
 #     elixir scripts/release.exs version
 #     elixir scripts/release.exs bump patch|minor|major [--confirm-1-0] [--date YYYY-MM-DD]
 #     elixir scripts/release.exs notes VERSION
-#     elixir scripts/release.exs plan [TAG ...]
+#     elixir scripts/release.exs plan [--previous-mix-exs PATH] [TAG ...]
+#     elixir scripts/release.exs hex-step STATUS RELEASE_JSON
 #
 # - `version` prints mix.exs's version.
 # - `bump` raises the version with the pre-1.0 rules and moves the CHANGELOG's
@@ -17,7 +18,13 @@
 #   release body.
 # - `plan` takes the repository's tags and prints `version=` and `release=` lines for
 #   $GITHUB_OUTPUT. It releases when mix.exs's version is not the latest vX.Y.Z tag, and
-#   refuses a version behind it. Other tags are ignored.
+#   refuses a version behind it. Other tags are ignored. With --previous-mix-exs, the
+#   pushed-over commit's mix.exs, it releases only when the push changed the version: a
+#   later push keeps a version that waits for approval, and must not release it too.
+# - `hex-step` takes hex.pm's status code and answer for the release
+#   (GET /api/packages/decree/releases/VERSION) and prints the publish job's next step:
+#   `publish` (package and docs), `docs` (the package is there without its docs) or
+#   `none`. Any other answer is refused.
 
 defmodule Decree.ReleaseScript do
   @version_line ~r/^(\s*@version\s+")(\d+\.\d+\.\d+)(")$/m
@@ -26,21 +33,23 @@ defmodule Decree.ReleaseScript do
   def main(["version"]), do: IO.puts(version!())
   def main(["bump" | args]), do: bump(args)
   def main(["notes", version]), do: IO.write(notes!(File.read!("CHANGELOG.md"), version))
-  def main(["plan" | tags]), do: plan(tags)
+  def main(["plan" | args]), do: plan(args)
+  def main(["hex-step", status, release_json]), do: IO.puts(hex_step!(status, release_json))
 
   def main(_args) do
     fail("""
     usage: elixir scripts/release.exs version
            elixir scripts/release.exs bump patch|minor|major [--confirm-1-0] [--date YYYY-MM-DD]
            elixir scripts/release.exs notes VERSION
-           elixir scripts/release.exs plan [TAG ...]\
+           elixir scripts/release.exs plan [--previous-mix-exs PATH] [TAG ...]
+           elixir scripts/release.exs hex-step STATUS RELEASE_JSON\
     """)
   end
 
-  defp version! do
-    case Regex.scan(@version_line, File.read!("mix.exs")) do
+  defp version!(path \\ "mix.exs") do
+    case Regex.scan(@version_line, File.read!(path)) do
       [[_line, _prefix, version, _suffix]] -> version
-      _ -> fail("mix.exs must have exactly one @version \"X.Y.Z\" line")
+      _ -> fail("#{path} must have exactly one @version \"X.Y.Z\" line")
     end
   end
 
@@ -121,8 +130,10 @@ defmodule Decree.ReleaseScript do
     end
   end
 
-  defp plan(tags) do
+  defp plan(args) do
+    {opts, tags} = OptionParser.parse!(args, strict: [previous_mix_exs: :string])
     version = version!()
+    previous = if path = opts[:previous_mix_exs], do: version!(path)
 
     latest =
       tags
@@ -142,8 +153,22 @@ defmodule Decree.ReleaseScript do
         :lt -> fail("mix.exs's version #{version} is behind the latest tag v#{latest}")
       end
 
+    release = release and previous != version
+
     IO.puts("version=#{version}\nrelease=#{release}")
   end
+
+  defp hex_step!("404", _release_json), do: "publish"
+
+  defp hex_step!("200", release_json) do
+    case release_json |> File.read!() |> JSON.decode() do
+      {:ok, %{"has_docs" => true}} -> "none"
+      {:ok, %{"has_docs" => false}} -> "docs"
+      _ -> fail("hex.pm's answer for the release has no has_docs")
+    end
+  end
+
+  defp hex_step!(status, _release_json), do: fail("hex.pm answered #{status} for the release")
 
   defp section_heading?(line), do: String.starts_with?(line, "## ")
 
