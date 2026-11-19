@@ -27,6 +27,14 @@ defmodule Decree.Commands.ConsistencyRemovedTest do
     def init(config), do: {:ok, Keyword.put(config, :consistency, :eventual)}
   end
 
+  defmodule DroppingInitHandler do
+    use Decree.Event.Handler,
+      application: Decree.ExampleDomain.BankApp,
+      name: "ConsistencyRemovedDroppingInitHandler"
+
+    def init(config), do: {:ok, Keyword.delete(config, :consistency)}
+  end
+
   defp open_account do
     %OpenAccount{command_id: UUID.uuid4(), account_number: UUID.uuid4(), initial_balance: 1_000}
   end
@@ -83,6 +91,29 @@ defmodule Decree.Commands.ConsistencyRemovedTest do
 
     test "refuses `consistency:` returned from init/1" do
       assert_raise ArgumentError, @removed, fn -> InitHandler.start_link() end
+    end
+
+    test "refuses `consistency:` given to start_link/1 when init/1 drops it" do
+      assert_raise ArgumentError, @removed, fn ->
+        DroppingInitHandler.start_link(consistency: :strong)
+      end
+    end
+
+    test "refuses `consistency:` given to the handler process's own start_link/4" do
+      {application, name, config} =
+        Decree.Event.Handler.parse_config!(PlainHandler,
+          application: BankApp,
+          name: "ConsistencyRemovedPlainHandler"
+        )
+
+      assert_raise ArgumentError, @removed, fn ->
+        Decree.Event.Handler.start_link(
+          application,
+          name,
+          PlainHandler,
+          Keyword.put(config, :consistency, :strong)
+        )
+      end
     end
   end
 
