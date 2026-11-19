@@ -595,7 +595,6 @@ defmodule Decree.DecisionFixtures.App do
         ]
       ]
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.Router
@@ -616,7 +615,6 @@ defmodule Decree.DecisionFixtures.DeletableApp do
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [tag_kinds: ["secret"]]
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.Router
@@ -635,7 +633,6 @@ defmodule Decree.DecisionFixtures.IndexDeletableApp do
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexEnabled"]]
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.Router
@@ -655,7 +652,6 @@ defmodule Decree.DecisionFixtures.DisableDeletableApp do
       conditional_appends: [stream_prefixes: ["scripted-"]],
       deletable: [event_types: ["Elixir.Decree.TagIndexFixtures.TagIndexDisabled"]]
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.Router
@@ -679,7 +675,6 @@ defmodule Decree.DecisionFixtures.DeletableStreamsApp do
       ],
       enable_hard_deletes: true
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.Router
@@ -697,7 +692,6 @@ defmodule Decree.DecisionFixtures.HardDeletesApp do
       conditional_appends: [stream_prefixes: ["scripted-"]],
       enable_hard_deletes: true
     ],
-    pubsub: :local,
     registry: :local
 
   router Decree.DecisionFixtures.Router

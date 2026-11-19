@@ -95,7 +95,6 @@ framework_app_config = [
   event_store: [
     event_store: Decree.FrameworkEventStore
   ],
-  pubsub: :local,
   registry: :local
 ]
 

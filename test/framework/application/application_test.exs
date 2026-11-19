@@ -28,15 +28,6 @@ defmodule Decree.ApplicationTest do
              }
     end
 
-    test "should expose a pubsub adapter" do
-      assert Application.pubsub_adapter(ExampleApplication) ==
-               {Decree.PubSub.LocalPubSub,
-                %{
-                  pubsub_name: Decree.ExampleApplication.LocalPubSub,
-                  tracker_name: Decree.ExampleApplication.LocalPubSub.Tracker
-                }}
-    end
-
     test "should expose a registry adapter" do
       assert Application.registry_adapter(ExampleApplication) ==
                {Decree.Registration.LocalRegistry,
@@ -50,13 +41,6 @@ defmodule Decree.ApplicationTest do
                event_store: Decree.FrameworkEventStore,
                name: Decree.RuntimeConfiguredApplication.FrameworkEventStore
              }
-
-      assert Application.pubsub_adapter(RuntimeConfiguredApplication) ==
-               {Decree.PubSub.PhoenixPubSub,
-                %{
-                  pubsub_name: Decree.RuntimeConfiguredApplication.PhoenixPubSub,
-                  tracker_name: Decree.RuntimeConfiguredApplication.PhoenixPubSub.Tracker
-                }}
 
       assert Application.registry_adapter(RuntimeConfiguredApplication) ==
                {Decree.Registration.LocalRegistry,

@@ -6,7 +6,6 @@ defmodule Decree.Commands.DefaultDispatchReturnApp do
     event_store: [
       event_store: Decree.FrameworkEventStore
     ],
-    pubsub: :local,
     registry: :local,
     default_dispatch_opts: [
       returning: :aggregate_version

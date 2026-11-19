@@ -20,14 +20,6 @@ defmodule Decree.Application.ConfigTest do
                Config.get(ExampleApplication, :event_store)
     end
 
-    test "should get application pubsub config" do
-      assert {Decree.PubSub.LocalPubSub,
-              %{
-                pubsub_name: Decree.ExampleApplication.LocalPubSub,
-                tracker_name: Decree.ExampleApplication.LocalPubSub.Tracker
-              }} == Config.get(ExampleApplication, :pubsub)
-    end
-
     test "should get application registry config" do
       assert {Decree.Registration.LocalRegistry,
               %{registry_name: Decree.ExampleApplication.LocalRegistry}} ==

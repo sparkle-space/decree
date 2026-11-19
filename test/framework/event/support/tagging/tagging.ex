@@ -472,7 +472,6 @@ defmodule Decree.Event.Tagging.App do
     otp_app: :decree,
     event_store:
       Decree.FrameworkStorage.event_store_config(event_store: Decree.Event.Tagging.Store),
-    pubsub: :local,
     registry: :local
 
   router(Decree.Event.Tagging.Router)

@@ -4,7 +4,6 @@ defmodule Decree.DefaultApp do
     event_store: [
       event_store: Decree.FrameworkEventStore
     ],
-    pubsub: :local,
     registry: :local
 
   # One event store process per application instance (see Decree.FrameworkStorage).
