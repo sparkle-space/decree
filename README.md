@@ -1,10 +1,206 @@
 # decree
 
-An event-sourcing toolkit for Elixir: a Postgres event store (`Decree.Store`) and a CQRS framework (`Decree`) on top of it.
+An event-sourcing toolkit for Elixir: a Postgres event store (`Decree.Store`) and a CQRS framework (`Decree`) on top of it, with decision rules: conditions an append checks across streams, such as "one account per handle".
 
-Derived from [Commanded](https://github.com/commanded/commanded) and [EventStore](https://github.com/commanded/eventstore) by copying the code sparkle.space uses, with no fork and no upstream history. MIT; the upstream notices are in `NOTICE`, the per-file origin in `PROVENANCE.tsv`, and the upstream versions and the tailing window in `UPSTREAM.md`.
+decree is built for sparkle.space and for the projects sparkle.space produces. That is its first purpose. If it is useful to you too, you are welcome to use it, and we hold it to the same standard either way.
 
-Status: bootstrap (sparkle.space P2, sparkle-space/sparklespace#7498). Private.
+## Status
+
+decree is pre-1.0 (version 0.1.0). It has no tags, no releases, no changelog and no compatibility promise yet: a commit on `main` may change the API or the store schema. Pin a commit.
+
+It has one production user, sparkle.space. What that use proves, and what it does not:
+
+- **In production:** the Postgres store and its migrations, aggregates and snapshots, the command router and middleware, event handlers, Ecto projections, upcasting, personal fields with per-subject keys, and decision rules on an aggregate's own stream (`Decree.Decision.Rule`).
+- **Built and tested, with no production user yet:** decisions that own their streams (`Decree.Decision`), the multi-stream conditional append, the command window (`Decree.Aggregate`, "Command window"), `mix decree.verify.eventless`, and `:strong` dispatch consistency.
+
+## Installation
+
+decree is not on Hex. Add it as a git dependency, with [Jason](https://hex.pm/packages/jason) for the JSON serializer:
+
+```elixir
+# mix.exs
+defp deps do
+  [
+    {:decree, git: "https://github.com/sparkle-space/decree.git", branch: "main"},
+    {:jason, "~> 1.4"},
+    # While decree pins Postgrex to a commit (UPSTREAM.md, Dependency pins), repeat its pin:
+    {:postgrex,
+     git: "https://github.com/elixir-ecto/postgrex.git",
+     ref: "bd402a5310d0a7b5e7ab1db1d53309876691b3da",
+     override: true}
+  ]
+end
+```
+
+For a build you deploy, replace `branch: "main"` with `ref:` and a full commit SHA.
+
+The Postgrex line is needed as soon as your project, or another of its dependencies, asks for Postgrex or `ecto_sql` itself, as a Phoenix application does. decree's own `override: true` covers only decree's dependencies, so Mix stops with "Dependencies have diverged" until your `mix.exs` repeats the pin. The line goes when decree's pin moves back to a Postgrex release.
+
+## A minimal application
+
+One aggregate with a decision rule, a router, an application and an event handler. An account claims a handle, and the rule refuses a handle another account holds. The test `test/framework/readme_example_test.exs` compiles and runs the three blocks below from this file.
+
+```elixir
+# config/config.exs
+import Config
+
+config :my_app, event_stores: [MyApp.EventStore]
+
+config :my_app, MyApp.EventStore,
+  serializer: Decree.Serialization.JsonSerializer,
+  username: "postgres",
+  password: "postgres",
+  hostname: "localhost",
+  database: "my_app_eventstore",
+  conditional_appends: [targets: [MyApp.Account]]
+
+config :my_app, MyApp.App,
+  event_store: [event_store: MyApp.EventStore],
+  pubsub: :local,
+  registry: :local
+```
+
+```elixir
+# lib/my_app.ex
+defmodule MyApp.EventStore do
+  use Decree.Store, otp_app: :my_app
+end
+
+defmodule MyApp.RegisterAccount do
+  defstruct [:command_id, :account_id, :handle, :rule_result]
+end
+
+defmodule MyApp.AccountRegistered do
+  @derive Jason.Encoder
+  defstruct [:account_id, :handle]
+
+  defimpl Decree.Event.Tags do
+    def tags(%{handle: handle}, _context), do: {:ok, ["handle:" <> handle]}
+  end
+end
+
+defmodule MyApp.UniqueHandle do
+  use Decree.Decision.Rule
+
+  @impl Decree.Decision.Rule
+  def query(%MyApp.RegisterAccount{handle: handle}, _tag_context) do
+    [[types: ["Elixir.MyApp.AccountRegistered"], tags: ["handle:" <> handle]]]
+  end
+end
+
+defmodule MyApp.Account do
+  alias Decree.Decision.Rule.Result
+  alias MyApp.{AccountRegistered, RegisterAccount}
+
+  defstruct [:account_id, :handle]
+
+  def execute(
+        %__MODULE__{account_id: nil},
+        %RegisterAccount{rule_result: %Result{events: []}} = command
+      ) do
+    %AccountRegistered{account_id: command.account_id, handle: command.handle}
+  end
+
+  def execute(%__MODULE__{account_id: nil}, %RegisterAccount{}), do: {:error, :handle_taken}
+  def execute(%__MODULE__{}, %RegisterAccount{}), do: {:error, :already_registered}
+
+  def apply(%__MODULE__{} = account, %AccountRegistered{} = event) do
+    %__MODULE__{account | account_id: event.account_id, handle: event.handle}
+  end
+end
+
+defmodule MyApp.EnableTagIndex do
+  defstruct [:command_id, :ledger_id, :family]
+end
+
+defmodule MyApp.TagIndexEnabled do
+  @derive Jason.Encoder
+  defstruct [:family]
+
+  defimpl Decree.Event.Tags do
+    alias Decree.Store.TagIndex
+
+    def tags(%{family: family}, _context) do
+      {:ok, [TagIndex.fact_tag(), TagIndex.state_tag(family, nil, :enabled)]}
+    end
+  end
+end
+
+defmodule MyApp.TagIndexLedger do
+  defstruct []
+
+  def execute(%__MODULE__{}, %MyApp.EnableTagIndex{family: family}) do
+    %MyApp.TagIndexEnabled{family: family}
+  end
+
+  def apply(%__MODULE__{} = ledger, %MyApp.TagIndexEnabled{}), do: ledger
+end
+
+defmodule MyApp.Router do
+  use Decree.Commands.Router
+
+  identify MyApp.Account, by: :account_id, prefix: "account-"
+  identify MyApp.TagIndexLedger, by: :ledger_id, prefix: "tag-index-"
+
+  dispatch MyApp.RegisterAccount, to: MyApp.Account, rule: MyApp.UniqueHandle
+  dispatch MyApp.EnableTagIndex, to: MyApp.TagIndexLedger
+end
+
+defmodule MyApp.App do
+  use Decree.Application, otp_app: :my_app
+
+  router MyApp.Router
+end
+
+defmodule MyApp.Welcome do
+  use Decree.Event.Handler, application: MyApp.App, name: "welcome"
+
+  require Logger
+
+  def handle(%MyApp.AccountRegistered{handle: handle}, _metadata) do
+    Logger.info("welcome, @" <> handle)
+  end
+end
+```
+
+Create the store's database and tables, then start `MyApp.App` and `MyApp.Welcome` under your application's supervisor:
+
+```bash
+mix decree.store.create
+mix decree.store.init
+```
+
+```elixir
+# On a fresh store, before anything else is appended
+:ok =
+  MyApp.App.dispatch(%MyApp.EnableTagIndex{
+    command_id: Decree.UUID.uuid4(),
+    ledger_id: Decree.UUID.uuid4(),
+    family: "entity"
+  })
+
+register = fn handle ->
+  MyApp.App.dispatch(%MyApp.RegisterAccount{
+    command_id: Decree.UUID.uuid4(),
+    account_id: Decree.UUID.uuid4(),
+    handle: handle
+  })
+end
+
+:ok = register.("ada")
+{:error, :handle_taken} = register.("ada")
+:ok = register.("grace")
+```
+
+`MyApp.Welcome` logs "welcome, @ada" and "welcome, @grace".
+
+What the rule route needs, beyond a plain one:
+
+- **The store must declare the aggregate** in `conditional_appends: [targets: ...]`. The application refuses to start when a rule route's aggregate is missing there.
+- **The command needs a `:rule_result` field**, where `execute/2` finds what the rule's query matched, and a `command_id` (a UUID): an event appended under a rule's condition must carry the framework's `command` tag.
+- **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.TagIndexEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`. Enable it on an empty store, so every later event is covered.
+
+`Decree.Decision.Rule` covers the rest: a follow-up query, keys, bounds, retries and the required tags.
 
 ## Layers
 
@@ -26,7 +222,7 @@ mix run --no-start scripts/check_layers.exs
 What is absent, on purpose:
 
 - **No process managers.** Multi-step flows are event handlers that dispatch commands. The toolkit has no process-manager module, by design.
-- **No in-memory event store.** Every test and every deployment runs on Postgres (founder ruling, 2026-10-29).
+- **No in-memory event store.** Every test and every deployment runs on Postgres.
 
 ## Running the tests
 
@@ -83,3 +279,19 @@ mix deps.audit
 ```
 
 `mix hex.audit` reports retired Hex packages and, from Hex 2.5, packages with security advisories. `mix deps.audit` (`mix_audit`, a dev and test dependency) checks `mix.lock` against its own advisory list. The two lists differ, so CI runs both. `mix_audit` ignores a failed clone of its advisory repository and then reports no vulnerabilities, so the CI step also fails when the clone left no advisories. Neither audit scans a git dependency; `UPSTREAM.md` (Dependency pins) lists those.
+
+## Provenance and licence
+
+decree is derived from [Commanded](https://github.com/commanded/commanded), [EventStore](https://github.com/commanded/eventstore), [Commanded EventStore Adapter](https://github.com/commanded/commanded-eventstore-adapter) and [Commanded Ecto Projections](https://github.com/commanded/commanded-ecto-projections), all by Ben Smith under the MIT License. It copies the code sparkle.space uses, with no fork and no upstream history, and has changed it since.
+
+- `LICENSE`: decree's MIT License.
+- `NOTICE`: the upstream MIT notices, unchanged.
+- `PROVENANCE.tsv`: the upstream file and its SHA-256 for every copied file.
+- `UPSTREAM.md`: the upstream versions, the fixes carried from upstream, every departure from it, and the dependency pins.
+- `DROPPED_TESTS.md`: the upstream tests decree does not run, and why.
+
+Issue references such as `sparkle-space/sparklespace#N` in the code, the docs and the commit history point at sparkle.space's own tracker, which is private.
+
+## Contributing and security
+
+Issues are welcome. Pull requests are by arrangement while decree is pre-1.0: see `CONTRIBUTING.md`. Report a vulnerability privately, as `SECURITY.md` describes.

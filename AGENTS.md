@@ -1,6 +1,6 @@
 # AGENTS.md — review guidelines for decree
 
-decree is sparkle.space's private event-sourcing toolkit: a Postgres event store (`Decree.Store`) and a CQRS framework (`Decree`), copied from Commanded and EventStore. `README.md` describes the layers and the suites; `UPSTREAM.md` lists the upstream versions, the carried fixes and the departures.
+decree is sparkle.space's event-sourcing toolkit: a Postgres event store (`Decree.Store`) and a CQRS framework (`Decree`), copied from Commanded and EventStore. `README.md` describes the layers and the suites; `UPSTREAM.md` lists the upstream versions, the carried fixes and the departures.
 
 ## Review Guidelines
 
@@ -30,4 +30,4 @@ Flag these as **P0** (must fix before merge):
 
 ## Issue references
 
-Tracking lives in `sparkle-space/sparklespace`. A PR cites its issue as `Refs sparkle-space/sparklespace#N`.
+Tracking lives in `sparkle-space/sparklespace`. A PR cites its issue as `Refs sparkle-space/sparklespace#N`. That tracker is private, so a `sparklespace#N` link in decree's code, docs or history does not open for a reader outside sparkle.space.
