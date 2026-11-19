@@ -2,12 +2,13 @@ defmodule Decree.MixProject do
   use Mix.Project
 
   @version "0.1.0"
+  @source_url "https://github.com/sparkle-space/decree"
 
   def project do
     [
       app: :decree,
       version: @version,
-      elixir: "~> 1.18",
+      elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       test_paths: ["test/framework", "test/store", "test/conformance", "test/projections"],
       test_ignore_filters: [
@@ -23,7 +24,10 @@ defmodule Decree.MixProject do
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :test,
       name: "decree",
-      source_url: "https://github.com/sparkle-space/decree"
+      description: description(),
+      package: package(),
+      docs: docs(),
+      source_url: @source_url
     ]
   end
 
@@ -89,8 +93,51 @@ defmodule Decree.MixProject do
       # Test tooling
       {:mox, "~> 1.1", only: :test},
 
+      # Docs
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+
       # CI's Deps Audit job runs `mix deps.audit`
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp description do
+    "An event-sourcing toolkit: a Postgres event store and a CQRS framework with decision " <>
+      "rules, conditions an append checks across streams. Derived from Commanded and EventStore."
+  end
+
+  # NOTICE carries the upstream MIT notices, so it ships with LICENSE.
+  defp package do
+    [
+      licenses: ["MIT"],
+      maintainers: ["sparkle.space"],
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+      },
+      files: ~w(lib priv mix.exs .formatter.exs README.md CHANGELOG.md LICENSE NOTICE)
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      extras: ["README.md", "CHANGELOG.md"],
+      # Internal modules and functions the docs name without documenting them.
+      skip_code_autolink_to: [
+        "Decree.Decision.Dispatch.shape/1",
+        "Decree.Event.Tags.impl_for/1",
+        "Decree.Store.Application",
+        "Decree.Store.LogTerms.reduce/1",
+        "Decree.Store.Subscriptions.GeneratedFsm",
+        "Decree.Store.Subscriptions.max_head_check_interval/0",
+        "Decree.Store.Supervisor"
+      ],
+      groups_for_modules: [
+        Store: [~r/^Decree\.Store(\.|$)/],
+        Framework: [~r/^Decree(\.|$)/]
+      ]
     ]
   end
 
