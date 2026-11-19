@@ -1,29 +1,16 @@
 defmodule Decree.Decision.MiddlewareParityTest do
   use Decree.DecisionStoreCase
 
-  alias Decree.DecisionFixtures.{ParityAggregateCommand, ParityCommand, StrongHandler}
-  alias Decree.Helpers.Wait
-  alias Decree.Middleware.{ConsistencyGuarantee, Pipeline}
+  alias Decree.DecisionFixtures.{ParityAggregateCommand, ParityCommand}
+  alias Decree.Middleware.Pipeline
 
   @shared_assigns [
     :aggregate_identity,
     :aggregate_state,
     :aggregate_uuid,
     :aggregate_version,
-    :dispatcher_pid,
     :events
   ]
-
-  defmodule StrongRouter do
-    use Decree.Commands.Router
-
-    decide(Scripted,
-      to: Decree.DecisionFixtures.ScriptedDecision,
-      identity: :claim_id,
-      identity_prefix: "scripted-",
-      consistency: :strong
-    )
-  end
 
   # Every stage a dispatch ran through, in order, with its pipeline.
   defp stages(acc \\ []) do
@@ -212,140 +199,6 @@ defmodule Decree.Decision.MiddlewareParityTest do
           ] do
         assert {:error, :invalid_aggregate_identity} = App.dispatch(command)
       end
-    end
-  end
-
-  describe "`ConsistencyGuarantee` on a decision route" do
-    setup do
-      start_supervised!(StrongHandler, shutdown: :brutal_kill)
-
-      await_subscribed()
-
-      :ok
-    end
-
-    defp await_subscribed do
-      event_store = Module.concat([App, "FrameworkEventStore"])
-
-      Wait.until(15_000, fn ->
-        assert {subscriptions, 0} =
-                 Decree.FrameworkEventStore.local_subscriptions(name: event_store)
-
-        assert %{status: :subscribed} =
-                 Enum.find(subscriptions, &(&1.subscription_name == "DecisionStrongHandler"))
-      end)
-    end
-
-    defp with_consistency_timeout(timeout) do
-      previous = Application.get_env(:decree, :dispatch_consistency_timeout)
-
-      Application.put_env(:decree, :dispatch_consistency_timeout, timeout)
-      on_exit(fn -> Application.put_env(:decree, :dispatch_consistency_timeout, previous) end)
-    end
-
-    test "`:strong` waits for the handler on a single stream" do
-      with_consistency_timeout(30_000)
-
-      assert :ok = App.dispatch(scripted(), consistency: :strong, timeout: 30_000)
-    end
-
-    test "`:strong` answers a timeout when the handler holds the stream" do
-      with_consistency_timeout(200)
-
-      assert {:error, :consistency_timeout} =
-               App.dispatch(scripted(scope: "held"), consistency: :strong)
-    end
-
-    test "a route's own `consistency:` applies" do
-      with_consistency_timeout(200)
-
-      assert {:error, :consistency_timeout} =
-               StrongRouter.dispatch(scripted(scope: "held"), application: App)
-    end
-
-    test "`:strong` waits for every member of a batch" do
-      with_consistency_timeout(30_000)
-
-      decide = fn _state, command ->
-        {:streams,
-         [
-           {:claim, command.claim_id, %Claimed{scope: "a"}},
-           {:order, UUID.uuid4(), %Claimed{scope: "b"}}
-         ]}
-      end
-
-      assert :ok = App.dispatch(scripted(decide: decide), consistency: :strong, timeout: 30_000)
-    end
-
-    # The first member acks and the second never does, so only a wait for the second can
-    # time out. The wait ends on the answer, so this reads no clock of its own.
-    test "`:strong` answers a timeout when the handler holds a later member" do
-      with_consistency_timeout(1_000)
-
-      decide = fn _state, command ->
-        {:streams,
-         [
-           {:claim, command.claim_id, %Claimed{scope: "a"}},
-           {:order, UUID.uuid4(), %Claimed{scope: "held"}}
-         ]}
-      end
-
-      assert {:error, :consistency_timeout} =
-               App.dispatch(scripted(decide: decide), consistency: :strong)
-    end
-
-    # The first wait ends at 0.92 T, so a timeout per member answers at 1.92 T at the soonest.
-    # One deadline answers at T, which leaves a loaded host 0.9 T of the bound.
-    test "`:strong` answers a batch within one timeout" do
-      timeout = 2_000
-
-      with_consistency_timeout(timeout)
-
-      # In the order the wait walks them, so the late member is the one waited for first.
-      [late, held] = Map.keys(%{UUID.uuid4() => 1, UUID.uuid4() => 1})
-
-      decide = fn _state, _command ->
-        {:streams,
-         [
-           {:claim, late, %Claimed{scope: "late", note: div(timeout * 92, 100)}},
-           {:order, held, %Claimed{scope: "held"}}
-         ]}
-      end
-
-      started = System.monotonic_time(:millisecond)
-
-      assert {:error, :consistency_timeout} =
-               App.dispatch(scripted(claim_id: late, decide: decide), consistency: :strong)
-
-      assert System.monotonic_time(:millisecond) - started < timeout * 1.9
-    end
-
-    test "a batch takes an infinite timeout" do
-      with_consistency_timeout(:infinity)
-
-      decide = fn _state, command ->
-        {:streams,
-         [
-           {:claim, command.claim_id, %Claimed{scope: "a"}},
-           {:order, UUID.uuid4(), %Claimed{scope: "b"}}
-         ]}
-      end
-
-      assert :ok = App.dispatch(scripted(decide: decide), consistency: :strong, timeout: 30_000)
-    end
-
-    # No `Subscriptions` runs for this application, so a wait would exit.
-    test "a member with no time left answers the timeout, with no wait" do
-      with_consistency_timeout(0)
-
-      pipeline = %Pipeline{
-        application: NoSubscriptionsApp,
-        consistency: :strong,
-        assigns: %{dispatcher_pid: self(), events: [%Claimed{}], stream_versions: %{"s" => 1}}
-      }
-
-      assert %Pipeline{response: {:error, :consistency_timeout}} =
-               ConsistencyGuarantee.after_dispatch(pipeline)
     end
   end
 end

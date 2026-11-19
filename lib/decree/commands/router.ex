@@ -156,39 +156,6 @@ defmodule Decree.Commands.Router do
   what it names, folds it and decides, and its append is conditional on what it read. See
   `decide/2` for the route, and for what is refused when the router compiles.
 
-  ## Consistency
-
-  You can choose the consistency guarantee when dispatching a command. The
-  available options are:
-
-    - `:eventual` (default) - don't block command dispatch while waiting for
-      event handlers
-
-          :ok = BankApp.dispatch(command)
-          :ok = BankApp.dispatch(command, consistency: :eventual)
-
-    - `:strong` - block command dispatch until all strongly
-      consistent event handlers have successfully processed all events created
-      by the command.
-
-      Use this when you have event handlers that update read models you need to
-      query immediately after dispatching the command.
-
-          :ok = BankApp.dispatch(command, consistency: :strong)
-
-    - Provide an explicit list of event handler modules (or their configured
-      names), containing only those handlers you'd like to wait for. No other
-      handlers will be awaited on, regardless of their own configured
-      consistency setting.
-
-      ```elixir
-      :ok = BankApp.dispatch(command, consistency: [ExampleHandler, AnotherHandler])
-      :ok = BankApp.dispatch(command, consistency: ["ExampleHandler", "AnotherHandler"])
-      ```
-
-      Note you cannot opt-in to strong consistency for a handler that has been
-      configured as eventually consistent.
-
   ## Dispatch return
 
   By default a successful command dispatch will return `:ok`. You can change
@@ -283,6 +250,8 @@ defmodule Decree.Commands.Router do
   alias Decree.UUID
 
   defmacro __using__(opts) do
+    refuse_consistency!(opts, :default_consistency)
+
     otp_app = Keyword.get(opts, :otp_app, :decree)
     app_module = Keyword.get(opts, :application)
     require_decree_command = Keyword.get(opts, :require_decree_command, false)
@@ -303,7 +272,6 @@ defmodule Decree.Commands.Router do
 
       @default_dispatch_opts [
         application: unquote(app_module),
-        consistency: Router.get_opt(unquote(opts), :default_consistency, :eventual),
         returning: Router.get_default_dispatch_return(unquote(opts)),
         timeout: 5_000,
         lifespan:
@@ -322,8 +290,7 @@ defmodule Decree.Commands.Router do
 
       @default_middleware [
         Decree.Middleware.CommandId,
-        Decree.Middleware.ExtractAggregateIdentity,
-        Decree.Middleware.ConsistencyGuarantee
+        Decree.Middleware.ExtractAggregateIdentity
       ]
 
       @registered_identities %{}
@@ -339,7 +306,7 @@ defmodule Decree.Commands.Router do
   Middleware modules are executed in the order they are defined, and all of them before
   the router's default middleware: `Decree.Middleware.CommandId`, which refuses a command
   whose `command_id` is not a canonical UUID, then
-  `Decree.Middleware.ExtractAggregateIdentity` and `Decree.Middleware.ConsistencyGuarantee`.
+  `Decree.Middleware.ExtractAggregateIdentity`.
   A registered middleware so sees every command, and its own halt is the answer.
 
   ## Example
@@ -515,11 +482,11 @@ defmodule Decree.Commands.Router do
         decide ClaimEmail, to: EmailClaims, identity: :user_id, identity_prefix: "user-"
       end
 
-  The params are `to`, `identity`, `identity_prefix`, `stream_tag`, `timeout` and
-  `consistency`, as on `dispatch/2`, and `identify/2` works on the decision module as it does
-  on an aggregate. The events land on `<identity_prefix><identity>`, or on the members
-  `c:Decree.Decision.decide/2` names, under that prefix. Middleware, `returning:` and
-  `consistency:` work as on an aggregate route. See `Decree.Decision`.
+  The params are `to`, `identity`, `identity_prefix`, `stream_tag` and `timeout`, as on
+  `dispatch/2`, and `identify/2` works on the decision module as it does on an aggregate. The
+  events land on `<identity_prefix><identity>`, or on the members `c:Decree.Decision.decide/2`
+  names, under that prefix. Middleware and `returning:` work as on an aggregate route. See
+  `Decree.Decision`.
 
   ## Prefixes
 
@@ -576,7 +543,6 @@ defmodule Decree.Commands.Router do
           | {:ok, aggregate_version :: non_neg_integer()}
           | {:ok, execution_result :: ExecutionResult.t()}
           | {:error, :unregistered_command}
-          | {:error, :consistency_timeout}
           | {:error, reason :: term()}
 
   @doc """
@@ -623,11 +589,6 @@ defmodule Decree.Commands.Router do
         - `correlation_id` - an optional UUID used to correlate related
           commands/events together.
 
-        - `consistency` - one of `:eventual` (default) or `:strong`. By
-          setting the consistency to `:strong` a successful command dispatch
-          will block until all strongly consistent event handlers and process
-          managers have handled all events created by the command.
-
         - `metadata` - an optional map containing key/value pairs comprising
           the metadata to be associated with all events created by the
           command.
@@ -669,7 +630,7 @@ defmodule Decree.Commands.Router do
         initial_balance: 1_000
       }
 
-      :ok = BankRouter.dispatch(command, consistency: :strong, timeout: 30_000)
+      :ok = BankRouter.dispatch(command, timeout: 30_000)
 
   """
   @callback dispatch(
@@ -713,7 +674,7 @@ defmodule Decree.Commands.Router do
 
       @doc false
       def dispatch(command, opts),
-        do: do_dispatch(command, opts)
+        do: do_dispatch(command, Router.refuse_consistency!(opts))
 
       @middleware Enum.reduce(@registered_middleware, @default_middleware, fn middleware, acc ->
                     [middleware | acc]
@@ -745,7 +706,6 @@ defmodule Decree.Commands.Router do
           application = Keyword.fetch!(opts, :application)
           causation_id = Keyword.get(opts, :causation_id)
           command_uuid = Keyword.get_lazy(opts, :command_uuid, &UUID.uuid4/0)
-          consistency = Keyword.fetch!(opts, :consistency)
           correlation_id = Keyword.get_lazy(opts, :correlation_id, &UUID.uuid4/0)
           metadata = Keyword.fetch!(opts, :metadata) |> validate_metadata()
 
@@ -792,7 +752,6 @@ defmodule Decree.Commands.Router do
             command_uuid: command_uuid,
             causation_id: causation_id,
             correlation_id: correlation_id,
-            consistency: consistency,
             handler_module: @handler,
             handler_function: @function,
             handler_before_execute: @before_execute,
@@ -1123,6 +1082,23 @@ defmodule Decree.Commands.Router do
 
   defp binary_prefix?(prefix), do: is_binary(prefix) and prefix != ""
 
+  # `consistency:` was removed (sparkle-space/sparklespace#8559): every door that took it
+  # refuses it, whatever its value, rather than ignore it.
+  @doc false
+  def refuse_consistency!(opts, key \\ :consistency) do
+    if is_list(opts) and Keyword.has_key?(opts, key) do
+      raise ArgumentError, consistency_removed("the `#{key}:` option")
+    end
+
+    opts
+  end
+
+  @doc false
+  def consistency_removed(what) do
+    "#{what} was removed from decree: drop it. A dispatch returns once its events are " <>
+      "written, and event handlers catch up on their own (they are eventually consistent)"
+  end
+
   @doc false
   def get_opt(opts, name, default \\ nil) do
     Keyword.get(opts, name) || Application.get_env(:decree, name) || default
@@ -1162,13 +1138,14 @@ defmodule Decree.Commands.Router do
     :rule,
     :opaque,
     :timeout,
-    :lifespan,
-    :consistency
+    :lifespan
   ]
 
-  @decide_params [:to, :identity, :identity_prefix, :stream_tag, :timeout, :consistency]
+  @decide_params [:to, :identity, :identity_prefix, :stream_tag, :timeout]
 
   defp parse_decide_opts(opts) do
+    refuse_consistency!(opts)
+
     with {unknown_param, _} <- Enum.find(opts, fn {param, _} -> param not in @decide_params end) do
       raise """
       unexpected decide parameter "#{unknown_param}"
@@ -1186,6 +1163,8 @@ defmodule Decree.Commands.Router do
     {to, opts} = Keyword.pop(opts, :to)
     {aggregate, opts} = Keyword.pop(opts, :aggregate)
     {function, opts} = Keyword.pop(opts, :function)
+
+    refuse_consistency!(opts)
 
     with {unknown_param, _} <- Enum.find(opts, fn {param, _} -> param not in @register_params end) do
       raise """

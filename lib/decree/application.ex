@@ -138,14 +138,14 @@ defmodule Decree.Application do
   ## Default dispatch options
 
   An application can be configured with default command dispatch options such as
-  `:consistency`, `:timeout`, and `:returning`. Any defaults will be used
-  unless overridden by options provided to the dispatch function.
+  `:timeout` and `:returning`. Any defaults will be used unless overridden by
+  options provided to the dispatch function.
 
       defmodule MyApp.Application do
         use Decree.Application,
           otp_app: :my_app,
           default_dispatch_opts: [
-            consistency: :eventual,
+            timeout: 10_000,
             returning: :aggregate_version
           ]
       end
@@ -338,20 +338,6 @@ defmodule Decree.Application do
 
         - `correlation_id` - an optional UUID used to correlate related
           commands/events together.
-
-        - `consistency` - to choose the consistency guarantee of the command dispatch.
-
-          The available options are:
-
-          - `:eventual` (default) - a successful command dispatch will return immediately.
-
-          - `:strong` - a successful command dispatch will block until all strongly
-            consistent event handlers have handled all events created by the command.
-
-          - An explicit list of event handler modules (or their configured names),
-            containing only those handlers you'd like to wait for. No other handlers will be awaited on,
-            regardless of their own configured consistency setting.
-            e.g. `[ExampleHandler, AnotherHandler]` or `["ExampleHandler", "AnotherHandler"]`
 
         - `metadata` - an optional map containing key/value pairs comprising
           the metadata to be associated with all events created by the

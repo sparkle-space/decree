@@ -165,7 +165,6 @@ defmodule Decree.Event.BatchTimeoutTelemetryTest do
       handler_module: handler_module,
       handler_callback: :batch,
       handler_state: %{},
-      consistency: :eventual,
       batch_size: batch_size,
       batch_timeout: batch_timeout,
       batch_buffer: [],

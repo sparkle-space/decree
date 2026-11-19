@@ -18,7 +18,6 @@ defmodule Decree.Commands.Dispatcher do
       :command_uuid,
       :causation_id,
       :correlation_id,
-      :consistency,
       :handler_module,
       :handler_function,
       :handler_before_execute,

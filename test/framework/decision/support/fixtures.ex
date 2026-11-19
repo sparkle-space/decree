@@ -704,20 +704,3 @@ defmodule Decree.DecisionFixtures.HardDeletesApp do
 
   def init(config), do: {:ok, Decree.FrameworkStorage.name_event_store(config)}
 end
-
-defmodule Decree.DecisionFixtures.StrongHandler do
-  @moduledoc false
-
-  # Strongly consistent. Holds any event whose scope is "held", so that stream never acks, and
-  # takes the milliseconds in its note over one whose scope is "late".
-  use Decree.Event.Handler,
-    application: Decree.DecisionFixtures.App,
-    name: "DecisionStrongHandler",
-    consistency: :strong
-
-  alias Decree.DecisionFixtures.Claimed
-
-  def handle(%Claimed{scope: "held"}, _metadata), do: :timer.sleep(:infinity)
-  def handle(%Claimed{scope: "late", note: note}, _metadata), do: :timer.sleep(note)
-  def handle(_event, _metadata), do: :ok
-end

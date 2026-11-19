@@ -99,7 +99,6 @@ defmodule Decree.Event.EventHandlerBatchTest do
       handler_callback: :batch,
       handler_module: handler_module,
       application: __MODULE__,
-      consistency: :eventual,
       last_seen_event: 0
     }
   end

@@ -9,7 +9,6 @@ defmodule Decree.Commands.DefaultDispatchReturnApp do
     pubsub: :local,
     registry: :local,
     default_dispatch_opts: [
-      consistency: :eventual,
       returning: :aggregate_version
     ]
 

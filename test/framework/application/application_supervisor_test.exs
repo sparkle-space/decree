@@ -13,9 +13,7 @@ defmodule Decree.Aggregates.ApplicationSupervisorTest do
     test "children are hibernated after inactivity" do
       for module <- [
             Decree.Commands.TaskDispatcher,
-            Decree.Aggregates.Supervisor,
-            Decree.Subscriptions,
-            Decree.Subscriptions.Registry
+            Decree.Aggregates.Supervisor
           ] do
         name = Module.concat([DefaultApp, module])
         pid = Process.whereis(name)

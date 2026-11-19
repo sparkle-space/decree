@@ -26,13 +26,9 @@ config :ex_unit,
   exclude: [:distributed, :ignore, :manual, :migration]
 
 # Framework test helpers (`Decree.Assertions.EventAssertions`).
-# `dispatch_consistency_timeout` bounds a positive signal too: a green `:strong` dispatch
-# ends on the acknowledgement, and only the tests that expect the timeout spend it.
-# 100 ms timed out on a loaded CI host.
 config :decree,
   assert_receive_event_timeout: 5_000,
-  refute_receive_event_timeout: 100,
-  dispatch_consistency_timeout: 1_000
+  refute_receive_event_timeout: 100
 
 # Decree's suite exercises named families with these kinds.
 config :decree, :tag_index_named_families, ~w(tenant_slug plan_slug email oauth_uid)
@@ -103,7 +99,6 @@ framework_app_config = [
   registry: :local
 ]
 
-config :decree, Decree.Commands.ConsistencyApp, framework_app_config
 config :decree, Decree.DefaultApp, []
 config :decree, Decree.Middleware.TenantApp, framework_app_config
 
