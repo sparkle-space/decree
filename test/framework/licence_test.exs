@@ -31,22 +31,33 @@ defmodule Decree.LicenceTest do
   SOFTWARE.
   """
 
-  # SHA-256 of NOTICE's upstream section, from "decree includes code copied" to the end, as
-  # it stood before the derived-from paragraph moved in.
+  @statement """
+  Portions of this software are derived from Commanded, EventStore,
+  Commanded EventStore Adapter and Commanded Ecto Projections, each
+  Copyright (c) Ben Smith, under the MIT License. decree as a whole is
+  licensed under the MIT License in LICENSE.
+
+  """
+
+  @upstream_marker "decree includes code copied"
+
+  # SHA-256 of NOTICE's upstream section, from `@upstream_marker` to the end, as it stood
+  # before the derived-from statement moved in.
   @upstream_notices_sha256 "b353f8be83ba6261dce1849d61cfdbde9d768c76ebb84710acfc71b746043d8b"
 
   test "LICENSE is the MIT License text alone" do
     assert File.read!(Path.join(@root, "LICENSE")) == @mit
   end
 
-  test "NOTICE opens with the derived-from statement and keeps the upstream notices unchanged" do
+  test "NOTICE is the derived-from statement, then the upstream notices unchanged" do
     notice = File.read!(Path.join(@root, "NOTICE"))
 
-    assert notice =~ ~r/\APortions of this software are derived from Commanded, EventStore,/
+    assert String.starts_with?(notice, @statement <> @upstream_marker)
 
-    [_statement, upstream] = String.split(notice, "decree includes code copied", parts: 2)
+    upstream =
+      binary_part(notice, byte_size(@statement), byte_size(notice) - byte_size(@statement))
 
-    assert :crypto.hash(:sha256, "decree includes code copied" <> upstream)
-           |> Base.encode16(case: :lower) == @upstream_notices_sha256
+    assert :crypto.hash(:sha256, upstream) |> Base.encode16(case: :lower) ==
+             @upstream_notices_sha256
   end
 end
