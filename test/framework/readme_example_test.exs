@@ -26,7 +26,7 @@ defmodule Decree.ReadmeExampleTest do
     end
   end
 
-  test "the installation snippet repeats decree's own Postgrex pin" do
+  test "the installation snippet needs no Postgrex line: decree takes Postgrex from Hex" do
     module = Module.concat([__MODULE__, "Deps#{System.unique_integer([:positive])}"])
 
     Code.compile_string("""
@@ -37,9 +37,10 @@ defmodule Decree.ReadmeExampleTest do
     """)
 
     readme_deps = module.readme_deps()
-    {:postgrex, own_pin} = List.keyfind(Mix.Project.config()[:deps], :postgrex, 0)
 
-    assert {:postgrex, own_pin} in readme_deps
+    assert {:postgrex, requirement} = List.keyfind(Mix.Project.config()[:deps], :postgrex, 0)
+    assert is_binary(requirement)
+    refute List.keymember?(readme_deps, :postgrex, 0)
 
     assert {:decree, [git: "https://github.com/sparkle-space/decree.git", branch: "main"]} in readme_deps
 

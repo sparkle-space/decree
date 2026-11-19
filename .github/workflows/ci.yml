@@ -110,9 +110,8 @@ jobs:
       - name: Install dependencies
         run: mix deps.get --check-locked
 
-      # Both audits read only Hex packages in mix.lock. Postgrex is a git
-      # dependency pinned to bd402a5310 (UPSTREAM.md, Dependency pins), so
-      # neither scans it until it moves back to Hex (sparkle-space/sparklespace#8487).
+      # Both audits read only Hex packages in mix.lock, so a dependency pinned
+      # to a git commit is in neither (UPSTREAM.md, Dependency pins).
       - name: Hex retirement and advisory audit
         run: mix hex.audit
 
