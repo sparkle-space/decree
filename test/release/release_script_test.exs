@@ -301,6 +301,44 @@ defmodule Decree.ReleaseScriptTest do
     end
   end
 
+  # The publish job's next Hex step, from hex.pm's answer for the release
+  # (GET /api/packages/decree/releases/VERSION): publish the package and docs, publish
+  # the docs alone when an earlier run published only the package, or nothing.
+  describe "hex-step" do
+    defp answer(dir, body) do
+      path = Path.join(dir, "release.json")
+      File.write!(path, body)
+      path
+    end
+
+    test "no release on Hex: publish the package and docs", %{tmp_dir: dir} do
+      assert release(dir, ["hex-step", "404", answer(dir, ~s({"status":404}))]) ==
+               {"publish\n", 0}
+    end
+
+    test "a release without docs: publish the docs alone", %{tmp_dir: dir} do
+      json = answer(dir, ~s({"version":"0.1.1","has_docs":false}))
+
+      assert release(dir, ["hex-step", "200", json]) == {"docs\n", 0}
+    end
+
+    test "a release with docs: nothing to do", %{tmp_dir: dir} do
+      json = answer(dir, ~s({"version":"0.1.1","has_docs":true}))
+
+      assert release(dir, ["hex-step", "200", json]) == {"none\n", 0}
+    end
+
+    test "a release whose answer has no has_docs is refused", %{tmp_dir: dir} do
+      assert {output, 1} = release(dir, ["hex-step", "200", answer(dir, ~s({"version":"0.1.1"}))])
+      assert output =~ "has_docs"
+    end
+
+    test "any other answer from hex.pm is refused", %{tmp_dir: dir} do
+      assert {output, 1} = release(dir, ["hex-step", "503", answer(dir, "unavailable")])
+      assert output =~ "hex.pm answered 503"
+    end
+  end
+
   test "an unknown command is refused", %{tmp_dir: dir} do
     assert {output, 1} = release(dir, ["publish"])
     assert output =~ "usage:"
