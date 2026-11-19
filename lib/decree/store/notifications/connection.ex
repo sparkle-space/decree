@@ -25,7 +25,8 @@ defmodule Decree.Store.Notifications.Connection do
   The connection sends no idle ping. While it listens it runs `SELECT 1` every
   `:idle_interval` milliseconds (default 5000), and a notification that arrives during
   that query is delivered. Every query it issues is bounded by `:timeout` (default
-  15000): a query still unanswered then kills the process. A query that fails ends the
+  15000): a query still unanswered then kills the process. `:infinity` bounds none, as for
+  the store's other queries. A query that fails ends the
   process with a `{:shutdown, reason}` exit. The process that started it (the store's
   `MonitoredServer`) starts it again.
   """
@@ -154,7 +155,9 @@ defmodule Decree.Store.Notifications.Connection do
   end
 
   # A query waits for its answer with no timeout, and the process traps exits: only a kill
-  # ends one that hangs.
+  # ends one that hangs. A store timeout of `:infinity` bounds no query, this one included.
+  defp arm(%{timeout: :infinity} = state), do: state
+
   defp arm(state) do
     {:ok, watchdog} = :timer.kill_after(state.timeout)
     %{state | watchdog: watchdog}
