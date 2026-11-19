@@ -923,6 +923,8 @@ defmodule Decree.Event.Handler do
 
   @doc false
   def parse_config!(module, config) do
+    Decree.Commands.Router.refuse_consistency!(config)
+
     {:ok, config} = module.init(config)
 
     Decree.Commands.Router.refuse_consistency!(config)
@@ -1236,6 +1238,8 @@ defmodule Decree.Event.Handler do
 
   @doc false
   def start_link(application, handler_name, handler_module, opts \\ []) do
+    Decree.Commands.Router.refuse_consistency!(opts)
+
     {start_opts, handler_opts} = Keyword.split(opts, @start_opts)
 
     index = Keyword.get(handler_opts, :index)
