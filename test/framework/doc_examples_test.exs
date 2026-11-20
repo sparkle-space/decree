@@ -143,6 +143,28 @@ defmodule Decree.DocExamplesTest do
     assert_covered(doc, selectors, 12)
   end
 
+  test "Decree.Application's dispatch/2 example compiles as written" do
+    # The application from `Decree.Application`'s first example, and the README's command.
+    application = DocBlocks.doc!(Decree.Application)
+    assert [@app] == compile!(DocBlocks.block!(application, "defmodule MyApp.App do"))
+
+    compile!("""
+    defmodule MyApp.RegisterAccount do
+      defstruct [:command_id, :account_id, :handle, :rule_result]
+    end
+    """)
+
+    doc = DocBlocks.doc!(Decree.Application, {:callback, :dispatch, 2})
+
+    first_line = "command = %MyApp.RegisterAccount{"
+
+    assert compile_fragment!(doc, first_line, ["command_id", "account_id"], 1) =~
+             ":ok = MyApp.App.dispatch(command, timeout: 30_000)"
+
+    # Its options are list items and their continuation paragraphs, none of them code.
+    assert_covered(doc, [first_line], 1)
+  end
+
   test "Decree.Aggregates.Aggregate's aggregate compiles, and its snapshotting config evaluates, as written" do
     doc = DocBlocks.doc!(Decree.Aggregates.Aggregate)
 
