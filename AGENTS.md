@@ -48,6 +48,7 @@ Flag these on a decree PR:
 - Formatting and warnings: CI runs `mix format --check-formatted` and `mix compile --warnings-as-errors`.
 - Style differences from upstream in copied code, unless the change is behavioural.
 - Missing docs on internal modules.
+- A missing `UPSTREAM.md` row for a documentation-only edit (doc strings and comments) to a file copied from Commanded or EventStore. It needs none (founder ruling, 2026-11-20: "Merge; no UPSTREAM row"). Any code change to a copied file still needs its row.
 
 ## Issue references
 

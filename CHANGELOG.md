@@ -8,6 +8,7 @@ Documentation and tests only: no API, behaviour or store schema change.
 
 - **The examples name the decree application `MyApp.App`.** `Decree.Application`, `Decree.Aggregates.Aggregate`, `Decree.Event.Handler` and `Decree.PersonalFields.KeySource` called it `MyApp.Application`, the name of your OTP application module. Their module and config examples now compile as written.
 - **The `project/2` and `project/3` examples run as written.** `Decree.Projections.Ecto` shows each as a complete projector on the moduledoc's read model, in place of a fragment that was not valid Elixir.
+- **`Decree.Event.Handler`'s moduledoc examples compile as written.** They name the decree application `MyApp.App` and the README's `MyApp.AccountRegistered` event, in place of upstream placeholders such as `ExampleApp` and `%AnEvent{..}`. Three of them were a `CompileError` in decree: the stateful and the concurrent handler now name their event in `handle/2`'s head, and the batching handler declares `personal_fields: :opaque`, which a `handle_batch/1` handler needs.
 - **Testing your application.** The README says what to use in place of test helpers, which decree does not ship: a test store on Postgres, dropped, created and initialised in your `test` alias, and each test's own streams.
 - **decree's own test build fails on a warning.** Its test files compiled with 10 warnings on Elixir 1.20; they compile with none, and a warning in decree's own code now fails `mix test`. A build of decree as your dependency is unchanged.
 

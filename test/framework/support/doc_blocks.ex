@@ -39,6 +39,30 @@ defmodule Decree.DocBlocks do
   @doc "Every indented code block in `doc` whose first line is `first_line`, in order."
   def blocks(doc, first_line), do: doc |> String.split("\n") |> blocks(first_line, [])
 
+  @doc """
+  The first line of every indented code block in `doc`, in order, without its indentation. A
+  block opens at a line indented four spaces or more after a blank line, and runs while lines
+  are blank or indented.
+  """
+  def first_lines(doc) do
+    {found, _state} =
+      doc
+      |> String.split("\n")
+      |> Enum.reduce({[], :blank}, fn line, {found, state} ->
+        indented = String.starts_with?(line, "    ")
+
+        cond do
+          String.trim(line) == "" and state == :code -> {found, :code}
+          String.trim(line) == "" -> {found, :blank}
+          indented and state == :code -> {found, :code}
+          indented and state == :blank -> {[String.trim(line) | found], :code}
+          true -> {found, :text}
+        end
+      end)
+
+    Enum.reverse(found)
+  end
+
   defp blocks(lines, first_line, found) do
     case Enum.drop_while(lines, &(String.trim(&1) != first_line)) do
       [first | rest] ->
