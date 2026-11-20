@@ -88,7 +88,7 @@ defmodule Decree.Aggregates.Aggregate do
   An aggregate that declares no `snapshot:` still takes its options from the application's
   `snapshotting:` config, as before. A later release removes this fallback.
 
-      config :my_app, MyApp.Application,
+      config :my_app, MyApp.App,
         snapshotting: %{
           MyApp.ExampleAggregate => [
             snapshot_every: 10,

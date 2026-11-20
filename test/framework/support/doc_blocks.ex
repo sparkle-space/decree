@@ -30,20 +30,29 @@ defmodule Decree.DocBlocks do
   The block runs while lines are blank or indented at least as far as its first.
   """
   def block!(doc, first_line) do
-    lines = String.split(doc, "\n")
+    case blocks(doc, first_line) do
+      [block | _rest] -> block
+      [] -> raise ArgumentError, "no code block opens with #{inspect(first_line)}"
+    end
+  end
 
+  @doc "Every indented code block in `doc` whose first line is `first_line`, in order."
+  def blocks(doc, first_line), do: doc |> String.split("\n") |> blocks(first_line, [])
+
+  defp blocks(lines, first_line, found) do
     case Enum.drop_while(lines, &(String.trim(&1) != first_line)) do
       [first | rest] ->
         indent = byte_size(first) - byte_size(String.trim_leading(first))
         prefix = String.duplicate(" ", indent)
 
-        body =
-          Enum.take_while(rest, &(String.trim(&1) == "" or String.starts_with?(&1, prefix)))
+        {body, rest} =
+          Enum.split_while(rest, &(String.trim(&1) == "" or String.starts_with?(&1, prefix)))
 
-        Enum.map_join([first | body], "\n", &String.replace_prefix(&1, prefix, "")) <> "\n"
+        block = Enum.map_join([first | body], "\n", &String.replace_prefix(&1, prefix, ""))
+        blocks(rest, first_line, [block <> "\n" | found])
 
       [] ->
-        raise ArgumentError, "no code block opens with #{inspect(first_line)}"
+        Enum.reverse(found)
     end
   end
 end

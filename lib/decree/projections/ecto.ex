@@ -337,8 +337,21 @@ defmodule Decree.Projections.Ecto do
 
   ## Example
 
-      project %AnEvent{}, fn multi ->
-        Ecto.Multi.insert(multi, :my_projection, %MyProjection{...})
+  The moduledoc's projector, with a projection that takes no metadata:
+
+      # lib/my_app/accounts.ex
+      defmodule MyApp.Accounts.Projector do
+        use Decree.Projections.Ecto,
+          application: MyApp.App,
+          repo: MyApp.Repo,
+          name: "accounts"
+
+        project %MyApp.AccountRegistered{} = event, fn multi ->
+          Ecto.Multi.insert(multi, :account, %MyApp.Accounts.Account{
+            account_id: event.account_id,
+            handle: event.handle
+          })
+        end
       end
 
   """
@@ -373,10 +386,26 @@ defmodule Decree.Projections.Ecto do
   The operations will be executed in a database transaction including an
   idempotency check to guarantee an event cannot be projected more than once.
 
+  The metadata is the map `c:Decree.Event.Handler.handle/2` receives, and the second argument
+  is a pattern on it, as the first is on the event.
+
   ## Example
 
-      project %AnEvent{}, metadata, fn multi ->
-        Ecto.Multi.insert(multi, :my_projection, %MyProjection{...})
+  The moduledoc's projector:
+
+      # lib/my_app/accounts.ex
+      defmodule MyApp.Accounts.Projector do
+        use Decree.Projections.Ecto,
+          application: MyApp.App,
+          repo: MyApp.Repo,
+          name: "accounts"
+
+        project %MyApp.AccountRegistered{} = event, _metadata, fn multi ->
+          Ecto.Multi.insert(multi, :account, %MyApp.Accounts.Account{
+            account_id: event.account_id,
+            handle: event.handle
+          })
+        end
       end
 
   """

@@ -4,6 +4,13 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+Documentation and tests only: no API, behaviour or store schema change.
+
+- **The examples name the decree application `MyApp.App`.** `Decree.Application`, `Decree.Aggregates.Aggregate`, `Decree.Event.Handler` and `Decree.PersonalFields.KeySource` called it `MyApp.Application`, the name of your OTP application module. Their module and config examples now compile as written.
+- **The `project/2` and `project/3` examples run as written.** `Decree.Projections.Ecto` shows each as a complete projector on the moduledoc's read model, in place of a fragment that was not valid Elixir.
+- **Testing your application.** The README says what to use in place of test helpers, which decree does not ship: a test store on Postgres, dropped, created and initialised in your `test` alias, and each test's own streams.
+- **decree's own test build fails on a warning.** Its test files compiled with 10 warnings on Elixir 1.20; they compile with none, and a warning in decree's own code now fails `mix test`. A build of decree as your dependency is unchanged.
+
 ## 0.1.1 (2026-11-20)
 
 Documentation only: no API, behaviour or store schema change.

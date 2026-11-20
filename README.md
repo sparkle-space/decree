@@ -204,6 +204,8 @@ Every command carries a `command_id`, a lowercase canonical UUID its sender mint
 
 `Decree.Decision.Rule` covers the rest: a follow-up query, keys, bounds, retries and the required tags.
 
+**Testing your application.** decree ships no test helpers for your application and has no in-memory store, so test it on Postgres: drop, create and initialise a test store in your `test` alias (`mix decree.store.drop`, `mix decree.store.create`, `mix decree.store.init`), so each run starts on an empty store where the tag index can be enabled first, then dispatch through `MyApp.App` and give each test its own stream ids (`Decree.UUID.uuid4/0`) and tag values, instead of resetting the store between tests.
+
 ## Layers
 
 One OTP application, `:decree`, in two layers:
@@ -269,6 +271,8 @@ Framework and projections tests run their applications on `Decree.FrameworkEvent
 mix format --check-formatted
 mix compile --warnings-as-errors
 ```
+
+In the test env a warning in decree's own code fails the build: `lib/` and the support modules compile with `warnings_as_errors`, and the `test` alias runs `mix test --warnings-as-errors` for the test files. A dependency's warnings do not count.
 
 `Decree.Store.Subscriptions.GeneratedFsm` wraps the `fsm` dependency's `use Fsm`, marking its expansion as generated code so Elixir 1.20's type checker does not report warnings from the dependency's macro against decree.
 

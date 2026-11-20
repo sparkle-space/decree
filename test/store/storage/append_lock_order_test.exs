@@ -358,7 +358,7 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
 
     create_stream(context, "stream")
     event_id = UUID.uuid4()
-    [event] = EventFactory.create_events(1)
+    [%EventData{} = event] = EventFactory.create_events(1)
     event = %EventData{event | event_id: event_id}
 
     mover = LockSession.start(context.postgrex_config)
@@ -400,9 +400,12 @@ defmodule Decree.Store.Storage.AppendLockOrderTest do
     holder = LockSession.start(context.postgrex_config)
     LockSession.lock_row(holder, context.schema, @all_stream)
 
+    [%EventData{} = tenant_a] = EventFactory.create_events(1)
+    [%EventData{} = tenant_b] = EventFactory.create_events(1)
+
     events = [
-      %EventData{hd(EventFactory.create_events(1)) | tags: ["tenant:a"]},
-      %EventData{hd(EventFactory.create_events(1)) | tags: ["tenant:b"]}
+      %EventData{tenant_a | tags: ["tenant:a"]},
+      %EventData{tenant_b | tags: ["tenant:b"]}
     ]
 
     append =

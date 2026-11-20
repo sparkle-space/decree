@@ -16,7 +16,6 @@ defmodule Decree.Store.Storage.AppendConditionTest do
 
   alias Decree.Store.Sql.Statements
   alias Decree.Store.Storage.{Appender, Initializer, Schema}
-  alias Decree.Store.Streams.Stream
   alias TestEventStore, as: EventStore
 
   @declared [stream_prefixes: ["decision-"], targets: [:declared_target]]

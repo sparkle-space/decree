@@ -31,10 +31,12 @@ defmodule Decree.Application do
 
   The application expects at least an `:otp_app` option to be specified. It
   should point to an OTP application that has the application configuration.
+  Name the decree application apart from your OTP application module, the one `mod:` names in
+  `mix.exs`: these examples call it `MyApp.App`.
 
   For example, the application:
 
-      defmodule MyApp.Application do
+      defmodule MyApp.App do
         use Decree.Application, otp_app: :my_app
 
         router(MyApp.Router)
@@ -43,14 +45,14 @@ defmodule Decree.Application do
   Could be configured with:
 
       # config/config.exs
-      config :my_app, MyApp.Application,
+      config :my_app, MyApp.App,
         event_store: [event_store: MyApp.EventStore],
         registry: :local
 
   Alternatively, you can include the configuration when defining the
   application:
 
-      defmodule MyApp.Application do
+      defmodule MyApp.App do
         use Decree.Application,
           otp_app: :my_app,
           event_store: [event_store: MyApp.EventStore],
@@ -61,7 +63,7 @@ defmodule Decree.Application do
 
   A Decree application must be started before it can be used:
 
-      {:ok, _pid} = MyApp.Application.start_link()
+      {:ok, _pid} = MyApp.App.start_link()
 
   Instead of starting the application manually, you should use a
   `Supervisor`.
@@ -71,7 +73,7 @@ defmodule Decree.Application do
   Use a supervisor to start your Decree application:
 
       Supervisor.start_link([
-        MyApp.Application
+        MyApp.App
       ], strategy: :one_for_one)
 
   ## Command routing
@@ -81,7 +83,7 @@ defmodule Decree.Application do
 
   ### Example
 
-      defmodule MyApp.Application do
+      defmodule MyApp.App do
         use Decree.Application, otp_app: :my_app
 
         router(MyApp.Accounts.Router)
@@ -96,7 +98,7 @@ defmodule Decree.Application do
   Once a router has been configured you can dispatch a command via the
   application:
 
-      :ok = MyApp.dispatch(command, opts)
+      :ok = MyApp.App.dispatch(command, opts)
 
   See `c:dispatch/1` and `c:dispatch/2` for details.
 
@@ -117,21 +119,21 @@ defmodule Decree.Application do
   guaranteeing that the data and processing remains isolated between tenants.
 
       for tenant <- [:tenant1, :tenant2, :tenant3] do
-        {:ok, _app} = MyApp.Application.start_link(name: tenant)
+        {:ok, _app} = MyApp.App.start_link(name: tenant)
       end
 
   Typically you would start the applications using a supervisor:
 
       children =
         for tenant <- [:tenant1, :tenant2, :tenant3] do
-          {MyApp.Application, name: tenant}
+          {MyApp.App, name: tenant}
         end
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
   To dispatch a command you must provide the application name:
 
-      :ok = MyApp.Application.dispatch(command, application: :tenant1)
+      :ok = MyApp.App.dispatch(command, application: :tenant1)
 
   ## Default dispatch options
 
@@ -139,7 +141,7 @@ defmodule Decree.Application do
   `:timeout` and `:returning`. Any defaults will be used unless overridden by
   options provided to the dispatch function.
 
-      defmodule MyApp.Application do
+      defmodule MyApp.App do
         use Decree.Application,
           otp_app: :my_app,
           default_dispatch_opts: [
@@ -156,7 +158,7 @@ defmodule Decree.Application do
   Two options name what protects personal data. They are read from the `use` line and nowhere
   else: `config`, `start_link/1` options and `c:init/1` can't set them.
 
-      defmodule MyApp.Application do
+      defmodule MyApp.App do
         use Decree.Application,
           otp_app: :my_app,
           key_source: MyApp.SubjectKeys,
