@@ -78,7 +78,9 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     stream_uuid = UUID.uuid4()
     :ok = PubSub.subscribe(TestEventStore, stream_uuid, notices: true)
 
-    [first, second, third] = EventFactory.create_recorded_events(3, stream_uuid)
+    [first, %RecordedEvent{} = second, third] =
+      EventFactory.create_recorded_events(3, stream_uuid)
+
     second = %RecordedEvent{second | data: <<0>> <> @marker}
 
     log =
@@ -314,7 +316,8 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     end
 
     test "in a known event's deserialize cuts the batch there", %{conn: conn, schema: schema} do
-      [first, second, third] = EventFactory.create_recorded_events(3, UUID.uuid4())
+      [first, %RecordedEvent{} = second, third] =
+        EventFactory.create_recorded_events(3, UUID.uuid4())
 
       second = %RecordedEvent{
         second
@@ -326,7 +329,8 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
     end
 
     test "in the type check cuts the batch there", %{conn: conn, schema: schema} do
-      [first, second, third] = EventFactory.create_recorded_events(3, UUID.uuid4())
+      [first, %RecordedEvent{} = second, third] =
+        EventFactory.create_recorded_events(3, UUID.uuid4())
 
       second = %RecordedEvent{
         second
@@ -343,7 +347,7 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
       conn: conn,
       schema: schema
     } do
-      [first, second] = EventFactory.create_recorded_events(2, UUID.uuid4())
+      [first, %RecordedEvent{} = second] = EventFactory.create_recorded_events(2, UUID.uuid4())
       %RecordedEvent{stream_uuid: stream_uuid} = first
 
       second = %RecordedEvent{
@@ -415,7 +419,7 @@ defmodule Decree.Store.Notifications.PublisherUndecodableEventTest do
 
   # A real append of one event of a known type whose data is not JSON.
   defp plant_undecodable(conn, schema, stream_uuid) do
-    [event] = EventFactory.create_recorded_events(1, stream_uuid)
+    [%RecordedEvent{} = event] = EventFactory.create_recorded_events(1, stream_uuid)
 
     :ok =
       Appender.append(conn, nil, [%RecordedEvent{event | data: <<0>> <> @marker}], schema: schema)

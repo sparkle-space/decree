@@ -594,7 +594,7 @@ defmodule Decree.Store.Storage.AppendStreamsTest do
       :ok = EventStore.append_to_stream("stored", 0, [event])
 
       stored = stream_id(context, "stored")
-      [recorded] = EventFactory.create_recorded_events(1, "stored", 1, 7)
+      [%RecordedEvent{} = recorded] = EventFactory.create_recorded_events(1, "stored", 1, 7)
       recorded = %RecordedEvent{recorded | event_id: event.event_id}
 
       assert Appender.append_streams(

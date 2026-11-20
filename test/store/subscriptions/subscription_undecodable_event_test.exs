@@ -294,7 +294,8 @@ defmodule Decree.Store.Subscriptions.SubscriptionUndecodableEventTest do
 
   # [E1, E2 with data that is not JSON, E3] in one append to `stream_uuid`.
   defp plant(conn, schema, stream_uuid) do
-    [first, second, third] = EventFactory.create_recorded_events(3, stream_uuid)
+    [first, %RecordedEvent{} = second, third] =
+      EventFactory.create_recorded_events(3, stream_uuid)
 
     :ok =
       Appender.append(conn, nil, [first, %RecordedEvent{second | data: @marker}, third],
