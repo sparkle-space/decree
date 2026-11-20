@@ -56,6 +56,52 @@ defmodule Decree.Decision.RuleTagIndexTest do
     end
   end
 
+  describe "`Decree.Store.TagIndex`'s public check" do
+    @describetag :no_index_facts
+
+    # A rule has no command item, so it requires `entity`, its scope tag's family, alone.
+    for {name, _facts, _missing, _copy} <- TagIndexFixtures.agreement_cases() do
+      test "agrees with the rule on #{name}" do
+        {_name, facts, missing, _copy} =
+          List.keyfind(TagIndexFixtures.agreement_cases(), unquote(name), 0)
+
+        missing = missing -- ["command"]
+
+        seed(%Read{scope: "history"}, [], App)
+
+        for fact <- facts do
+          seed(%Read{scope: "fact"}, TagIndexFixtures.fact_tags(fact), App)
+        end
+
+        store = Module.concat([App, "FrameworkEventStore"])
+
+        assert {:ok, states} =
+                 Decree.Store.TagIndex.states(Decree.FrameworkEventStore, name: store)
+
+        assert Decree.Store.TagIndex.missing(states, ["entity"]) == missing
+
+        bootstrap =
+          Decree.Store.TagIndex.bootstrap(
+            Decree.FrameworkEventStore,
+            ["entity"],
+            fn _requirements -> flunk("bootstrap enabled a store with history") end,
+            name: store
+          )
+
+        command = ruled()
+
+        if missing == [] do
+          assert bootstrap == :verified
+          assert :ok = App.dispatch(command)
+        else
+          assert bootstrap == {:error, {:tag_index_not_enabled, missing}}
+          assert {:error, :tag_index_not_enabled} = App.dispatch(command)
+          assert stored(ruled_stream(command), App) == []
+        end
+      end
+    end
+  end
+
   describe "`[]` from `query/2`" do
     # A registration with no address reads nothing, so it requires no index: a repair of the
     # address's family does not refuse it (DOC-1 §9.2).

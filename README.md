@@ -107,33 +107,41 @@ defmodule MyApp.Account do
   end
 end
 
-defmodule MyApp.EnableTagIndex do
+defmodule MyApp.EnableTagIndexes do
   use Decree.Command
 
-  defstruct [:command_id, :ledger_id, :family]
+  defstruct [:command_id, :ledger_id, :families]
 end
 
-defmodule MyApp.TagIndexEnabled do
+defmodule MyApp.TagIndexesEnabled do
   @derive Jason.Encoder
-  defstruct [:family]
+  defstruct [:families]
 
   defimpl Decree.Event.Tags do
     alias Decree.Store.TagIndex
 
-    def tags(%{family: family}, _context) do
-      {:ok, [TagIndex.fact_tag(), TagIndex.state_tag(family, nil, :enabled)]}
+    # One fact for every family, so they are enabled together or not at all.
+    def tags(%{families: families}, _context) do
+      {:ok, [TagIndex.fact_tag() | Enum.map(families, &TagIndex.state_tag(&1, nil, :enabled))]}
     end
   end
 end
 
 defmodule MyApp.TagIndexLedger do
-  defstruct []
+  alias MyApp.{EnableTagIndexes, TagIndexesEnabled}
 
-  def execute(%__MODULE__{}, %MyApp.EnableTagIndex{family: family}) do
-    %MyApp.TagIndexEnabled{family: family}
+  defstruct [:families]
+
+  def execute(%__MODULE__{families: nil}, %EnableTagIndexes{families: families}) do
+    %TagIndexesEnabled{families: families}
   end
 
-  def apply(%__MODULE__{} = ledger, %MyApp.TagIndexEnabled{}), do: ledger
+  # A resend: this ledger's enable is already on its stream, so it appends nothing.
+  def execute(%__MODULE__{}, %EnableTagIndexes{}), do: {:error, :duplicate_command}
+
+  def apply(%__MODULE__{} = ledger, %TagIndexesEnabled{families: families}) do
+    %__MODULE__{ledger | families: families}
+  end
 end
 
 defmodule MyApp.Router do
@@ -143,7 +151,7 @@ defmodule MyApp.Router do
   identify MyApp.TagIndexLedger, by: :ledger_id, prefix: "tag-index-"
 
   dispatch MyApp.RegisterAccount, to: MyApp.Account, rule: MyApp.UniqueHandle
-  dispatch MyApp.EnableTagIndex, to: MyApp.TagIndexLedger
+  dispatch MyApp.EnableTagIndexes, to: MyApp.TagIndexLedger
 end
 
 defmodule MyApp.App do
@@ -171,15 +179,17 @@ mix decree.store.init
 ```
 
 ```elixir
-# On a fresh store, before anything else is appended
-{:ok, %Decree.Store.Streams.StreamInfo{stream_version: 0}} = MyApp.EventStore.stream_info(:all)
-
-:ok =
-  MyApp.App.dispatch(%MyApp.EnableTagIndex{
+# Before any other writer starts
+enable = fn families ->
+  MyApp.App.dispatch(%MyApp.EnableTagIndexes{
     command_id: Decree.UUID.uuid4(),
     ledger_id: Decree.UUID.uuid4(),
-    family: "entity"
+    families: families
   })
+end
+
+# An empty store: one enable, one fact.
+:enabled = Decree.Store.TagIndex.bootstrap(MyApp.EventStore, ["entity"], enable)
 
 register = fn handle ->
   MyApp.App.dispatch(%MyApp.RegisterAccount{
@@ -192,6 +202,9 @@ end
 :ok = register.("ada")
 {:error, :handle_taken} = register.("ada")
 :ok = register.("grace")
+
+# The same step on a store with history only checks.
+:verified = Decree.Store.TagIndex.bootstrap(MyApp.EventStore, ["entity"], enable)
 ```
 
 `MyApp.Welcome` logs "welcome, @ada" and "welcome, @grace".
@@ -200,7 +213,14 @@ Every command carries a `command_id`, a lowercase canonical UUID its sender mint
 
 - **The store must declare the aggregate** in `conditional_appends: [targets: ...]`. The application refuses to start when a rule route's aggregate is missing there.
 - **The command needs a `:rule_result` field**, where `execute/2` finds what the rule's query matched.
-- **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.TagIndexEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`. Enable it on an empty store, so every later event is covered: `MyApp.EventStore.stream_info(:all)` answers `$all`'s `stream_version`, 0 while no event has been appended. decree does not refuse an enable on a store with history, so the check is yours. `Decree.Store.TagIndex`, "The lifecycle", says why it matters.
+- **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts and the check over them (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.EnableTagIndexes`, `MyApp.TagIndexesEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`.
+
+  `Decree.Store.TagIndex.bootstrap/3` is the release step. On an empty store it calls your `enable` once, so the facts sit first and cover every later event. On a store with history it never enables: it checks the families you list and answers `:verified`, or `{:error, {:tag_index_not_enabled, missing}}`. Its answer holds on three conditions:
+  - **It covers the families you list.** A rule that reads a family left out of the list still refuses at dispatch.
+  - **`enable` makes one append.** Enable every family in one command whose fact lands in one batch, as `MyApp.EnableTagIndexes` does. A second dispatch that fails leaves its families disabled, and the rerun, on a store with history, reports them and never enables them.
+  - **No other writer runs until it answers.** An event appended between the empty-store check and the enable is not checked.
+
+  A resend of the enable answers `{:error, :duplicate_command}` and appends nothing. decree does not refuse an enable on a store with history: that is the repair path. `Decree.Store.TagIndex`, "The lifecycle", says why it matters.
 
 `Decree.Decision.Rule` covers the rest: a follow-up query, keys, bounds, retries and the required tags.
 

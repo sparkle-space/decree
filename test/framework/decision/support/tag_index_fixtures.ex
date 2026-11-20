@@ -286,6 +286,43 @@ defmodule Decree.TagIndexFixtures do
   end
 
   @doc """
+  Stores of facts on which a dispatch and `Decree.Store.TagIndex`'s public check must agree.
+  Each is `{name, facts, missing, copy_missing}`: the facts in position order, each a list
+  of `{family, key, state}`; what `missing/2` finds of `["command", "entity"]`; and what an
+  application's copied history check found of them, one that folded the read's `tags` itself
+  and checked each family's enabled tag first. The two differ on the both-ways fact, where
+  the copy answered `:verified` and every rule refuses.
+  """
+  def agreement_cases do
+    command = {"command", nil, :enabled}
+    entity = {"entity", nil, :enabled}
+    disabled = {"entity", nil, :disabled}
+
+    [
+      {"no fact", [], ["command", "entity"], ["command", "entity"]},
+      {"every family enabled in one fact", [[command, entity]], [], []},
+      {"the families enabled in two facts", [[entity], [command]], [], []},
+      {"entity enabled, then disabled", [[command, entity], [disabled]], ["entity"], ["entity"]},
+      {"entity disabled, then enabled again", [[command, entity], [disabled], [entity]], [], []},
+      {"one fact naming entity both ways", [[command, entity, disabled]], ["entity"], []},
+      {"entity enabled under a key alone", [[command, {"entity", "k1", :enabled}]], ["entity"],
+       ["entity"]},
+      {"another family enabled, not entity", [[command, {"tenant_slug", nil, :enabled}]],
+       ["entity"], ["entity"]}
+    ]
+  end
+
+  @doc """
+  A fact's tags for its `{family, key, state}`s.
+  """
+  def fact_tags(states) do
+    [
+      TagIndex.fact_tag()
+      | for({family, key, state} <- states, do: TagIndex.state_tag(family, key, state))
+    ]
+  end
+
+  @doc """
   What a mocked store's `read_query/2` answers: every family enabled, each fact matching the
   index item, wherever `items` holds it, and the facts' tags when `opts`' `tag_items` names
   that item, as a store answers them. A fact is an event unless `opts`' `position_items` names

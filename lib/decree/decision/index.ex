@@ -18,8 +18,17 @@ defmodule Decree.Decision.Index do
   @spec check(boolean(), [%Read{}], %Merged{}, map(), map()) ::
           :ok | {:error, :tag_index_not_enabled}
   def check(command?, reads, %Merged{} = merged, tags, families) do
+    # Only the facts at or below `after` are folded, in position order: the condition
+    # protects that snapshot, and a fact above it, one a second read found, fails the append,
+    # whose retry reads it again. A fact with no state tag left could have been a disable, so
+    # the fold answers `:error`.
     with {:ok, required} <- requirements(command?, Enum.flat_map(reads, & &1.own), families),
-         {:ok, states} <- fold(merged, tags),
+         {:ok, states} <-
+           merged
+           |> Read.index_fact_positions()
+           |> Enum.filter(&(&1 <= merged.after))
+           |> Enum.map(&Map.get(tags, &1, []))
+           |> TagIndex.fold(),
          true <- Enum.all?(required, &(Map.get(states, &1) == :enabled)) do
       :ok
     else
@@ -84,39 +93,4 @@ defmodule Decree.Decision.Index do
       _unreadable -> :error
     end
   end
-
-  # The last state per family and key, folding the facts in position order. Only the facts at
-  # or below `after` are folded: the condition protects that snapshot, and a fact above it, one
-  # a second read found, fails the append, whose retry reads it again. A fact with no state
-  # tag left could have been a disable, so it answers `:error`.
-  defp fold(%Merged{} = merged, tags) do
-    merged
-    |> Read.index_fact_positions()
-    |> Enum.filter(&(&1 <= merged.after))
-    |> Enum.reduce_while({:ok, %{}}, fn position, {:ok, states} ->
-      case fact_states(Map.get(tags, position, [])) do
-        {:ok, fact} -> {:cont, {:ok, Map.merge(states, fact)}}
-        :error -> {:halt, :error}
-      end
-    end)
-  end
-
-  # One fact's states. A fact naming one family and key both ways reads as disabled, since the
-  # read keeps no order within an event.
-  defp fact_states(tags) do
-    parsed =
-      for tag <- tags, Query.tag_kind(tag) == "tag_index_state", do: TagIndex.parse_state(tag)
-
-    if parsed == [] or :error in parsed do
-      :error
-    else
-      {:ok,
-       Enum.reduce(parsed, %{}, fn {:ok, {family, key, state}}, states ->
-         Map.update(states, {family, key}, state, &lower(&1, state))
-       end)}
-    end
-  end
-
-  defp lower(:enabled, :enabled), do: :enabled
-  defp lower(_state, _other), do: :disabled
 end

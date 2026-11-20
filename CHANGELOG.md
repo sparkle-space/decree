@@ -4,6 +4,17 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+New public API in `Decree.Store.TagIndex`, so this is a minor release. Nothing is removed or changed: an application on 0.1.x compiles and runs as before, and no store schema changes.
+
+- **The tag-index fold is public, and shared.** `Decree.Store.TagIndex.fold/1` is the fold every decision and rule dispatch runs over the facts, moved out of decree's internals. An application's release check now reads the facts exactly as a dispatch does, where a copied fold could disagree: one application's copy answered `:verified` on a fact naming one family both ways, where every dispatch refuses.
+- **`states/2` and `missing/2`.** `states/2` reads every fact on a store and folds it: `{:ok, %{{family, key} => :enabled | :disabled}}`, or `{:error, :unattributable_tag_index_fact}` for a fact whose state tags the read leaves out, which a dispatch refuses too. `missing/2` answers the requirements, `family` or `{family, key}`, that are not enabled.
+- **`bootstrap/3`, the release step.** On an empty store it calls your `enable` once with the families you list and answers `:enabled` once they read as enabled. On a store with history it never calls `enable`: it answers `:verified`, or `{:error, {:tag_index_not_enabled, missing}}` for a family that is missing. It refuses an empty, repeated or malformed list with `{:error, :invalid_tag_index_requirements}` before it reads anything. Its answer covers the families you list, not every family your rules read; `enable` must make one atomic append; and no other writer may run until it answers. `bootstrap/4` takes the store's `name:` too.
+- **The README's minimal application uses it.** Its ledger enables every family in one fact (`MyApp.EnableTagIndexes`), a resend answers `{:error, :duplicate_command}` and appends nothing, and its release step is one `bootstrap/3` call. The README's ledger enabled one family per fact and had no duplicate clause, so a resend appended a second fact.
+
+### Upgrading from 0.1.x
+
+Move to `~> 0.2.0`; nothing else is required. To adopt the check, replace your own empty-store check, enable and history check with one `bootstrap/3` call, as the README's [minimal application](README.md#a-minimal-application) does in its release step. Keep your own fact, command and ledger: decree still ships none. Your `enable` must enable every family in one append, as one command whose events land in one batch. Delete any fold of the facts you copied; `states/2` and `missing/2` replace it. On a store with history, a step that did nothing there before now checks the families you list and fails on a missing one, so list only the families your store has enabled, or repair the missing one first ("The lifecycle" in `Decree.Store.TagIndex`).
+
 ## 0.1.2 (2026-11-20)
 
 Documentation and tests only: no API, behaviour or store schema change.
