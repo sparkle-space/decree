@@ -6,14 +6,15 @@
 # It reads every line of `.github/workflows/*.yml` and `*.yaml` under the current directory
 # with a `uses` key, in any YAML form: `- uses:`, `uses:`, `{uses: ...}` or `"uses":`. A line
 # passes when its value is `owner/repo@<40 hex>` (or `owner/repo/path@<40 hex>`) and a comment
-# that opens with the version, `# v7.0.1`, or a path in the repository, `./...`. A tag, a
-# branch, a short SHA, a missing or other comment, a quoted ref, a flow-style step and a
-# `docker://` image fail. Each failure prints its file and line, and the check exits 1. It
-# reads the files only: it does not check that a SHA exists on GitHub.
+# that opens with the version, `# v7.0.1` or `# 0.28.0`, or a path in the repository, `./...`.
+# A tag, a branch, a short SHA, a missing or other comment, a quoted ref, a flow-style step and
+# a `docker://` image fail. Each failure prints its file and line, and the check exits 1. It
+# reads the files only: it does not check that a SHA exists on GitHub, and it does not read a
+# local composite action's `action.yml`.
 
 defmodule Decree.CheckActionPins do
   @uses ~r/(?:^|[\s{,])["']?uses["']?\s*:\s*(.*?)\s*$/
-  @pinned ~r/^[\w.-]+\/[\w.-]+(?:\/[^@\s]+)?@[0-9a-f]{40}\s+#\s*v\d\S*$/
+  @pinned ~r/^[\w.-]+\/[\w.-]+(?:\/[^@\s]+)?@[0-9a-f]{40}\s+#\s*v?\d\S*$/
 
   def run do
     paths =

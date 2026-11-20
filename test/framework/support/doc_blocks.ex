@@ -43,9 +43,9 @@ defmodule Decree.DocBlocks do
   The first line of every indented code block in `doc`, in order, without its indentation. A
   block opens at a line indented four spaces or more past its list item's content after a blank
   line, and runs while lines are blank or indented as far. Outside a list, an item's content
-  starts at column 0. A list item line is never code, and a less indented paragraph after a
-  blank line leaves the items it is not inside, so a paragraph that continues a list item is
-  text, as ExDoc renders it.
+  starts at column 0. Inside a list, an item line is never code, as ExDoc nests it, and a less
+  indented paragraph after a blank line leaves the items it is not inside, so a paragraph that
+  continues a list item is text, as ExDoc renders it.
   """
   def first_lines(doc) do
     {found, _state, _items} =
@@ -55,13 +55,14 @@ defmodule Decree.DocBlocks do
         indent = byte_size(line) - byte_size(String.trim_leading(line))
         item = Regex.run(~r/^ *(?:[-*+]|\d+[.)]) +/, line)
         code = Enum.at(items, 0, 0) + 4
+        opens = state == :blank and indent >= code and (items == [] or item == nil)
 
         cond do
           String.trim(line) == "" and state == :code -> {found, :code, items}
           String.trim(line) == "" -> {found, :blank, items}
           state == :code and indent >= code -> {found, :code, items}
+          opens -> {[String.trim(line) | found], :code, items}
           item -> {found, :text, [byte_size(hd(item)) | drop_items(items, indent)]}
-          state == :blank and indent >= code -> {[String.trim(line) | found], :code, items}
           state == :text -> {found, :text, items}
           true -> {found, :text, drop_items(items, indent)}
         end
