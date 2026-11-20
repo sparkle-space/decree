@@ -1,7 +1,7 @@
 # The release script. The Prepare release and Publish workflows run it
 # (.github/workflows/prepare-release.yml, publish.yml); CONTRIBUTING.md, "Releases",
-# describes the flow. It reads and writes mix.exs and CHANGELOG.md in the current
-# directory, needs only Elixir, and fails with a message on stderr and exit status 1.
+# describes the flow. It reads and writes mix.exs, CHANGELOG.md and README.md in the
+# current directory, needs only Elixir, and fails with a message on stderr and exit status 1.
 #
 #     elixir scripts/release.exs version
 #     elixir scripts/release.exs bump patch|minor|major [--confirm-1-0] [--date YYYY-MM-DD]
@@ -13,7 +13,11 @@
 # - `bump` raises the version with the pre-1.0 rules and moves the CHANGELOG's
 #   "## Unreleased" section under "## VERSION (DATE)". Before 1.0 a breaking change is a
 #   minor bump; a major bump to 1.0.0 needs --confirm-1-0. An empty Unreleased section
-#   is refused. It prints the new version.
+#   is refused. A minor or major bump also moves the requirement users copy, `~> X.Y.0`:
+#   README.md's install line, its `~> X.Y.0` sentence and its Status "(version X.Y.x)",
+#   and the CHANGELOG preamble's `~> X.Y.0`. A patch moves none, since `~> X.Y.0` takes
+#   it. A reference it cannot find, or finds twice, writes nothing. It prints the new
+#   version.
 # - `notes` prints a version's CHANGELOG section, without its heading: the GitHub
 #   release body.
 # - `plan` takes the repository's tags and prints `version=` and `release=` lines for
@@ -66,12 +70,79 @@ defmodule Decree.ReleaseScript do
     next = next_version(current, bump, Keyword.get(opts, :confirm_1_0, false))
     date = Keyword.get_lazy(opts, :date, fn -> Date.to_iso8601(Date.utc_today()) end)
     changelog = move_unreleased!(File.read!("CHANGELOG.md"), next, date)
-
     mix_exs = Regex.replace(@version_line, File.read!("mix.exs"), "\\g{1}#{next}\\g{3}")
-    File.write!("mix.exs", mix_exs)
-    File.write!("CHANGELOG.md", changelog)
+
+    # Everything is read and checked before anything is written.
+    next_version = Version.parse!(next)
+
+    writes =
+      if requirement(next_version) == requirement(current) do
+        [{"mix.exs", mix_exs}, {"CHANGELOG.md", changelog}]
+      else
+        [
+          {"mix.exs", mix_exs},
+          {"CHANGELOG.md", move_preamble_requirement!(changelog, current, next_version)},
+          {"README.md", move_readme!(current, next_version)}
+        ]
+      end
+
+    Enum.each(writes, fn {path, content} -> File.write!(path, content) end)
     IO.puts(next)
   end
+
+  # `~> X.Y.0` takes X.Y.x only, so a minor or major bump moves the requirement users copy.
+  defp requirement(%Version{major: major, minor: minor}), do: "~> #{major}.#{minor}.0"
+  defp status(%Version{major: major, minor: minor}), do: "(version #{major}.#{minor}.x)"
+
+  defp move_readme!(current, next) do
+    readme =
+      case File.read("README.md") do
+        {:ok, readme} -> readme
+        {:error, reason} -> fail("README.md does not read: #{:file.format_error(reason)}")
+      end
+
+    install = ~s({:decree, "#{requirement(current)}"})
+
+    for reference <- [install, status(current)] do
+      case occurrences(readme, reference) do
+        1 -> :ok
+        count -> fail("README.md must name #{reference} once, and names it #{count} times")
+      end
+    end
+
+    readme =
+      readme
+      |> String.replace(install, ~s({:decree, "#{requirement(next)}"}))
+      |> String.replace("`#{requirement(current)}`", "`#{requirement(next)}`")
+      |> String.replace(status(current), status(next))
+
+    if occurrences(readme, requirement(current)) > 0 do
+      fail("README.md names #{requirement(current)} where the bump cannot move it")
+    end
+
+    readme
+  end
+
+  # Only the preamble: a release's own section keeps the requirement it was written with.
+  defp move_preamble_requirement!(changelog, current, next) do
+    {preamble, rest} = changelog |> String.split("\n") |> Enum.split_while(&(&1 != @unreleased))
+    preamble = Enum.join(preamble, "\n")
+    reference = "`#{requirement(current)}`"
+
+    if occurrences(preamble, reference) == 0 do
+      fail("CHANGELOG.md's preamble, above \"#{@unreleased}\", must name #{reference}")
+    end
+
+    preamble = String.replace(preamble, reference, "`#{requirement(next)}`")
+
+    if occurrences(preamble, requirement(current)) > 0 do
+      fail("CHANGELOG.md's preamble names #{requirement(current)} where the bump cannot move it")
+    end
+
+    Enum.join([preamble | rest], "\n")
+  end
+
+  defp occurrences(text, reference), do: length(String.split(text, reference)) - 1
 
   defp next_version(%Version{major: 0}, "major", false) do
     fail("a major bump from 0.x makes 1.0.0, and 1.0 is the founder's call: pass --confirm-1-0")
