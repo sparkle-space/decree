@@ -46,9 +46,12 @@ defmodule Decree.DocExamplesTest do
     Enum.map(modules, fn {module, _bytecode} -> module end)
   end
 
-  # The fragment as the body of `run/n`, compiled and never called.
-  defp compile_fragment!(doc, first_line, variables \\ []) do
-    block = DocBlocks.block!(doc, first_line)
+  # The fragment as the body of `run/n`, compiled and never called. `occurrences` is how many
+  # lines in the doc open with `first_line`, so a regressed example cannot fall through to a
+  # later block that opens the same way.
+  defp compile_fragment!(doc, first_line, variables, occurrences) do
+    assert [block | _later] = blocks = DocBlocks.blocks(doc, first_line)
+    assert length(blocks) == occurrences
 
     compile!("""
     defmodule MyApp.Fragment do
@@ -104,15 +107,16 @@ defmodule Decree.DocExamplesTest do
              registry: :local
            ]
 
-    for {first_line, variables} <- [
-          {"{:ok, _pid} = MyApp.App.start_link()", []},
-          {"Supervisor.start_link([", []},
-          {":ok = MyApp.App.dispatch(command, opts)", ["command", "opts"]},
-          {"for tenant <- [:tenant1, :tenant2, :tenant3] do", []},
-          {"children =", []},
-          {":ok = MyApp.App.dispatch(command, application: :tenant1)", ["command"]}
+    # The tenant loop's first line opens the standalone example and recurs inside `children =`.
+    for {first_line, variables, occurrences} <- [
+          {"{:ok, _pid} = MyApp.App.start_link()", [], 1},
+          {"Supervisor.start_link([", [], 1},
+          {":ok = MyApp.App.dispatch(command, opts)", ["command", "opts"], 1},
+          {"for tenant <- [:tenant1, :tenant2, :tenant3] do", [], 2},
+          {"children =", [], 1},
+          {":ok = MyApp.App.dispatch(command, application: :tenant1)", ["command"], 1}
         ] do
-      assert compile_fragment!(doc, first_line, variables) =~ "MyApp.App"
+      assert compile_fragment!(doc, first_line, variables, occurrences) =~ "MyApp.App"
     end
   end
 
@@ -147,7 +151,8 @@ defmodule Decree.DocExamplesTest do
       |> DocBlocks.doc!()
       |> String.replace("ExampleHandler.", "MyApp.ExampleHandler.")
 
-    block = compile_fragment!(doc, "for tenant <- [:tenant1, :tenant2, :tenant3] do")
+    # Its first line opens the standalone example and recurs inside `children =`.
+    block = compile_fragment!(doc, "for tenant <- [:tenant1, :tenant2, :tenant3] do", [], 2)
 
     assert block =~ "MyApp.App.start_link(name: tenant)"
   end
