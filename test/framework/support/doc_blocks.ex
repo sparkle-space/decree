@@ -41,27 +41,37 @@ defmodule Decree.DocBlocks do
 
   @doc """
   The first line of every indented code block in `doc`, in order, without its indentation. A
-  block opens at a line indented four spaces or more after a blank line, and runs while lines
-  are blank or indented.
+  block opens at a line indented four spaces or more past its list item's content after a blank
+  line, and runs while lines are blank or indented as far. Outside a list, an item's content
+  starts at column 0. A list item line is never code, and a less indented paragraph after a
+  blank line leaves the items it is not inside, so a paragraph that continues a list item is
+  text, as ExDoc renders it.
   """
   def first_lines(doc) do
-    {found, _state} =
+    {found, _state, _items} =
       doc
       |> String.split("\n")
-      |> Enum.reduce({[], :blank}, fn line, {found, state} ->
-        indented = String.starts_with?(line, "    ")
+      |> Enum.reduce({[], :blank, []}, fn line, {found, state, items} ->
+        indent = byte_size(line) - byte_size(String.trim_leading(line))
+        item = Regex.run(~r/^ *(?:[-*+]|\d+[.)]) +/, line)
+        code = Enum.at(items, 0, 0) + 4
 
         cond do
-          String.trim(line) == "" and state == :code -> {found, :code}
-          String.trim(line) == "" -> {found, :blank}
-          indented and state == :code -> {found, :code}
-          indented and state == :blank -> {[String.trim(line) | found], :code}
-          true -> {found, :text}
+          String.trim(line) == "" and state == :code -> {found, :code, items}
+          String.trim(line) == "" -> {found, :blank, items}
+          state == :code and indent >= code -> {found, :code, items}
+          item -> {found, :text, [byte_size(hd(item)) | drop_items(items, indent)]}
+          state == :blank and indent >= code -> {[String.trim(line) | found], :code, items}
+          state == :text -> {found, :text, items}
+          true -> {found, :text, drop_items(items, indent)}
         end
       end)
 
     Enum.reverse(found)
   end
+
+  # The items a line indented `indent` is not inside: those whose content starts further in.
+  defp drop_items(items, indent), do: Enum.drop_while(items, &(&1 > indent))
 
   defp blocks(lines, first_line, found) do
     case Enum.drop_while(lines, &(String.trim(&1) != first_line)) do

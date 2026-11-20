@@ -4,6 +4,8 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+- **`Decree.Application`'s `dispatch/2` example compiles as written.** It names `MyApp.App` and the README's `MyApp.RegisterAccount`, in place of upstream's `BankApp` and `%OpenAccount{}`, and a test now runs it.
+
 ## 0.2.0 (2026-11-20)
 
 New public API in `Decree.Store.TagIndex` and `Decree.Decision.Index`, so this is a minor release. Nothing is removed or changed: an application on 0.1.x compiles and runs as before, and no store schema changes.

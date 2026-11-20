@@ -371,13 +371,13 @@ defmodule Decree.Application do
 
   ## Example
 
-      command = %OpenAccount{
+      command = %MyApp.RegisterAccount{
         command_id: command_id,
-        account_number: account_number,
-        initial_balance: 1_000
+        account_id: account_id,
+        handle: "alice"
       }
 
-      :ok = BankApp.dispatch(command, timeout: 30_000)
+      :ok = MyApp.App.dispatch(command, timeout: 30_000)
 
   """
   @callback dispatch(
