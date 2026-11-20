@@ -1,9 +1,11 @@
 defmodule Decree.DocExamplesTest do
   # The examples in four moduledocs copied from Commanded, read from their compiled docs. They
   # name the decree application `MyApp.App`, apart from a consumer's OTP application module,
-  # `MyApp.Application`, which only `Decree.Projections.Ecto` names, as that module. Every module and config example compiles or evaluates as written; a
-  # fragment that needs a running store or a caller's variables is parsed. `MyApp` is renamed,
-  # so the README test's `MyApp` modules in the same VM are left alone.
+  # `MyApp.Application`, which only `Decree.Projections.Ecto` names, as that module. Every
+  # module and config example compiles or evaluates as written. A fragment that needs a running
+  # store compiles, without running, as the body of a function that takes the caller's
+  # variables. A compile reports no warning. `MyApp` is renamed, so the README test's `MyApp`
+  # modules in the same VM are left alone.
   use ExUnit.Case, async: false
 
   alias Decree.DocBlocks
@@ -39,20 +41,28 @@ defmodule Decree.DocExamplesTest do
   defp rename(block), do: String.replace(block, "MyApp", @namespace)
 
   defp compile!(block) do
+    {modules, diagnostics} = Code.with_diagnostics(fn -> Code.compile_string(rename(block)) end)
+    assert diagnostics == []
+    Enum.map(modules, fn {module, _bytecode} -> module end)
+  end
+
+  # The fragment as the body of `run/n`, compiled and never called.
+  defp compile_fragment!(doc, first_line, variables \\ []) do
+    block = DocBlocks.block!(doc, first_line)
+
+    compile!("""
+    defmodule MyApp.Fragment do
+      def run(#{Enum.join(variables, ", ")}) do
+    #{block}
+      end
+    end
+    """)
+
     block
-    |> rename()
-    |> Code.compile_string()
-    |> Enum.map(fn {module, _bytecode} -> module end)
   end
 
   defp config!(block),
     do: Config.Reader.eval!("config/config.exs", "import Config\n" <> rename(block))
-
-  defp parse!(doc, first_line) do
-    block = DocBlocks.block!(doc, first_line)
-    assert {:ok, _quoted} = Code.string_to_quoted(block)
-    block
-  end
 
   test "only Decree.Projections.Ecto's docs name MyApp.Application, as the OTP application" do
     {:ok, modules} = :application.get_key(:decree, :modules)
@@ -94,15 +104,15 @@ defmodule Decree.DocExamplesTest do
              registry: :local
            ]
 
-    for first_line <- [
-          "{:ok, _pid} = MyApp.App.start_link()",
-          "Supervisor.start_link([",
-          ":ok = MyApp.App.dispatch(command, opts)",
-          "for tenant <- [:tenant1, :tenant2, :tenant3] do",
-          "children =",
-          ":ok = MyApp.App.dispatch(command, application: :tenant1)"
+    for {first_line, variables} <- [
+          {"{:ok, _pid} = MyApp.App.start_link()", []},
+          {"Supervisor.start_link([", []},
+          {":ok = MyApp.App.dispatch(command, opts)", ["command", "opts"]},
+          {"for tenant <- [:tenant1, :tenant2, :tenant3] do", []},
+          {"children =", []},
+          {":ok = MyApp.App.dispatch(command, application: :tenant1)", ["command"]}
         ] do
-      assert parse!(doc, first_line) =~ "MyApp.App"
+      assert compile_fragment!(doc, first_line, variables) =~ "MyApp.App"
     end
   end
 
@@ -121,8 +131,23 @@ defmodule Decree.DocExamplesTest do
   end
 
   test "Decree.Event.Handler's multi-tenant example starts the named decree applications" do
-    doc = DocBlocks.doc!(Decree.Event.Handler)
-    block = parse!(doc, "for tenant <- [:tenant1, :tenant2, :tenant3] do")
+    # The application from `Decree.Application`'s first example, and a handler for the doc's
+    # `ExampleHandler`.
+    application = DocBlocks.doc!(Decree.Application)
+    assert [@app] == compile!(DocBlocks.block!(application, "defmodule MyApp.App do"))
+
+    compile!("""
+    defmodule MyApp.ExampleHandler do
+      use Decree.Event.Handler, application: MyApp.App, name: "ExampleHandler"
+    end
+    """)
+
+    doc =
+      Decree.Event.Handler
+      |> DocBlocks.doc!()
+      |> String.replace("ExampleHandler.", "MyApp.ExampleHandler.")
+
+    block = compile_fragment!(doc, "for tenant <- [:tenant1, :tenant2, :tenant3] do")
 
     assert block =~ "MyApp.App.start_link(name: tenant)"
   end
