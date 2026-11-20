@@ -121,7 +121,7 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     end
   end
 
-  test "wake-ups delivered as usual are never counted as missed", %{
+  test "every wake-up is delivered, and only a late one is counted as missed", %{
     subscription_name: subscription_name
   } do
     # Checks 250 to 500 ms apart: a wake-up still on its way at one check has that long
@@ -132,6 +132,9 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     gap = div(interval, 4)
 
     subscription = subscribe("$all", subscription_name, head_check_interval: interval)
+
+    # The publisher's wake-ups, traced as the subscription receives them.
+    1 = :erlang.trace(subscription, true, [:receive])
 
     count = 60
     test = self()
@@ -181,6 +184,12 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
              "event #{late} arrived #{latency}ms after its append, inside one check " <>
                "gap (#{gap}ms), yet its wake-up was counted as missed"
     end
+
+    # The publisher's wake-up for every event reaches the subscription, a late one
+    # included: a missed wake-up above is a late one, never a lost one.
+    assert receive_wake_ups(subscription, count, 5_000) == MapSet.new(1..count)
+
+    1 = :erlang.trace(subscription, false, [:receive])
   end
 
   # Driven end to end: `$all`'s `stream_version` is never lowered by a hard delete, so
@@ -530,6 +539,19 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
 
     Enum.map(events, &{&1.event_number, received_at}) ++
       receive_and_time(subscription, count - length(events), timeout)
+  end
+
+  # The event numbers of the `{:events, _}` wake-ups the traced subscription receives, until
+  # `count` have been seen.
+  defp receive_wake_ups(subscription, count, timeout, seen \\ MapSet.new()) do
+    if MapSet.size(seen) >= count do
+      seen
+    else
+      assert_receive {:trace, ^subscription, :receive, {:events, events}}, timeout
+
+      seen = Enum.into(events, seen, & &1.event_number)
+      receive_wake_ups(subscription, count, timeout, seen)
+    end
   end
 
   # Append `count` events with the wake-up dropped: in a transaction where the `streams`
