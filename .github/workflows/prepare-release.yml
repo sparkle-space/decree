@@ -1,8 +1,8 @@
 name: Prepare release
 
 # Opens the release PR: mix.exs's version bumped, the CHANGELOG's Unreleased section moved
-# under it and, on a minor or major bump, the README's and the CHANGELOG preamble's version
-# references moved (scripts/release.exs bump). Merging it starts the Publish workflow.
+# under it and, on a minor or major bump, the version references in README.md, SECURITY.md
+# and the CHANGELOG preamble moved (scripts/release.exs bump). Merging it starts the Publish workflow.
 # CONTRIBUTING.md, "Releases", describes the flow and the pre-1.0 version rules.
 on:
   workflow_dispatch:
@@ -77,7 +77,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
-            echo "Bumps decree to $VERSION ($BUMP) and moves the CHANGELOG's Unreleased section under it. A minor or major bump also moves the README's and the CHANGELOG preamble's \`~> X.Y.0\`. Opened by the [Prepare release]($RUN_URL) workflow."
+            echo "Bumps decree to $VERSION ($BUMP) and moves the CHANGELOG's Unreleased section under it. A minor or major bump also moves the version references in README.md, SECURITY.md and the CHANGELOG preamble. Opened by the [Prepare release]($RUN_URL) workflow."
             echo
             echo "Before merging:"
             echo
@@ -101,7 +101,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add mix.exs CHANGELOG.md README.md
+          git add mix.exs CHANGELOG.md README.md SECURITY.md
           git commit -m ":bookmark: Release decree $VERSION"
           gh auth setup-git
           git push origin "$branch"

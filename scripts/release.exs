@@ -1,7 +1,7 @@
 # The release script. The Prepare release and Publish workflows run it
 # (.github/workflows/prepare-release.yml, publish.yml); CONTRIBUTING.md, "Releases",
-# describes the flow. It reads and writes mix.exs, CHANGELOG.md and README.md in the
-# current directory, needs only Elixir, and fails with a message on stderr and exit status 1.
+# describes the flow. It reads and writes mix.exs, CHANGELOG.md, README.md and SECURITY.md in
+# the current directory, needs only Elixir, and fails with a message on stderr and exit status 1.
 #
 #     elixir scripts/release.exs version
 #     elixir scripts/release.exs bump patch|minor|major [--confirm-1-0] [--date YYYY-MM-DD]
@@ -13,11 +13,11 @@
 # - `bump` raises the version with the pre-1.0 rules and moves the CHANGELOG's
 #   "## Unreleased" section under "## VERSION (DATE)". Before 1.0 a breaking change is a
 #   minor bump; a major bump to 1.0.0 needs --confirm-1-0. An empty Unreleased section
-#   is refused. A minor or major bump also moves the requirement users copy, `~> X.Y.0`:
-#   README.md's install line, its `~> X.Y.0` sentence and its Status "(version X.Y.x)",
-#   and the CHANGELOG preamble's `~> X.Y.0`. A patch moves none, since `~> X.Y.0` takes
-#   it. A reference it cannot find, or finds twice, writes nothing. It prints the new
-#   version.
+#   is refused. A minor or major bump also moves the requirement users copy, `~> X.Y.0`,
+#   and the series, X.Y.x: README.md's install line, its `~> X.Y.0` sentence and its
+#   Status "(version X.Y.x)", the CHANGELOG preamble's `~> X.Y.0` and SECURITY.md's
+#   "X.Y.x today". A patch moves none, since `~> X.Y.0` takes it. A reference it cannot
+#   find, or finds twice, writes nothing. It prints the new version.
 # - `notes` prints a version's CHANGELOG section, without its heading: the GitHub
 #   release body.
 # - `plan` takes the repository's tags and prints `version=` and `release=` lines for
@@ -82,7 +82,8 @@ defmodule Decree.ReleaseScript do
         [
           {"mix.exs", mix_exs},
           {"CHANGELOG.md", move_preamble_requirement!(changelog, current, next_version)},
-          {"README.md", move_readme!(current, next_version)}
+          {"README.md", move_readme!(current, next_version)},
+          {"SECURITY.md", move_security!(current, next_version)}
         ]
       end
 
@@ -90,31 +91,19 @@ defmodule Decree.ReleaseScript do
     IO.puts(next)
   end
 
-  # `~> X.Y.0` takes X.Y.x only, so a minor or major bump moves the requirement users copy.
+  # `~> X.Y.0` takes X.Y.x only, so a minor or major bump moves the requirement users copy,
+  # and the series the README and SECURITY.md name.
   defp requirement(%Version{major: major, minor: minor}), do: "~> #{major}.#{minor}.0"
-  defp status(%Version{major: major, minor: minor}), do: "(version #{major}.#{minor}.x)"
+  defp series(%Version{major: major, minor: minor}), do: "#{major}.#{minor}.x"
 
   defp move_readme!(current, next) do
-    readme =
-      case File.read("README.md") do
-        {:ok, readme} -> readme
-        {:error, reason} -> fail("README.md does not read: #{:file.format_error(reason)}")
-      end
+    references = [
+      {~s({:decree, "#{requirement(current)}"}), ~s({:decree, "#{requirement(next)}"})},
+      {"`#{requirement(current)}`", "`#{requirement(next)}`"},
+      {"(version #{series(current)})", "(version #{series(next)})"}
+    ]
 
-    install = ~s({:decree, "#{requirement(current)}"})
-
-    for reference <- [install, status(current)] do
-      case occurrences(readme, reference) do
-        1 -> :ok
-        count -> fail("README.md must name #{reference} once, and names it #{count} times")
-      end
-    end
-
-    readme =
-      readme
-      |> String.replace(install, ~s({:decree, "#{requirement(next)}"}))
-      |> String.replace("`#{requirement(current)}`", "`#{requirement(next)}`")
-      |> String.replace(status(current), status(next))
+    readme = move!("README.md", read!("README.md"), references)
 
     if occurrences(readme, requirement(current)) > 0 do
       fail("README.md names #{requirement(current)} where the bump cannot move it")
@@ -123,23 +112,40 @@ defmodule Decree.ReleaseScript do
     readme
   end
 
+  defp move_security!(current, next) do
+    move!("SECURITY.md", read!("SECURITY.md"), [
+      {"#{series(current)} today", "#{series(next)} today"}
+    ])
+  end
+
   # Only the preamble: a release's own section keeps the requirement it was written with.
   defp move_preamble_requirement!(changelog, current, next) do
     {preamble, rest} = changelog |> String.split("\n") |> Enum.split_while(&(&1 != @unreleased))
-    preamble = Enum.join(preamble, "\n")
-    reference = "`#{requirement(current)}`"
-
-    if occurrences(preamble, reference) == 0 do
-      fail("CHANGELOG.md's preamble, above \"#{@unreleased}\", must name #{reference}")
-    end
-
-    preamble = String.replace(preamble, reference, "`#{requirement(next)}`")
+    reference = {"`#{requirement(current)}`", "`#{requirement(next)}`"}
+    preamble = move!("CHANGELOG.md's preamble", Enum.join(preamble, "\n"), [reference])
 
     if occurrences(preamble, requirement(current)) > 0 do
       fail("CHANGELOG.md's preamble names #{requirement(current)} where the bump cannot move it")
     end
 
     Enum.join([preamble | rest], "\n")
+  end
+
+  # Each reference must be in `text` exactly once, so a bump never guesses which to move.
+  defp move!(name, text, references) do
+    Enum.reduce(references, text, fn {from, to}, text ->
+      case occurrences(text, from) do
+        1 -> String.replace(text, from, to)
+        count -> fail("#{name} must name #{from} once, and names it #{count} times")
+      end
+    end)
+  end
+
+  defp read!(path) do
+    case File.read(path) do
+      {:ok, text} -> text
+      {:error, reason} -> fail("#{path} does not read: #{:file.format_error(reason)}")
+    end
   end
 
   defp occurrences(text, reference), do: length(String.split(text, reference)) - 1
