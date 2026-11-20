@@ -22,7 +22,7 @@ defmodule Decree.ReleaseScriptTest do
   @changelog """
   # Changelog
 
-  The intro.
+  The intro. Depend on `~> 0.1.0` to take patches only.
 
   ## Unreleased
 
@@ -35,9 +35,47 @@ defmodule Decree.ReleaseScriptTest do
   The first release.
   """
 
+  # The README's version references a minor or major bump moves: the install line, the
+  # sentence after it and the Status line. The example version in Status is not one.
+  defp readme(requirement, series) do
+    """
+    # decree
+
+    decree is pre-1.0 (version #{series}). Until 1.0, a minor version (0.2.0) may break.
+
+    ```elixir
+    def deps do
+      [
+        {:decree, "#{requirement}"},
+        {:jason, "~> 1.4"}
+      ]
+    end
+    ```
+
+    `#{requirement}` takes patch versions only.
+    """
+  end
+
+  # SECURITY.md's supported series, which a minor or major bump moves too.
+  defp security(series) do
+    """
+    # Security policy
+
+    Fixes ship in the next patch release of the latest minor version, #{series} today.
+    """
+  end
+
   defp project(dir, version, changelog \\ @changelog) do
+    [major, minor, _patch] = String.split(version, ".")
     File.write!(Path.join(dir, "mix.exs"), String.replace(@mix_exs, "VERSION", version))
     File.write!(Path.join(dir, "CHANGELOG.md"), changelog)
+
+    File.write!(
+      Path.join(dir, "README.md"),
+      readme("~> #{major}.#{minor}.0", "#{major}.#{minor}.x")
+    )
+
+    File.write!(Path.join(dir, "SECURITY.md"), security("#{major}.#{minor}.x"))
   end
 
   defp release(dir, args) do
@@ -75,7 +113,7 @@ defmodule Decree.ReleaseScriptTest do
       assert read(dir, "CHANGELOG.md") == """
              # Changelog
 
-             The intro.
+             The intro. Depend on `~> 0.1.0` to take patches only.
 
              ## Unreleased
 
@@ -91,12 +129,62 @@ defmodule Decree.ReleaseScriptTest do
              """
     end
 
+    # `~> 0.1.0` already takes 0.1.1, so a patch moves no requirement.
+    test "patch leaves the README alone", %{tmp_dir: dir} do
+      project(dir, "0.1.0")
+
+      assert release(dir, ["bump", "patch", "--date", "2026-11-20"]) == {"0.1.1\n", 0}
+      assert read(dir, "README.md") == readme("~> 0.1.0", "0.1.x")
+      assert read(dir, "SECURITY.md") == security("0.1.x")
+    end
+
+    test "patch needs no README or SECURITY.md", %{tmp_dir: dir} do
+      project(dir, "0.1.0")
+      File.rm!(Path.join(dir, "README.md"))
+      File.rm!(Path.join(dir, "SECURITY.md"))
+
+      assert release(dir, ["bump", "patch", "--date", "2026-11-20"]) == {"0.1.1\n", 0}
+      refute File.exists?(Path.join(dir, "README.md"))
+      refute File.exists?(Path.join(dir, "SECURITY.md"))
+    end
+
     test "minor before 1.0: 0.1.3 becomes 0.2.0", %{tmp_dir: dir} do
       project(dir, "0.1.3")
 
       assert release(dir, ["bump", "minor", "--date", "2026-11-20"]) == {"0.2.0\n", 0}
       assert read(dir, "mix.exs") =~ ~s(@version "0.2.0")
       assert read(dir, "CHANGELOG.md") =~ "## Unreleased\n\n## 0.2.0 (2026-11-20)\n\n### Fixed"
+    end
+
+    test "minor moves the README's requirement and Status, and the CHANGELOG's requirement",
+         %{tmp_dir: dir} do
+      # A requirement in a release's own section is history, and stays.
+      changelog =
+        String.replace(@changelog, "- A fix.", "- A fix. Move to `~> 0.1.0` from 0.0.x.")
+
+      project(dir, "0.1.3", changelog)
+
+      assert release(dir, ["bump", "minor", "--date", "2026-11-20"]) == {"0.2.0\n", 0}
+      assert read(dir, "README.md") == readme("~> 0.2.0", "0.2.x")
+      assert read(dir, "SECURITY.md") == security("0.2.x")
+
+      assert read(dir, "CHANGELOG.md") == """
+             # Changelog
+
+             The intro. Depend on `~> 0.2.0` to take patches only.
+
+             ## Unreleased
+
+             ## 0.2.0 (2026-11-20)
+
+             ### Fixed
+
+             - A fix. Move to `~> 0.1.0` from 0.0.x.
+
+             ## 0.1.0
+
+             The first release.
+             """
     end
 
     test "major before 1.0 is refused without --confirm-1-0", %{tmp_dir: dir} do
@@ -106,21 +194,114 @@ defmodule Decree.ReleaseScriptTest do
       assert output =~ "1.0 is the founder's call"
       assert read(dir, "mix.exs") =~ ~s(@version "0.4.0")
       assert read(dir, "CHANGELOG.md") == @changelog
+      assert read(dir, "README.md") == readme("~> 0.4.0", "0.4.x")
+      assert read(dir, "SECURITY.md") == security("0.4.x")
     end
 
     test "major before 1.0 with --confirm-1-0 becomes 1.0.0", %{tmp_dir: dir} do
-      project(dir, "0.4.0")
+      project(dir, "0.4.0", String.replace(@changelog, "~> 0.1.0", "~> 0.4.0"))
 
       assert release(dir, ["bump", "major", "--confirm-1-0", "--date", "2026-11-20"]) ==
                {"1.0.0\n", 0}
 
       assert read(dir, "mix.exs") =~ ~s(@version "1.0.0")
+      assert read(dir, "README.md") == readme("~> 1.0.0", "1.0.x")
+      assert read(dir, "SECURITY.md") == security("1.0.x")
+      assert read(dir, "CHANGELOG.md") =~ "Depend on `~> 1.0.0` to take patches only."
     end
 
     test "major after 1.0 needs no confirmation: 1.2.3 becomes 2.0.0", %{tmp_dir: dir} do
-      project(dir, "1.2.3")
+      project(dir, "1.2.3", String.replace(@changelog, "~> 0.1.0", "~> 1.2.0"))
 
       assert release(dir, ["bump", "major", "--date", "2026-11-20"]) == {"2.0.0\n", 0}
+      assert read(dir, "README.md") == readme("~> 2.0.0", "2.0.x")
+      assert read(dir, "SECURITY.md") == security("2.0.x")
+      assert read(dir, "CHANGELOG.md") =~ "Depend on `~> 2.0.0` to take patches only."
+    end
+
+    # A reference the bump cannot find would leave the release PR red, so it writes nothing.
+    for {name, change} <- [
+          {"no README", :remove},
+          {"a README without the install line",
+           {"{:decree, \"~> 0.1.0\"}", "{:decree, \">= 0.0.0\"}"}},
+          {"a README without the Status version", {"(version 0.1.x)", "(version 0.1)"}},
+          {"a README with the install line twice",
+           {"{:jason, \"~> 1.4\"}", "{:decree, \"~> 0.1.0\"}"}},
+          {"a README without the requirement sentence", {"`~> 0.1.0` takes", "It takes"}},
+          {"a README with the requirement sentence twice",
+           {"`~> 0.1.0` takes patch versions only.",
+            "`~> 0.1.0` takes patch versions only. `~> 0.1.0` again."}}
+        ] do
+      test "minor refuses #{name}, and nothing changes", %{tmp_dir: dir} do
+        project(dir, "0.1.3")
+        readme_path = Path.join(dir, "README.md")
+
+        case unquote(Macro.escape(change)) do
+          :remove -> File.rm!(readme_path)
+          {from, to} -> File.write!(readme_path, String.replace(read(dir, "README.md"), from, to))
+        end
+
+        before = File.read(readme_path)
+
+        assert {output, 1} = release(dir, ["bump", "minor", "--date", "2026-11-20"])
+        assert output =~ "README.md"
+        assert read(dir, "mix.exs") =~ ~s(@version "0.1.3")
+        assert read(dir, "CHANGELOG.md") == @changelog
+        assert File.read(readme_path) == before
+        assert read(dir, "SECURITY.md") == security("0.1.x")
+      end
+    end
+
+    for {name, change} <- [
+          {"no SECURITY.md", :remove},
+          {"a SECURITY.md without the series", {"0.1.x today", "the latest today"}},
+          {"a SECURITY.md with the series twice", {"0.1.x today.", "0.1.x today. 0.1.x today."}}
+        ] do
+      test "minor refuses #{name}, and nothing changes", %{tmp_dir: dir} do
+        project(dir, "0.1.3")
+        security_path = Path.join(dir, "SECURITY.md")
+
+        case unquote(Macro.escape(change)) do
+          :remove ->
+            File.rm!(security_path)
+
+          {from, to} ->
+            File.write!(security_path, String.replace(read(dir, "SECURITY.md"), from, to))
+        end
+
+        before = File.read(security_path)
+
+        assert {output, 1} = release(dir, ["bump", "minor", "--date", "2026-11-20"])
+        assert output =~ "SECURITY.md"
+        assert read(dir, "mix.exs") =~ ~s(@version "0.1.3")
+        assert read(dir, "CHANGELOG.md") == @changelog
+        assert read(dir, "README.md") == readme("~> 0.1.0", "0.1.x")
+        assert File.read(security_path) == before
+      end
+    end
+
+    test "minor refuses a CHANGELOG whose preamble names no requirement, and nothing changes",
+         %{tmp_dir: dir} do
+      changelog = String.replace(@changelog, "Depend on `~> 0.1.0`", "Depend on a minor")
+      project(dir, "0.1.3", changelog)
+
+      assert {output, 1} = release(dir, ["bump", "minor", "--date", "2026-11-20"])
+      assert output =~ "CHANGELOG.md"
+      assert read(dir, "mix.exs") =~ ~s(@version "0.1.3")
+      assert read(dir, "CHANGELOG.md") == changelog
+      assert read(dir, "README.md") == readme("~> 0.1.0", "0.1.x")
+    end
+
+    test "minor refuses a CHANGELOG whose preamble names the requirement twice, and nothing changes",
+         %{tmp_dir: dir} do
+      changelog = String.replace(@changelog, "The intro.", "The intro, on `~> 0.1.0`.")
+      project(dir, "0.1.3", changelog)
+
+      assert {output, 1} = release(dir, ["bump", "minor", "--date", "2026-11-20"])
+      assert output =~ "CHANGELOG.md"
+      assert read(dir, "mix.exs") =~ ~s(@version "0.1.3")
+      assert read(dir, "CHANGELOG.md") == changelog
+      assert read(dir, "README.md") == readme("~> 0.1.0", "0.1.x")
     end
 
     test "--confirm-1-0 is refused on any other bump", %{tmp_dir: dir} do
@@ -162,10 +343,9 @@ defmodule Decree.ReleaseScriptTest do
       assert output =~ "no \"## Unreleased\" section"
     end
 
-    test "bumps decree's own mix.exs and CHANGELOG.md", %{tmp_dir: dir} do
-      File.cp!(Path.join(@root, "mix.exs"), Path.join(dir, "mix.exs"))
-
-      # The Unreleased section's body, whatever main holds there, becomes one known entry.
+    # decree's own CHANGELOG.md, its Unreleased section's body, whatever main holds there and
+    # empty on a release commit, made one known entry.
+    defp own_changelog(dir) do
       changelog =
         Regex.replace(
           ~r/^## Unreleased\n.*?(?=^## )/ms,
@@ -175,12 +355,70 @@ defmodule Decree.ReleaseScriptTest do
         )
 
       File.write!(Path.join(dir, "CHANGELOG.md"), changelog)
+    end
+
+    test "bumps decree's own mix.exs and CHANGELOG.md", %{tmp_dir: dir} do
+      File.cp!(Path.join(@root, "mix.exs"), Path.join(dir, "mix.exs"))
+      own_changelog(dir)
       [major, minor, patch] = Mix.Project.config()[:version] |> String.split(".")
       next = "#{major}.#{minor}.#{String.to_integer(patch) + 1}"
 
       assert release(dir, ["bump", "patch", "--date", "2026-11-20"]) == {next <> "\n", 0}
       assert read(dir, "mix.exs") =~ ~s(@version "#{next}")
       assert release(dir, ["notes", next]) == {"- An entry.\n", 0}
+    end
+
+    # What test/framework/readme_example_test.exs reads from mix.exs's version, so the release
+    # PR a minor bump opens passes CI as generated.
+    test "minor moves every version reference in decree's own README.md and CHANGELOG.md",
+         %{tmp_dir: dir} do
+      for file <- ["mix.exs", "README.md", "SECURITY.md"] do
+        File.cp!(Path.join(@root, file), Path.join(dir, file))
+      end
+
+      own_changelog(dir)
+
+      [major, minor, _patch] = Mix.Project.config()[:version] |> String.split(".")
+      next_minor = String.to_integer(minor) + 1
+      old = "~> #{major}.#{minor}.0"
+      new = "~> #{major}.#{next_minor}.0"
+
+      assert release(dir, ["bump", "minor", "--date", "2026-11-20"]) ==
+               {"#{major}.#{next_minor}.0\n", 0}
+
+      readme = read(dir, "README.md")
+      assert length(String.split(readme, ~s({:decree, "#{new}"}))) == 2
+      assert readme =~ "decree is pre-1.0 (version #{major}.#{next_minor}.x)."
+      refute readme =~ old
+
+      assert read(dir, "SECURITY.md") =~ "#{major}.#{next_minor}.x today"
+      refute read(dir, "SECURITY.md") =~ "#{major}.#{minor}.x"
+
+      [preamble, _rest] = String.split(read(dir, "CHANGELOG.md"), "\n## Unreleased\n", parts: 2)
+      assert preamble =~ "`#{new}`"
+      refute preamble =~ old
+    end
+  end
+
+  # The workflow commits what the bump wrote: a file left out stays at the old version in the
+  # release PR.
+  describe "the Prepare release workflow" do
+    @workflow Path.join(@root, ".github/workflows/prepare-release.yml")
+
+    test "commits every file a bump writes" do
+      assert [files] =
+               Regex.scan(~r/^\s*git add (.+)$/m, File.read!(@workflow), capture: :all_but_first)
+
+      assert files |> hd() |> String.split() |> Enum.sort() == [
+               "CHANGELOG.md",
+               "README.md",
+               "SECURITY.md",
+               "mix.exs"
+             ]
+    end
+
+    test "asks for no hand edit of the README's version references" do
+      refute File.read!(@workflow) =~ "update README.md's version references"
     end
   end
 

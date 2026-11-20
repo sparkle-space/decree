@@ -1,7 +1,8 @@
 name: Prepare release
 
-# Opens the release PR: mix.exs's version bumped, and the CHANGELOG's Unreleased section
-# moved under it (scripts/release.exs bump). Merging it starts the Publish workflow.
+# Opens the release PR: mix.exs's version bumped, the CHANGELOG's Unreleased section moved
+# under it and, on a minor or major bump, the version references in README.md, SECURITY.md
+# and the CHANGELOG preamble moved (scripts/release.exs bump). Merging it starts the Publish workflow.
 # CONTRIBUTING.md, "Releases", describes the flow and the pre-1.0 version rules.
 on:
   workflow_dispatch:
@@ -76,12 +77,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
-            echo "Bumps decree to $VERSION ($BUMP) and moves the CHANGELOG's Unreleased section under it. Opened by the [Prepare release]($RUN_URL) workflow."
+            echo "Bumps decree to $VERSION ($BUMP) and moves the CHANGELOG's Unreleased section under it. A minor or major bump also moves the version references in README.md, SECURITY.md and the CHANGELOG preamble. Opened by the [Prepare release]($RUN_URL) workflow."
             echo
             echo "Before merging:"
             echo
             echo "- CI does not start on a PR that the workflow's token opens. Close and reopen this PR to run it."
-            echo "- For a minor bump, update README.md's version references in this PR: the Status line and the install line's \`~> X.Y.0\`."
             echo "- Check the notes below. They become the GitHub release body."
             echo
             echo "Merging starts the Publish workflow. It runs the gates, then waits for approval in the \`hex-publish\` environment before it tags v$VERSION and publishes to Hex."
@@ -101,7 +101,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add mix.exs CHANGELOG.md
+          git add mix.exs CHANGELOG.md README.md SECURITY.md
           git commit -m ":bookmark: Release decree $VERSION"
           gh auth setup-git
           git push origin "$branch"

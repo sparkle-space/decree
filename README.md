@@ -6,7 +6,7 @@ decree is built for sparkle.space and for the projects sparkle.space produces. T
 
 ## Status
 
-decree is pre-1.0 (version 0.1.0). Until 1.0, a minor version (0.2.0) may change the API or the store schema; a patch version (0.1.1) does neither. `CHANGELOG.md` records each release and how to upgrade, and a commit on `main` between releases promises nothing.
+decree is pre-1.0 (version 0.1.x). Until 1.0, a minor version (0.2.0) may change the API or the store schema; a patch version (0.1.1) does neither. `CHANGELOG.md` records each release and how to upgrade, and a commit on `main` between releases promises nothing.
 
 It has one production user, sparkle.space. What that use proves, and what it does not:
 
@@ -35,7 +35,7 @@ decree needs Elixir 1.20 or later. CI tests one combination: Elixir 1.20.4 on Er
 
 ## A minimal application
 
-One aggregate with a decision rule, a router, an application and an event handler. An account claims a handle, and the rule refuses a handle another account holds. The test `test/framework/readme_example_test.exs` compiles and runs the three blocks below from this file.
+One aggregate with a decision rule, a router, an application and an event handler. An account claims a handle, and the rule refuses a handle another account holds. The test `test/framework/readme_example_test.exs` compiles and runs every elixir block in this file, as written.
 
 ```elixir
 # config/config.exs
@@ -132,6 +132,9 @@ defmodule MyApp.TagIndexLedger do
 
   defstruct [:families]
 
+  # The families the release step enables: every family the rules read.
+  def families, do: ["entity"]
+
   def execute(%__MODULE__{families: nil}, %EnableTagIndexes{families: families}) do
     %TagIndexesEnabled{families: families}
   end
@@ -189,7 +192,8 @@ enable = fn families ->
 end
 
 # An empty store: one enable, one fact.
-:enabled = Decree.Store.TagIndex.bootstrap(MyApp.EventStore, ["entity"], enable)
+:enabled =
+  Decree.Store.TagIndex.bootstrap(MyApp.EventStore, MyApp.TagIndexLedger.families(), enable)
 
 register = fn handle ->
   MyApp.App.dispatch(%MyApp.RegisterAccount{
@@ -204,7 +208,8 @@ end
 :ok = register.("grace")
 
 # The same step on a store with history only checks.
-:verified = Decree.Store.TagIndex.bootstrap(MyApp.EventStore, ["entity"], enable)
+:verified =
+  Decree.Store.TagIndex.bootstrap(MyApp.EventStore, MyApp.TagIndexLedger.families(), enable)
 ```
 
 `MyApp.Welcome` logs "welcome, @ada" and "welcome, @grace".
@@ -216,7 +221,7 @@ Every command carries a `command_id`, a lowercase canonical UUID its sender mint
 - **The tag index must be enabled.** A condition finds events by their tags, so it holds only while the tag rows are complete, and the application records that as facts on the ledger. decree ships the grammar of those facts and the check over them (`Decree.Store.TagIndex`), not an event or a command for them; `MyApp.EnableTagIndexes`, `MyApp.TagIndexesEnabled` and `MyApp.TagIndexLedger` above are the smallest version. The `handle` tag is in the `entity` family. Until its fact is appended, the rule's dispatch answers `{:error, :tag_index_not_enabled}`.
 
   `Decree.Store.TagIndex.bootstrap/3` is the release step. On an empty store it calls your `enable` once, so the facts sit first and cover every later event. On a store with history it never enables: it checks the families you list and answers `:verified`, or `{:error, {:tag_index_not_enabled, missing}}`. Its answer holds on three conditions:
-  - **It covers the families you list.** A rule that reads a family left out of the list still refuses at dispatch.
+  - **It covers the families you list.** A rule that reads a family left out of the list still refuses at dispatch. An application test can catch that first ("Testing your application" below).
   - **`enable` makes one append.** Enable every family in one command whose fact lands in one batch, as `MyApp.EnableTagIndexes` does. A second dispatch that fails leaves its families disabled, and the rerun, on a store with history, reports them and never enables them.
   - **No other writer runs until it answers.** An event appended between the empty-store check and the enable is not checked.
 
@@ -225,6 +230,27 @@ Every command carries a `command_id`, a lowercase canonical UUID its sender mint
 `Decree.Decision.Rule` covers the rest: a follow-up query, keys, bounds, retries and the required tags.
 
 **Testing your application.** decree ships no test helpers for your application and has no in-memory store, so test it on Postgres: drop, create and initialise a test store in your `test` alias (`mix decree.store.drop`, `mix decree.store.create`, `mix decree.store.init`), so each run starts on an empty store where the tag index can be enabled first, then dispatch through `MyApp.App` and give each test its own stream ids (`Decree.UUID.uuid4/0`) and tag values, instead of resetting the store between tests.
+
+A test with no store catches a rule that reads a family the release step leaves out, before a dispatch refuses. `Decree.Decision.Index.requirements/3` lists what a rule's items require, in `bootstrap/3`'s grammar:
+
+```elixir
+# test/my_app/tag_index_test.exs
+defmodule MyApp.TagIndexTest do
+  use ExUnit.Case, async: true
+
+  test "the release step enables every family MyApp.UniqueHandle reads" do
+    command = %MyApp.RegisterAccount{handle: "ada"}
+    items = MyApp.UniqueHandle.query(command, %Decree.Event.TagContext{command: command})
+
+    {:ok, required} =
+      Decree.Decision.Index.requirements(false, items, MyApp.UniqueHandle.index_families())
+
+    assert required -- MyApp.TagIndexLedger.families() == []
+  end
+end
+```
+
+The first argument is `false` because `MyApp.Account` declares no command window. A decision, or a rule on an aggregate with one, passes `true`, and its list needs `command`. Add a rule's follow-up items when it has a follow-up query, and give the test a command for each shape of query the rule answers.
 
 ## Layers
 

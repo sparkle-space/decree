@@ -44,10 +44,30 @@ defmodule Decree.ReadmeExampleTest do
     assert is_binary(requirement)
     refute List.keymember?(readme_deps, :postgrex, 0)
 
-    assert {:decree, "~> 0.1.0"} in readme_deps
-    assert Version.match?(Mix.Project.config()[:version], "~> 0.1.0")
+    assert {:decree, requirement()} in readme_deps
 
     assert List.keymember?(readme_deps, :jason, 0)
+  end
+
+  # The requirement and series of mix.exs's version: a minor or major bump moves both
+  # (scripts/release.exs bump), so the release PR passes as generated.
+  defp requirement do
+    %Version{major: major, minor: minor} = Version.parse!(Mix.Project.config()[:version])
+    "~> #{major}.#{minor}.0"
+  end
+
+  test "the README's Status, the CHANGELOG's preamble and SECURITY.md name mix.exs's version" do
+    %Version{major: major, minor: minor} = Version.parse!(Mix.Project.config()[:version])
+
+    assert File.read!(@readme) =~ "decree is pre-1.0 (version #{major}.#{minor}.x)."
+    assert File.read!(@readme) =~ "`#{requirement()}` takes patch versions only"
+
+    changelog = Path.expand("../../CHANGELOG.md", __DIR__)
+    [preamble, _rest] = String.split(File.read!(changelog), "\n## Unreleased\n", parts: 2)
+    assert preamble =~ "Depend on `#{requirement()}` to take patches only."
+
+    security = Path.expand("../../SECURITY.md", __DIR__)
+    assert File.read!(security) =~ "the latest minor version, #{major}.#{minor}.x today."
   end
 
   test "the minimal application compiles and runs as the README says" do
@@ -62,6 +82,8 @@ defmodule Decree.ReadmeExampleTest do
     end
 
     Code.compile_string(block!("# lib/my_app.ex"), @readme)
+
+    readme_app_test!()
 
     Decree.FrameworkStorage.reset!()
 
@@ -150,6 +172,68 @@ defmodule Decree.ReadmeExampleTest do
              Code.eval_string("MyApp.App.dispatch(enable)", enable: enable)
 
     assert fact_count() == 2
+  end
+
+  # The README's application test, run as written on the README's application: an ExUnit
+  # module cannot be compiled once the suite runs, so its one test's body runs here. It
+  # passes while the release step's families cover the rule's, and fails with the family
+  # named when the list leaves it out.
+  defp readme_app_test! do
+    assert {:defmodule, _meta, [_name, [do: {:__block__, _block, exprs}]]} =
+             Code.string_to_quoted!(block!("# test/my_app/tag_index_test.exs"))
+
+    assert [
+             {:use, _use, [{:__aliases__, _case, [:ExUnit, :Case]} | _opts]},
+             {:test, _test, [_description, [do: body]]}
+           ] = exprs
+
+    run = fn body ->
+      Code.eval_quoted(
+        quote(
+          do:
+            (
+              import ExUnit.Assertions
+              unquote(body)
+            )
+        )
+      )
+    end
+
+    assert {true, _binding} = run.(body)
+
+    left_out =
+      Macro.prewalk(body, fn
+        {{:., _, [{:__aliases__, _, [:MyApp, :TagIndexLedger]}, :families]}, _, []} -> []
+        node -> node
+      end)
+
+    refute left_out == body
+    error = assert_raise ExUnit.AssertionError, fn -> run.(left_out) end
+    assert error.left == ["entity"]
+
+    # The list the test checks is the one the release step enables.
+    release_step = block!("# Before any other writer starts")
+
+    bootstrap =
+      "Decree.Store.TagIndex.bootstrap(MyApp.EventStore, MyApp.TagIndexLedger.families(), enable)"
+
+    assert length(String.split(release_step, bootstrap)) == 3
+  end
+
+  test "every elixir block in the README is one a test here runs" do
+    headers =
+      for [code] <-
+            Regex.scan(~r/^```elixir\n(.*?)^```$/ms, File.read!(@readme), capture: :all_but_first) do
+        code |> String.split("\n", parts: 2) |> hd()
+      end
+
+    assert headers == [
+             "# mix.exs",
+             "# config/config.exs",
+             "# lib/my_app.ex",
+             "# Before any other writer starts",
+             "# test/my_app/tag_index_test.exs"
+           ]
   end
 
   test "Decree.Store.TagIndex.bootstrap/3's doc has one example, the one the README test runs" do
