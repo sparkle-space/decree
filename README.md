@@ -6,7 +6,7 @@ decree is built for sparkle.space and for the projects sparkle.space produces. T
 
 ## Status
 
-decree is pre-1.0 (version 0.1.x). Until 1.0, a minor version (0.2.0) may change the API or the store schema; a patch version (0.1.1) does neither. `CHANGELOG.md` records each release and how to upgrade, and a commit on `main` between releases promises nothing.
+decree is pre-1.0 (version 0.2.x). Until 1.0, a minor version (0.2.0) may change the API or the store schema; a patch version (0.1.1) does neither. `CHANGELOG.md` records each release and how to upgrade, and a commit on `main` between releases promises nothing.
 
 It has one production user, sparkle.space. What that use proves, and what it does not:
 
@@ -21,13 +21,13 @@ Add decree from Hex, with [Jason](https://hex.pm/packages/jason) for the JSON se
 # mix.exs
 defp deps do
   [
-    {:decree, "~> 0.1.0"},
+    {:decree, "~> 0.2.0"},
     {:jason, "~> 1.4"}
   ]
 end
 ```
 
-`~> 0.1.0` takes patch versions only, since a minor version may break (Status). To format the router's `dispatch` and `identify` without parentheses, add `:decree` to `import_deps` in your `.formatter.exs`.
+`~> 0.2.0` takes patch versions only, since a minor version may break (Status). To format the router's `dispatch` and `identify` without parentheses, add `:decree` to `import_deps` in your `.formatter.exs`.
 
 ### Compatibility
 
