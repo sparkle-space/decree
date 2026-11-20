@@ -20,7 +20,7 @@ While decree is pre-1.0, pull requests are by arrangement: open an issue first a
 
 - **A test that fails first.** A fix or a feature lands with a test that fails on the code before it, in its own earlier commit, and passes after.
 - **The suites, on Postgres.** `README.md`, "Running the tests", says how to run them. CI runs `mix test --include migration` on Postgres 18, `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix run --no-start scripts/check_layers.exs`, the dependency audits and a dry run of the Hex package (`mix hex.build`).
-- **The upstream ledger.** A change to code copied from Commanded or EventStore gets a row in `UPSTREAM.md`: "Carried fixes" for an upstream defect, "Departures" for anything else.
+- **The upstream ledger.** A change to code copied from Commanded or EventStore gets a row in `UPSTREAM.md`: "Carried fixes" for an upstream defect, "Departures" for anything else. A documentation-only edit (doc strings and comments) needs none.
 - **The design's limits.** decree has no process managers (a multi-step flow is an event handler that dispatches commands) and no in-memory event store. A change that adds either will not be merged.
 
 - **A CHANGELOG entry.** A change a user of the package would notice adds its entry under "Unreleased" in `CHANGELOG.md`, in the same pull request. A change to tests, CI or docs only needs none.
