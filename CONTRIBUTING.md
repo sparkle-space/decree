@@ -39,8 +39,13 @@ A merge to `main` publishes nothing by itself. A release is a pull request that 
 
 ### The flow
 
-1. **Prepare.** A maintainer runs the "Prepare release" workflow on `main` with `bump` set to patch, minor or major (Actions, "Prepare release", "Run workflow"; or `gh workflow run prepare-release.yml -f bump=patch`). It runs `scripts/release.exs bump`. That bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under the new version and today's date (UTC). It then opens a pull request from `release/vX.Y.Z`. An empty "Unreleased" section, or a version that is already tagged, stops it.
-2. **Review the release PR.** GitHub starts no CI on a pull request that a workflow's token opened, so close and reopen the PR to run it. For a minor bump, update README.md's version references in the same PR. The CHANGELOG section becomes the GitHub release body. Merge it like any PR.
+1. **Prepare.** A maintainer runs the "Prepare release" workflow on `main` with `bump` set to patch, minor or major (Actions, "Prepare release", "Run workflow"; or `gh workflow run prepare-release.yml -f bump=patch`). It runs `scripts/release.exs bump`. That bumps `mix.exs`'s version and moves the CHANGELOG's "Unreleased" section under the new version and today's date (UTC). A minor or major bump also moves the requirement users copy, `~> X.Y.0`, to the new version's:
+   - README.md's install line, `{:decree, "~> X.Y.0"}`, and its sentence on `~> X.Y.0`;
+   - README.md's Status, "(version X.Y.x)";
+   - the CHANGELOG preamble's `~> X.Y.0`, above "Unreleased". A released section keeps the requirement it names.
+
+   A patch moves none of them, since `~> X.Y.0` takes it. `test/framework/readme_example_test.exs` reads the requirement and the series from `mix.exs`'s version, so the release PR passes as generated. The workflow then commits `mix.exs`, `CHANGELOG.md` and `README.md` and opens a pull request from `release/vX.Y.Z`. An empty "Unreleased" section, or a reference the bump cannot find or finds twice, stops it before it writes anything. A version that is already tagged stops it before it pushes.
+2. **Review the release PR.** GitHub starts no CI on a pull request that a workflow's token opened, so close and reopen the PR to run it. At 1.0.0, rewrite the README's pre-1.0 Status and its sentence on `~> X.Y.0` in the same PR: the bump moves their versions, not their meaning. The CHANGELOG section becomes the GitHub release body. Merge it like any PR.
 3. **Publish.** The merge starts the "Publish" workflow:
    - "Release check" goes on only when the merge changed `mix.exs`'s version and that version is not the latest `v*` tag. A later merge that lands while the release waits for approval does not release again.
    - "Gates" runs the CI workflow's jobs again on the commit to publish.
