@@ -107,9 +107,11 @@ defmodule Decree.ReadmeExampleTest do
 
     assert {:empty, _binding} = Code.eval_string(empty_store_check)
 
+    # The README's release step enables the index on the empty store, registers, then runs
+    # again on the store with history, where it only checks.
     log =
       capture_log(fn ->
-        Code.eval_string(block!("# On a fresh store, before anything else is appended"))
+        Code.eval_string(block!("# Before any other writer starts"))
 
         for handle <- ["ada", "grace"] do
           assert_receive {:handled, %{__struct__: MyApp.AccountRegistered, handle: ^handle}}
@@ -120,6 +122,49 @@ defmodule Decree.ReadmeExampleTest do
     assert log =~ "welcome, @grace"
 
     assert {:history, _binding} = Code.eval_string(empty_store_check)
+
+    # One enable, one fact, every family in it, though the step ran twice.
+    assert fact_count() == 1
+    assert Decree.Store.TagIndex.states(MyApp.EventStore) == {:ok, %{{"entity", nil} => :enabled}}
+
+    # `bootstrap/3`'s own example, on the README's store: it has history, so it only checks.
+    bootstrap =
+      DocBlocks.doc!(Decree.Store.TagIndex, {:function, :bootstrap, 4})
+      |> DocBlocks.block!("enable = fn families ->")
+
+    assert {:ok, _binding} = Code.eval_string(bootstrap)
+    assert fact_count() == 1
+
+    # The ledger's duplicate clause: a resend of an enable appends nothing.
+    enable =
+      struct(MyApp.EnableTagIndexes,
+        command_id: Decree.UUID.uuid4(),
+        ledger_id: Decree.UUID.uuid4(),
+        families: ["entity"]
+      )
+
+    assert {:ok, _binding} = Code.eval_string("MyApp.App.dispatch(enable)", enable: enable)
+    assert fact_count() == 2
+
+    assert {{:error, :duplicate_command}, _binding} =
+             Code.eval_string("MyApp.App.dispatch(enable)", enable: enable)
+
+    assert fact_count() == 2
+  end
+
+  test "Decree.Store.TagIndex.bootstrap/3's doc has one example, the one the README test runs" do
+    doc = DocBlocks.doc!(Decree.Store.TagIndex, {:function, :bootstrap, 4})
+
+    assert DocBlocks.first_lines(doc) == ["enable = fn families ->"]
+    assert DocBlocks.block!(doc, "enable = fn families ->") =~ "MyApp.EnableTagIndexes"
+  end
+
+  defp fact_count do
+    {:ok, %Decree.Store.ReadResult{events: facts}} =
+      Code.eval_string("MyApp.EventStore.read_query([[tags: [\"tag_index:fact\"]]])")
+      |> elem(0)
+
+    length(facts)
   end
 
   # `Decree.Store.TagIndex`'s moduledoc, read from its compiled docs. Its empty-store check
