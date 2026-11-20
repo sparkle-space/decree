@@ -133,12 +133,12 @@ defmodule Decree.Event.Handler do
 
   ### Example
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: "ExampleHandler"
 
-        def handle(%AnEvent{..}, _metadata) do
+        def handle(%MyApp.AccountRegistered{}, _metadata) do
           # ... process the event
           :ok
         end
@@ -146,7 +146,7 @@ defmodule Decree.Event.Handler do
 
   Start your event handler process (or use a `Supervisor`):
 
-      {:ok, _handler} = ExampleHandler.start_link()
+      {:ok, _handler} = MyApp.ExampleHandler.start_link()
 
   ## Event handler name
 
@@ -159,9 +159,9 @@ defmodule Decree.Event.Handler do
   You can use the module name of your event handler using the `__MODULE__`
   special form:
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: __MODULE__
       end
 
@@ -188,9 +188,9 @@ defmodule Decree.Event.Handler do
   Set the `start_from` option (`:origin`, `:current`, or an explicit event
   number) when using `Decree.Event.Handler`:
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: "ExampleHandler",
           start_from: :origin
       end
@@ -198,16 +198,16 @@ defmodule Decree.Event.Handler do
   You can optionally override `:start_from` by passing it as option when
   starting your handler:
 
-      {:ok, _handler} = ExampleHandler.start_link(start_from: :current)
+      {:ok, _handler} = MyApp.ExampleHandler.start_link(start_from: :current)
 
   ### Subscribing to an individual stream
 
   By default event handlers will subscribe to all events appended to any stream.
   Provide a `subscribe_to` option to subscribe to a single stream.
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: __MODULE__,
           subscribe_to: "stream1234"
       end
@@ -232,15 +232,15 @@ defmodule Decree.Event.Handler do
   Provide runtime configuration to `start_link/1`:
 
       {:ok, _pid} =
-        ExampleHandler.start_link(
-          application: ExampleApp,
+        MyApp.ExampleHandler.start_link(
+          application: MyApp.App,
           name: "ExampleHandler"
         )
 
   Or when supervised:
 
       Supervisor.start_link([
-        {ExampleHandler, application: ExampleApp, name: "ExampleHandler"}
+        {MyApp.ExampleHandler, application: MyApp.App, name: "ExampleHandler"}
       ], strategy: :one_for_one)
 
   ## Event handler state
@@ -254,13 +254,11 @@ defmodule Decree.Event.Handler do
   `:state` key to the config. It can also be provided when starting the handler
   process:
 
-      ExampleHandler.start_link(state: initial_state)
+      MyApp.ExampleHandler.start_link(state: initial_state)
 
   Or when supervised:
 
-      Supervisor.start_link([
-        {ExampleHandler, state: initial_state}
-      ], strategy: :one_for_one)
+      Supervisor.start_link([{MyApp.ExampleHandler, state: initial_state}], strategy: :one_for_one)
 
   State can be updated by returning `{:ok, new_state}` from any `handle/2`
   (or `handle_batch/2`) function. Returning an `:ok` reply will keep the state unchanged.
@@ -270,9 +268,9 @@ defmodule Decree.Event.Handler do
 
   ### Example
 
-      defmodule StatefulEventHandler do
+      defmodule MyApp.StatefulEventHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: __MODULE__
 
         def init(config) do
@@ -281,10 +279,10 @@ defmodule Decree.Event.Handler do
           {:ok, config}
         end
 
-        def handle(event, metadata) do
+        def handle(%MyApp.AccountRegistered{handle: handle}, metadata) do
           %{state: state} = metadata
 
-          new_state = mutate_state(state)
+          new_state = Map.put(state, handle, :registered)
 
           {:ok, new_state}
         end
@@ -309,11 +307,9 @@ defmodule Decree.Event.Handler do
 
   ### Example
 
-      defmodule ConcurrentProcessingEventHandler do
-        alias Decree.EventStore.RecordedEvent
-
+      defmodule MyApp.ConcurrentProcessingEventHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: __MODULE__,
           concurrency: 10
 
@@ -321,15 +317,15 @@ defmodule Decree.Event.Handler do
           # Fetch the index of this event handler instance (0..9 in this example)
           index = Keyword.fetch!(config, :index)
 
-          {:ok, config}
+          {:ok, Keyword.put(config, :state, %{index: index})}
         end
 
-        def handle(event, metadata) do
+        def handle(%MyApp.AccountRegistered{}, _metadata) do
           :ok
         end
 
         # Partition events by their stream
-        def partition_by(event, metadata) do
+        def partition_by(_event, metadata) do
           %{stream_id: stream_id} = metadata
 
           stream_id
@@ -387,14 +383,16 @@ defmodule Decree.Event.Handler do
 
   ### Example
 
-      defmodule OrderProjector do
+      defmodule MyApp.OrderProjector do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: "OrderProjector",
           batch_size: 50,
-          batch_timeout: 100
+          batch_timeout: 100,
+          # `handle_batch/1` gets no decrypt: see "Personal fields" below
+          personal_fields: :opaque
 
-        def handle_batch(events) do
+        def handle_batch(_events) do
           # Receives up to 50 events, or whatever accumulated within 100ms
           :ok
         end
@@ -421,14 +419,14 @@ defmodule Decree.Event.Handler do
 
       for tenant <- [:tenant1, :tenant2, :tenant3] do
         {:ok, _app} = MyApp.App.start_link(name: tenant)
-        {:ok, _handler} = ExampleHandler.start_link(application: tenant)
+        {:ok, _handler} = MyApp.ExampleHandler.start_link(application: tenant)
       end
 
   Typically you would start the event handlers using a supervisor:
 
       children =
         for tenant <- [:tenant1, :tenant2, :tenant3] do
-          {ExampleHandler, application: tenant}
+          {MyApp.ExampleHandler, application: tenant}
         end
 
       Supervisor.start_link(children, strategy: :one_for_one)
@@ -456,7 +454,7 @@ defmodule Decree.Event.Handler do
   field it says so, and is then never decrypted for:
 
       use Decree.Event.Handler,
-        application: ExampleApp,
+        application: MyApp.App,
         name: __MODULE__,
         personal_fields: :opaque
 
