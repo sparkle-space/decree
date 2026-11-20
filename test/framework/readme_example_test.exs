@@ -56,7 +56,7 @@ defmodule Decree.ReadmeExampleTest do
     "~> #{major}.#{minor}.0"
   end
 
-  test "the README's Status and the CHANGELOG's preamble name mix.exs's version" do
+  test "the README's Status, the CHANGELOG's preamble and SECURITY.md name mix.exs's version" do
     %Version{major: major, minor: minor} = Version.parse!(Mix.Project.config()[:version])
 
     assert File.read!(@readme) =~ "decree is pre-1.0 (version #{major}.#{minor}.x)."
@@ -65,6 +65,9 @@ defmodule Decree.ReadmeExampleTest do
     changelog = Path.expand("../../CHANGELOG.md", __DIR__)
     [preamble, _rest] = String.split(File.read!(changelog), "\n## Unreleased\n", parts: 2)
     assert preamble =~ "Depend on `#{requirement()}` to take patches only."
+
+    security = Path.expand("../../SECURITY.md", __DIR__)
+    assert File.read!(security) =~ "the latest minor version, #{major}.#{minor}.x today."
   end
 
   test "the minimal application compiles and runs as the README says" do
