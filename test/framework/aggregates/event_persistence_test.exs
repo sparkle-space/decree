@@ -9,10 +9,17 @@ defmodule Decree.Aggregates.EventPersistenceTest do
   alias Decree.Helpers.ProcessHelper
   alias Decree.UUID
 
+  # A loaded host reloaded 201 events in up to 8.7 s, past the calls' 5 s default, so each call
+  # here waits up to 30 s.
+  @timeout 30_000
+
   setup do
     start_supervised!(DefaultApp)
     :ok
   end
+
+  defp execute(aggregate_uuid, context),
+    do: Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, context, @timeout)
 
   test "should persist pending events in order applied" do
     aggregate_uuid = UUID.uuid4()
@@ -21,7 +28,7 @@ defmodule Decree.Aggregates.EventPersistenceTest do
       Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 10, events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %AppendItems{count: 10},
         handler: AppendItemsHandler,
         function: :handle
@@ -46,7 +53,7 @@ defmodule Decree.Aggregates.EventPersistenceTest do
       Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 1, events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %AppendItems{count: 1},
         handler: AppendItemsHandler,
         function: :handle
@@ -55,7 +62,7 @@ defmodule Decree.Aggregates.EventPersistenceTest do
     assert length(events) == 1
 
     {:ok, 1, events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %NoOp{},
         handler: ExampleAggregate,
         function: :noop
@@ -83,7 +90,7 @@ defmodule Decree.Aggregates.EventPersistenceTest do
     }
 
     {:ok, 10, events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, context)
+      execute(aggregate_uuid, context)
 
     assert length(events) == 10
 
@@ -101,7 +108,7 @@ defmodule Decree.Aggregates.EventPersistenceTest do
       Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 10, events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %AppendItems{count: 10},
         handler: AppendItemsHandler,
         function: :handle
@@ -114,9 +121,10 @@ defmodule Decree.Aggregates.EventPersistenceTest do
     {:ok, ^aggregate_uuid} =
       Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
-    assert Aggregate.aggregate_version(DefaultApp, ExampleAggregate, aggregate_uuid) == 10
+    assert Aggregate.aggregate_version(DefaultApp, ExampleAggregate, aggregate_uuid, @timeout) ==
+             10
 
-    assert Aggregate.aggregate_state(DefaultApp, ExampleAggregate, aggregate_uuid) ==
+    assert Aggregate.aggregate_state(DefaultApp, ExampleAggregate, aggregate_uuid, @timeout) ==
              %ExampleAggregate{
                items: 1..10 |> Enum.to_list(),
                last_index: 10
@@ -130,21 +138,21 @@ defmodule Decree.Aggregates.EventPersistenceTest do
       Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
     {:ok, 100, _events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %AppendItems{count: 100},
         handler: AppendItemsHandler,
         function: :handle
       })
 
     {:ok, 200, _events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %AppendItems{count: 100},
         handler: AppendItemsHandler,
         function: :handle
       })
 
     {:ok, 201, _events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, aggregate_uuid, %ExecutionContext{
+      execute(aggregate_uuid, %ExecutionContext{
         command: %AppendItems{count: 1},
         handler: AppendItemsHandler,
         function: :handle
@@ -155,9 +163,10 @@ defmodule Decree.Aggregates.EventPersistenceTest do
     {:ok, ^aggregate_uuid} =
       Decree.Aggregates.Supervisor.open_aggregate(DefaultApp, ExampleAggregate, aggregate_uuid)
 
-    assert Aggregate.aggregate_version(DefaultApp, ExampleAggregate, aggregate_uuid) == 201
+    assert Aggregate.aggregate_version(DefaultApp, ExampleAggregate, aggregate_uuid, @timeout) ==
+             201
 
-    assert Aggregate.aggregate_state(DefaultApp, ExampleAggregate, aggregate_uuid) ==
+    assert Aggregate.aggregate_state(DefaultApp, ExampleAggregate, aggregate_uuid, @timeout) ==
              %ExampleAggregate{
                items: 1..201 |> Enum.to_list(),
                last_index: 201
@@ -183,7 +192,7 @@ defmodule Decree.Aggregates.EventPersistenceTest do
     }
 
     {:ok, 1, events, _aggregate_state} =
-      Aggregate.execute(DefaultApp, ExampleAggregate, prefixed_aggregate_uuid, context)
+      execute(prefixed_aggregate_uuid, context)
 
     assert length(events) == 1
 
