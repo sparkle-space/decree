@@ -46,20 +46,23 @@ defmodule Decree.DocExamplesTest do
     Enum.map(modules, fn {module, _bytecode} -> module end)
   end
 
-  # The fragment as the body of `run/n`, compiled and never called. `occurrences` is how many
-  # lines in the doc open with `first_line`, so a regressed example cannot fall through to a
-  # later block that opens the same way.
+  # Each fragment that opens with `first_line` as the body of `run/n`, compiled and never
+  # called; answers the first. `occurrences` is how many lines in the doc open with
+  # `first_line`, so a regressed example cannot fall through to a later block that opens the
+  # same way.
   defp compile_fragment!(doc, first_line, variables, occurrences) do
     assert [block | _later] = blocks = DocBlocks.blocks(doc, first_line)
     assert length(blocks) == occurrences
 
-    compile!("""
-    defmodule MyApp.Fragment do
-      def run(#{Enum.join(variables, ", ")}) do
-    #{block}
+    for fragment <- blocks do
+      compile!("""
+      defmodule MyApp.Fragment do
+        def run(#{Enum.join(variables, ", ")}) do
+      #{fragment}
+        end
       end
+      """)
     end
-    """)
 
     block
   end
@@ -134,27 +137,72 @@ defmodule Decree.DocExamplesTest do
            }
   end
 
-  test "Decree.Event.Handler's multi-tenant example starts the named decree applications" do
-    # The application from `Decree.Application`'s first example, and a handler for the doc's
-    # `ExampleHandler`.
+  test "Decree.Event.Handler's examples compile as written" do
+    # The application from `Decree.Application`'s first example, and the README's event.
     application = DocBlocks.doc!(Decree.Application)
     assert [@app] == compile!(DocBlocks.block!(application, "defmodule MyApp.App do"))
 
     compile!("""
-    defmodule MyApp.ExampleHandler do
-      use Decree.Event.Handler, application: MyApp.App, name: "ExampleHandler"
+    defmodule MyApp.AccountRegistered do
+      defstruct [:account_id, :handle]
     end
     """)
 
-    doc =
-      Decree.Event.Handler
-      |> DocBlocks.doc!()
-      |> String.replace("ExampleHandler.", "MyApp.ExampleHandler.")
+    doc = DocBlocks.doc!(Decree.Event.Handler)
 
-    # Its first line opens the standalone example and recurs inside `children =`.
-    block = compile_fragment!(doc, "for tenant <- [:tenant1, :tenant2, :tenant3] do", [], 2)
+    # The handlers, compiled before the fragments that start them.
+    modules = [
+      {"defmodule MyApp.ExampleHandler do", 4},
+      {"defmodule MyApp.StatefulEventHandler do", 1},
+      {"defmodule MyApp.ConcurrentProcessingEventHandler do", 1},
+      {"defmodule MyApp.OrderProjector do", 1}
+    ]
 
-    assert block =~ "MyApp.App.start_link(name: tenant)"
+    for {first_line, occurrences} <- modules do
+      blocks = DocBlocks.blocks(doc, first_line)
+      assert length(blocks) == occurrences
+
+      for block <- blocks do
+        assert [module] = compile!(block)
+        assert function_exported?(module, :start_link, 1)
+      end
+    end
+
+    # The tenant loop's first line opens the standalone example and recurs inside `children =`.
+    fragments = [
+      {"{:ok, _handler} = MyApp.ExampleHandler.start_link()", [], 1},
+      {"{:ok, _handler} = MyApp.ExampleHandler.start_link(start_from: :current)", [], 1},
+      {"{:ok, _pid} =", [], 1},
+      {"Supervisor.start_link([", [], 1},
+      {"MyApp.ExampleHandler.start_link(state: initial_state)", ["initial_state"], 1},
+      {"Supervisor.start_link([{MyApp.ExampleHandler, state: initial_state}], strategy: :one_for_one)",
+       ["initial_state"], 1},
+      {"for tenant <- [:tenant1, :tenant2, :tenant3] do", [], 2},
+      {"children =", [], 1}
+    ]
+
+    for {first_line, variables, occurrences} <- fragments do
+      assert compile_fragment!(doc, first_line, variables, occurrences) =~
+               "MyApp.ExampleHandler"
+    end
+
+    assert DocBlocks.block!(doc, "for tenant <- [:tenant1, :tenant2, :tenant3] do") =~
+             "MyApp.App.start_link(name: tenant)"
+
+    # A `use` alone, compiled as a module's body. Its first line opens the `use` in each of the
+    # seven handlers before it too.
+    opaque = "use Decree.Event.Handler,"
+    blocks = DocBlocks.blocks(doc, opaque)
+    assert length(blocks) == 8
+    assert [module] = compile!("defmodule MyApp.OpaqueHandler do\n#{List.last(blocks)}end\n")
+    assert apply(module, :__personal_fields__, []) == :opaque
+
+    # Every code block in the moduledoc opens with one of these.
+    selectors = Enum.map(modules ++ fragments, &elem(&1, 0)) ++ [opaque]
+    first_lines = DocBlocks.first_lines(doc)
+
+    assert length(first_lines) == 16
+    assert Enum.reject(first_lines, &(&1 in selectors)) == []
   end
 
   test "Decree.PersonalFields.KeySource's application compiles as written" do
