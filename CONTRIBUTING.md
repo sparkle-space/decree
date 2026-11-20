@@ -19,7 +19,7 @@ While decree is pre-1.0, pull requests are by arrangement: open an issue first a
 ## What a change needs
 
 - **A test that fails first.** A fix or a feature lands with a test that fails on the code before it, in its own earlier commit, and passes after. A fix to a flaky test alone may instead record a forced interleaving that fails before the fix and passes after.
-- **The suites, on Postgres.** `README.md`, "Running the tests", says how to run them. CI runs `mix test --include migration` on Postgres 18, `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix run --no-start scripts/check_layers.exs`, the dependency audits and a dry run of the Hex package (`mix hex.build`).
+- **The suites, on Postgres.** `README.md`, "Running the tests", says how to run them. CI runs `mix test --include migration` on Postgres 18, `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix run --no-start scripts/check_layers.exs`, the dependency audits, a dry run of the Hex package (`mix hex.build`) and the action pin check (`elixir scripts/check_action_pins.exs`): every action a workflow uses is pinned to a full commit SHA with its version as a comment.
 - **The upstream ledger.** A change to code copied from Commanded or EventStore gets a row in `UPSTREAM.md`: "Carried fixes" for an upstream defect, "Departures" for anything else. A documentation-only edit (doc strings and comments) needs none.
 - **The design's limits.** decree has no process managers (a multi-step flow is an event handler that dispatches commands) and no in-memory event store. A change that adds either will not be merged.
 

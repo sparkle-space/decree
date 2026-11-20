@@ -86,6 +86,26 @@ jobs:
       - name: Test (framework, store, conformance, projections, release)
         run: mix test --include migration
 
+  # Every action a workflow uses is pinned to a full commit SHA with its version as a comment,
+  # the form Dependabot keeps up to date (.github/dependabot.yml).
+  action_pins:
+    name: Action pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Check the action pins
+        run: elixir scripts/check_action_pins.exs
+
   # The Hex package's docs: ex_doc is a dev dependency, and a reference to an undefined or
   # hidden type, module or function is a warning, so the step fails on it.
   docs:
