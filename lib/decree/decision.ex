@@ -296,10 +296,12 @@ defmodule Decree.Decision do
       that fingerprint. A value whose fingerprint does not read refuses: it never stands for
       the family with no key.
 
-  The fold takes the facts the index item matched at or below the first read's `after`, in
-  position order, with their tags from the reads, and the last state per family and key
-  wins. A family and key with no fact is disabled. A fact with no state tag in the read, its
-  rows gone or its type deletable, could have been a disable, so it refuses, and so does a
+  The fold is `Decree.Store.TagIndex.fold/1`, the one `Decree.Store.TagIndex.states/2` runs
+  over every fact on the store, so the release check and every dispatch agree. A dispatch
+  folds the facts the index item matched at or below the first read's `after`, in position
+  order, with their tags from the reads, and the last state per family and key wins. A
+  family and key with no fact is disabled. A fact with no state tag in the read, its rows
+  gone or its type deletable, could have been a disable, so it refuses, and so does a
   fact naming one family and key both ways. A fact above `after`, which a second read can
   find, is not folded: the condition fails on it, and the retry reads it again. Any fact
   committed after `after` fails the condition, so a dispatch never appends past a disable it

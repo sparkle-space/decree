@@ -4,8 +4,8 @@ defmodule Decree.Store.TagIndex do
 
   A condition finds an event by its tags, so a decision rests on the tag rows being complete.
   Whether they are is a fact on the ledger, in events the application appends. Decree ships no
-  such event and no command: it ships the grammar, the store's guard on it, and the check a
-  decision runs over it.
+  such event and no command: it ships the grammar, the store's guard on it, the fold a
+  decision runs over it, and the release step's check.
 
   ## The grammar
 
@@ -42,10 +42,11 @@ defmodule Decree.Store.TagIndex do
 
   ## The fold
 
-  A decision reads the facts in its own read and folds them in position order: the last
-  state per family and key wins, and a family and key with no fact is disabled. A fact the
-  fold cannot attribute, one whose state tags are gone, refuses as a disable would. See
-  "Index facts" in `Decree.Decision`.
+  `fold/1` is the one fold. It takes the facts in position order: the last state per family
+  and key wins, and a family and key with no fact is disabled. A fact the fold cannot
+  attribute, one whose state tags are gone, refuses as a disable would. A decision runs it
+  over the facts in its own read, and `states/2` over a read of every fact on the store, so
+  the release check and every dispatch agree. See "Index facts" in `Decree.Decision`.
 
   ## The fingerprint
 
@@ -59,9 +60,10 @@ defmodule Decree.Store.TagIndex do
 
     - **A fresh store.** The application's release step appends the enabling batch only when
       `$all` is empty, so the facts sit from position 1 and every later event is covered by
-      them. `stream_info(:all)` on the application's `Decree.Store` module tells: `$all`'s
-      `stream_version` is the number of the last event appended to the store, and 0 when
-      none has been.
+      them. `bootstrap/3` is that step: the empty-store check, then the application's
+      `enable`. The check is `stream_info(:all)` on the application's `Decree.Store` module:
+      `$all`'s `stream_version` is the number of the last event appended to the store, and 0
+      when none has been.
 
           case MyApp.EventStore.stream_info(:all) do
             {:ok, %Decree.Store.Streams.StreamInfo{stream_version: 0}} -> :empty
@@ -78,8 +80,10 @@ defmodule Decree.Store.TagIndex do
       application tagged a kind lack its tags. A decision then trusts a family whose rows are
       missing, so a condition can miss an earlier event that matches it, and a command its
       rule should refuse is accepted.
-    - **A store with history.** The same step does nothing, and every decision refuses
-      `{:error, :tag_index_not_enabled}` until a family is repaired and enabled.
+    - **A store with history.** `bootstrap/3` never enables here. It checks the requirements
+      the application declares and answers `:verified` or
+      `{:error, {:tag_index_not_enabled, missing}}`, and every decision whose families are not
+      enabled refuses `{:error, :tag_index_not_enabled}` until they are repaired and enabled.
     - **Repair.** A disable for repair, the repair writing the tag rows, then an enable under
       a new index id. That is the supported way to retag. There is no shadow index to build
       beside the live one.
@@ -91,7 +95,8 @@ defmodule Decree.Store.TagIndex do
       would leave an earlier enable standing. A fact stays for the store's life.
   """
 
-  alias Decree.Store.Query
+  alias Decree.Store.{Query, ReadResult}
+  alias Decree.Store.Streams.StreamInfo
 
   @fact_tag "tag_index:fact"
   @reserved_kinds ["tag_index", "tag_index_state"]
@@ -102,6 +107,8 @@ defmodule Decree.Store.TagIndex do
   @type family :: String.t()
   @type key :: String.t() | nil
   @type state :: :enabled | :disabled
+  @type requirement :: family() | {family(), key()}
+  @type states :: %{optional({family(), key()}) => state()}
 
   @doc """
   The tag every fact carries.
@@ -188,6 +195,134 @@ defmodule Decree.Store.TagIndex do
 
   def digest_key(_value), do: :error
 
+  @doc """
+  The states the facts leave, each fact given as its tags, in position order. The last state
+  per family and key wins, and a family and key with no fact has no entry, which reads as
+  disabled. A fact naming one family and key both ways reads as disabled, since a read keeps
+  no order within an event. Tags that are not state tags are ignored. A fact with no state
+  tag, or one that does not parse, could have been a disable, so the whole answer is
+  `:error`. It is the fold a decision runs: see "Index facts" in `Decree.Decision`.
+  """
+  @spec fold([[String.t()]]) :: {:ok, states()} | :error
+  def fold(facts) do
+    Enum.reduce_while(facts, {:ok, %{}}, fn tags, {:ok, states} ->
+      case fact_states(tags) do
+        {:ok, fact} -> {:cont, {:ok, Map.merge(states, fact)}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  @doc """
+  The states every fact on the store leaves, through `fold/1`. `store` is a module that uses
+  `Decree.Store`. It reads every fact in one `read_query`, by position and tags, however many
+  the store holds. Of `opts` it takes `name`, `conn` and `timeout`, and drops every other
+  option. A fact whose state tags the read leaves out, its type declared deletable, folds as
+  no tag, as it does in a dispatch, so the answer is
+  `{:error, :unattributable_tag_index_fact}`. A read error is answered as is.
+  """
+  @spec states(module(), keyword()) :: {:ok, states()} | {:error, term()}
+  def states(store, opts \\ []) do
+    read_opts =
+      Keyword.take(opts, [:name, :conn, :timeout]) ++ [tag_items: [0], position_items: [0]]
+
+    with {:ok, %ReadResult{matched_items: matched, tags: tags}} <-
+           store.read_query([[tags: [@fact_tag]]], read_opts) do
+      facts = matched |> Map.keys() |> Enum.sort() |> Enum.map(&Map.get(tags, &1, []))
+
+      case fold(facts) do
+        {:ok, states} -> {:ok, states}
+        :error -> {:error, :unattributable_tag_index_fact}
+      end
+    end
+  end
+
+  @doc """
+  The requirements whose family and key `states` does not enable, in the order given, each as
+  given. A family alone is that family with no key. Raises an `ArgumentError` for a
+  requirement outside the grammar: a family that is not a tag kind or is reserved, a key that
+  is empty, holds a `:` or is `-`, or anything but a family or a `{family, key}` pair.
+  """
+  @spec missing(states(), [requirement()]) :: [requirement()]
+  def missing(states, requirements) do
+    Enum.reject(requirements, &(Map.get(states, requirement!(&1)) == :enabled))
+  end
+
+  @doc ~S"""
+  The release step: enables the tag index on an empty store, and checks it on a store with
+  history. `store` is a module that uses `Decree.Store`, `requirements` the families and keys
+  the application declares, and `enable` the application's own enable. Of `opts` it takes
+  `name`, `conn` and `timeout`.
+
+  `requirements` is a non-empty list of families and `{family, key}` pairs, with no family and
+  key twice, `"entity"` and `{"entity", nil}` being the same. Anything else answers
+  `{:error, :invalid_tag_index_requirements}` before any read. Then it reads
+  `stream_info(:all)`, and answers a read error as is.
+
+  On an empty store it calls `enable` once with `requirements`. When that answers `:ok` it
+  reads `states/2` and answers `:enabled` when `missing/2` finds nothing, and
+  `{:error, {:tag_index_not_enabled, missing}}` otherwise. An `{:error, reason}` from
+  `enable` is answered as is.
+
+  On a store with history it never calls `enable`. It reads `states/2` and answers
+  `:verified` when `missing/2` finds nothing, and `{:error, {:tag_index_not_enabled, missing}}`
+  otherwise. A late enable is the repair path in "The lifecycle", the operator's deliberate
+  act, never this step's.
+
+  The answer covers the requirements the application declares, not every family its rules
+  read: a rule whose items need a family left out of the list still refuses
+  `{:error, :tag_index_not_enabled}` at dispatch.
+
+  `enable` must make one atomic append that enables every requirement: one command, whose
+  events land in one batch. Decree cannot enforce it. An `enable` that dispatches twice and
+  fails between the two leaves the second family disabled, and a rerun, now on a store with
+  history, reports it and never enables it.
+
+  No other writer may run between the empty-store check and the enable: an event appended
+  between them is not checked. Run the step before any other writer starts.
+
+      enable = fn families ->
+        MyApp.App.dispatch(%MyApp.EnableTagIndexes{
+          command_id: Decree.UUID.uuid4(),
+          ledger_id: Decree.UUID.uuid4(),
+          families: families
+        })
+      end
+
+      case Decree.Store.TagIndex.bootstrap(MyApp.EventStore, ["entity"], enable) do
+        :enabled -> :ok
+        :verified -> :ok
+        {:error, reason} -> raise "the tag index is not ready: #{inspect(reason)}"
+      end
+
+  `MyApp.EnableTagIndexes` is the command of the README's minimal application: one fact
+  enabling every family it is given.
+  """
+  @spec bootstrap(
+          module(),
+          [requirement()],
+          ([requirement()] -> :ok | {:error, term()}),
+          keyword()
+        ) ::
+          :enabled
+          | :verified
+          | {:error, {:tag_index_not_enabled, [requirement()]}}
+          | {:error, term()}
+  def bootstrap(store, requirements, enable, opts \\ []) when is_function(enable, 1) do
+    with :ok <- valid_requirements(requirements),
+         {:ok, %StreamInfo{stream_version: version}} <-
+           store.stream_info(:all, Keyword.take(opts, [:name, :conn, :timeout])) do
+      if version == 0 do
+        case enable.(requirements) do
+          :ok -> check(store, requirements, opts, :enabled)
+          {:error, _reason} = error -> error
+        end
+      else
+        check(store, requirements, opts, :verified)
+      end
+    end
+  end
+
   @doc false
   # A state tag's family, key and state, or `:error`.
   @spec parse_state(String.t()) :: {:ok, {family(), key(), state()}} | :error
@@ -216,6 +351,68 @@ defmodule Decree.Store.TagIndex do
       Enum.all?(states, &(parse_state(&1) != :error)) and
       states != [] == (facts != [])
   end
+
+  defp check(store, requirements, opts, answer) do
+    with {:ok, states} <- states(store, opts) do
+      case missing(states, requirements) do
+        [] -> answer
+        missing -> {:error, {:tag_index_not_enabled, missing}}
+      end
+    end
+  end
+
+  defp valid_requirements(requirements) when is_list(requirements) and requirements != [] do
+    with {:ok, normalized} <- normalize(requirements, []),
+         true <- Enum.uniq(normalized) == normalized do
+      :ok
+    else
+      _invalid -> {:error, :invalid_tag_index_requirements}
+    end
+  end
+
+  defp valid_requirements(_requirements), do: {:error, :invalid_tag_index_requirements}
+
+  defp normalize([], normalized), do: {:ok, normalized}
+
+  defp normalize([requirement | rest], normalized) do
+    case requirement(requirement) do
+      {:ok, family_key} -> normalize(rest, [family_key | normalized])
+      :error -> :error
+    end
+  end
+
+  defp normalize(_improper, _normalized), do: :error
+
+  defp requirement!(requirement) do
+    case requirement(requirement) do
+      {:ok, family_key} -> family_key
+      :error -> raise ArgumentError, "not a tag index requirement: #{inspect(requirement)}"
+    end
+  end
+
+  defp requirement({family, key}) do
+    if family?(family) and (is_nil(key) or key?(key)), do: {:ok, {family, key}}, else: :error
+  end
+
+  defp requirement(family), do: requirement({family, nil})
+
+  # One fact's states. A fact naming one family and key both ways reads as disabled, since the
+  # read keeps no order within an event.
+  defp fact_states(tags) do
+    parsed = for tag <- tags, Query.tag_kind(tag) == "tag_index_state", do: parse_state(tag)
+
+    if parsed == [] or :error in parsed do
+      :error
+    else
+      {:ok,
+       Enum.reduce(parsed, %{}, fn {:ok, {family, key, state}}, states ->
+         Map.update(states, {family, key}, state, &lower(&1, state))
+       end)}
+    end
+  end
+
+  defp lower(:enabled, :enabled), do: :enabled
+  defp lower(_state, _other), do: :disabled
 
   defp family?(family) when is_binary(family) do
     family != "" and String.valid?(family) and not String.contains?(family, [":", <<0>>]) and
