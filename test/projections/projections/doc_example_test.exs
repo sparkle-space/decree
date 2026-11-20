@@ -51,9 +51,8 @@ defmodule Decree.Projections.DocExampleTest do
     :ok
   end
 
-  test "the moduledoc's projector migrates, starts and projects as written" do
-    moduledoc = DocBlocks.doc!(Decree.Projections.Ecto)
-
+  # The moduledoc's repo, read model and projector compiled, and its migration run.
+  defp migrate!(moduledoc) do
     # The doc's config, with the suite's connection and a database of the test's own.
     [my_app: config] =
       Config.Reader.eval!("config/config.exs", example(moduledoc, "# config/config.exs"))
@@ -86,6 +85,11 @@ defmodule Decree.Projections.DocExampleTest do
       Ecto.Migrator.with_repo(@repo, fn repo ->
         Ecto.Migrator.up(repo, 20_261_120_000_000, migration, log: false)
       end)
+  end
+
+  test "the moduledoc's projector migrates, starts and projects as written" do
+    moduledoc = DocBlocks.doc!(Decree.Projections.Ecto)
+    migrate!(moduledoc)
 
     [application] = compile!(moduledoc, "# lib/my_app/application.ex")
 
@@ -149,5 +153,31 @@ defmodule Decree.Projections.DocExampleTest do
 
     # Compiled from the doc at run time, so called through apply/3.
     assert :ok = apply(@projector, :after_update, [event, %{}, %{account: row}])
+  end
+
+  test "the project/2 and project/3 examples project as written" do
+    moduledoc = DocBlocks.doc!(Decree.Projections.Ecto)
+    migrate!(moduledoc)
+    start_supervised!(@repo)
+
+    for {arity, event_number} <- [{2, 1}, {3, 2}] do
+      doc = DocBlocks.doc!(Decree.Projections.Ecto, {:macro, :project, arity})
+      assert @projector in compile!(doc, "# lib/my_app/accounts.ex")
+
+      account_id = Decree.UUID.uuid4()
+      handle = "ada-#{arity}"
+      event = %Example.AccountRegistered{account_id: account_id, handle: handle}
+      metadata = %{handler_name: "accounts", event_number: event_number}
+
+      # Compiled from the doc at run time, so called through apply/3.
+      assert :ok = apply(@projector, :handle, [event, metadata])
+      assert %{handle: ^handle} = apply(@repo, :get, [@account, account_id])
+    end
+
+    assert %{rows: [["accounts", 2]]} =
+             Ecto.Adapters.SQL.query!(
+               @repo,
+               "SELECT projection_name, last_seen_event_number FROM projection_versions"
+             )
   end
 end
