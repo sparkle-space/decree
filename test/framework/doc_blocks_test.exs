@@ -20,6 +20,17 @@ defmodule Decree.DocBlocksTest do
     assert DocBlocks.first_lines(doc) == ["first = 1", "fourth = 4"]
   end
 
+  test "outside a list, an indented line that opens with a list marker is code" do
+    doc = """
+    Text.
+
+        - removed = 1
+        + added = 2
+    """
+
+    assert DocBlocks.first_lines(doc) == ["- removed = 1"]
+  end
+
   test "a list continuation paragraph indented four spaces is not a code block" do
     doc = """
       - `option` is the first option, wrapped

@@ -38,6 +38,7 @@ defmodule Decree.ActionPinsScriptTest do
           - name: Cache
             uses: actions/cache@#{@sha}   #   v5
           - uses: github/codeql-action/init@#{@sha} # v4.31.2
+          - uses: aquasecurity/trivy-action@#{@sha} # 0.28.0
     """)
 
     workflow(dir, "other.yaml", "      - uses: ./.github/actions/local\n")
@@ -67,6 +68,7 @@ defmodule Decree.ActionPinsScriptTest do
         {"a short SHA", "actions/checkout@3d3c42e # v7.0.1"},
         {"a SHA with no comment", "actions/checkout@#{@sha}"},
         {"a SHA with a comment that is not a version", "actions/checkout@#{@sha} # pinned"},
+        {"a SHA with a comment that opens with a word", "actions/checkout@#{@sha} # version 7"},
         {"no ref", "actions/checkout"},
         {"a quoted ref", ~s("actions/checkout@#{@sha}" # v7.0.1)},
         {"a Docker image", "docker://alpine:3.22 # v3.22"}
