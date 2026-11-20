@@ -10,6 +10,10 @@ defmodule Decree.MixProject do
       version: @version,
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
+      # A warning in decree's own code fails the test build: lib/ and the support modules here,
+      # the test files through the `test` alias. Not in other envs, so a consumer's build of
+      # decree never fails on a newer compiler's warning.
+      elixirc_options: [warnings_as_errors: Mix.env() == :test],
       test_paths: [
         "test/framework",
         "test/store",
@@ -145,7 +149,8 @@ defmodule Decree.MixProject do
   end
 
   # `test` creates, initialises and migrates every test event store (config/test.exs
-  # `event_stores:`), creates the projections repo's database, then runs the five suites.
+  # `event_stores:`), creates the projections repo's database, then runs the five suites. A
+  # warning in a test file fails the run; CI's `mix test --include migration` keeps the flag.
   defp aliases do
     [
       "decree.store.setup": ["decree.store.create", "decree.store.init"],
@@ -155,7 +160,7 @@ defmodule Decree.MixProject do
         "decree.store.init --quiet",
         "decree.store.migrate --quiet",
         "ecto.create --quiet",
-        "test"
+        "test --warnings-as-errors"
       ]
     ]
   end
