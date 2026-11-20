@@ -44,10 +44,27 @@ defmodule Decree.ReadmeExampleTest do
     assert is_binary(requirement)
     refute List.keymember?(readme_deps, :postgrex, 0)
 
-    assert {:decree, "~> 0.1.0"} in readme_deps
-    assert Version.match?(Mix.Project.config()[:version], "~> 0.1.0")
+    assert {:decree, requirement()} in readme_deps
 
     assert List.keymember?(readme_deps, :jason, 0)
+  end
+
+  # The requirement and series of mix.exs's version: a minor or major bump moves both
+  # (scripts/release.exs bump), so the release PR passes as generated.
+  defp requirement do
+    %Version{major: major, minor: minor} = Version.parse!(Mix.Project.config()[:version])
+    "~> #{major}.#{minor}.0"
+  end
+
+  test "the README's Status and the CHANGELOG's preamble name mix.exs's version" do
+    %Version{major: major, minor: minor} = Version.parse!(Mix.Project.config()[:version])
+
+    assert File.read!(@readme) =~ "decree is pre-1.0 (version #{major}.#{minor}.x)."
+    assert File.read!(@readme) =~ "`#{requirement()}` takes patch versions only"
+
+    changelog = Path.expand("../../CHANGELOG.md", __DIR__)
+    [preamble, _rest] = String.split(File.read!(changelog), "\n## Unreleased\n", parts: 2)
+    assert preamble =~ "Depend on `#{requirement()}` to take patches only."
   end
 
   test "the minimal application compiles and runs as the README says" do
