@@ -4,6 +4,8 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+## 0.1.2 (2026-11-20)
+
 Documentation and tests only: no API, behaviour or store schema change.
 
 - **The examples name the decree application `MyApp.App`.** `Decree.Application`, `Decree.Aggregates.Aggregate`, `Decree.Event.Handler` and `Decree.PersonalFields.KeySource` called it `MyApp.Application`, the name of your OTP application module. Their module and config examples now compile as written.
