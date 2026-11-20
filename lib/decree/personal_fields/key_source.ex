@@ -4,7 +4,7 @@ defmodule Decree.PersonalFields.KeySource do
 
   A host names its key source in source, on the `use` line, and nowhere else:
 
-      defmodule MyApp.Application do
+      defmodule MyApp.App do
         use Decree.Application,
           otp_app: :my_app,
           key_source: MyApp.SubjectKeys

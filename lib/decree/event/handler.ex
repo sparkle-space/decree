@@ -420,7 +420,7 @@ defmodule Decree.Event.Handler do
   guaranteeing that the data and processing remains isolated between tenants.
 
       for tenant <- [:tenant1, :tenant2, :tenant3] do
-        {:ok, _app} = MyApp.Application.start_link(name: tenant)
+        {:ok, _app} = MyApp.App.start_link(name: tenant)
         {:ok, _handler} = ExampleHandler.start_link(application: tenant)
       end
 
