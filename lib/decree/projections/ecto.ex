@@ -42,6 +42,28 @@ defmodule Decree.Projections.Ecto do
   (below) and `timeout:`, the transaction's timeout (`:infinity` by default), are the
   projector's own. Every other option goes to `Decree.Event.Handler`.
 
+  ## The repo
+
+  The read model lives in your own Ecto repo:
+
+      # lib/my_app/repo.ex
+      defmodule MyApp.Repo do
+        use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+      end
+
+  Configure it beside the README's event store config:
+
+      # config/config.exs
+      import Config
+
+      config :my_app, ecto_repos: [MyApp.Repo]
+
+      config :my_app, MyApp.Repo,
+        username: "postgres",
+        password: "postgres",
+        hostname: "localhost",
+        database: "my_app_read_models"
+
   ## The `projection_versions` table
 
   decree ships no migration for this table. It lives in your repo's database, so create it
@@ -67,7 +89,7 @@ defmodule Decree.Projections.Ecto do
         end
       end
 
-  Run it with `mix ecto.migrate`, which needs `config :my_app, ecto_repos: [MyApp.Repo]`.
+  Create the database with `mix ecto.create` and run the migration with `mix ecto.migrate`.
 
   With `schema_prefix:`, a projector reads and writes `projection_versions` in that schema, so
   each schema it names needs the table too: create it there with

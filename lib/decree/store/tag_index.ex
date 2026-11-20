@@ -68,6 +68,9 @@ defmodule Decree.Store.TagIndex do
             {:ok, %Decree.Store.Streams.StreamInfo{}} -> :history
           end
 
+      The check and the enable are two steps, with no guard between them: run both before
+      any other writer starts, because an event appended between them is not checked.
+
       The check is the application's: decree accepts an enabling fact on a store with
       history, and the dispatch that appends it answers `:ok`. An enable states that its
       family's tag rows are complete for every event in the store, those before it too. On a

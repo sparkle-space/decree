@@ -7,7 +7,7 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 Documentation only: no API, behaviour or store schema change.
 
 - **The `projection_versions` table.** `Decree.Projections.Ecto` now says that decree ships no migration for it, and gives one: the table a projector records its last projected event in, created in your repo's database before any projector starts. With `schema_prefix:`, each schema needs the table.
-- **The projector example runs as written.** It is a complete projector for the README's minimal application, with its read model, its migration and the OTP application that starts it. It names the decree application `MyApp.App`, apart from the OTP application module `MyApp.Application`.
+- **The projector example runs as written.** It is a complete projector for the README's minimal application, with its Ecto repo and config, its read model, its migration and the OTP application that starts it. It names the decree application `MyApp.App`, apart from the OTP application module `MyApp.Application`.
 - **Check for an empty store before enabling the tag index.** The README and `Decree.Store.TagIndex` ("The lifecycle") give the call, `MyApp.EventStore.stream_info(:all)`, whose `stream_version` is 0 on an empty store, and say why it matters: decree accepts an enable on a store with history, and that enable vouches for tag rows nothing has checked.
 
 ## 0.1.0
