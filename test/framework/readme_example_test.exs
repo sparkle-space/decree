@@ -80,6 +80,8 @@ defmodule Decree.ReadmeExampleTest do
 
     Code.compile_string(block!("# lib/my_app.ex"), @readme)
 
+    readme_app_test!()
+
     Decree.FrameworkStorage.reset!()
 
     start_supervised!(MyApp.App)
@@ -167,6 +169,68 @@ defmodule Decree.ReadmeExampleTest do
              Code.eval_string("MyApp.App.dispatch(enable)", enable: enable)
 
     assert fact_count() == 2
+  end
+
+  # The README's application test, run as written on the README's application: an ExUnit
+  # module cannot be compiled once the suite runs, so its one test's body runs here. It
+  # passes while the release step's families cover the rule's, and fails with the family
+  # named when the list leaves it out.
+  defp readme_app_test! do
+    assert {:defmodule, _meta, [_name, [do: {:__block__, _block, exprs}]]} =
+             Code.string_to_quoted!(block!("# test/my_app/tag_index_test.exs"))
+
+    assert [
+             {:use, _use, [{:__aliases__, _case, [:ExUnit, :Case]} | _opts]},
+             {:test, _test, [_description, [do: body]]}
+           ] = exprs
+
+    run = fn body ->
+      Code.eval_quoted(
+        quote(
+          do:
+            (
+              import ExUnit.Assertions
+              unquote(body)
+            )
+        )
+      )
+    end
+
+    assert {true, _binding} = run.(body)
+
+    left_out =
+      Macro.prewalk(body, fn
+        {{:., _, [{:__aliases__, _, [:MyApp, :TagIndexLedger]}, :families]}, _, []} -> []
+        node -> node
+      end)
+
+    refute left_out == body
+    error = assert_raise ExUnit.AssertionError, fn -> run.(left_out) end
+    assert error.left == ["entity"]
+
+    # The list the test checks is the one the release step enables.
+    release_step = block!("# Before any other writer starts")
+
+    bootstrap =
+      "Decree.Store.TagIndex.bootstrap(MyApp.EventStore, MyApp.TagIndexLedger.families(), enable)"
+
+    assert length(String.split(release_step, bootstrap)) == 3
+  end
+
+  test "every elixir block in the README is one a test here runs" do
+    headers =
+      for [code] <-
+            Regex.scan(~r/^```elixir\n(.*?)^```$/ms, File.read!(@readme), capture: :all_but_first) do
+        code |> String.split("\n", parts: 2) |> hd()
+      end
+
+    assert headers == [
+             "# mix.exs",
+             "# config/config.exs",
+             "# lib/my_app.ex",
+             "# Before any other writer starts",
+             "# test/my_app/tag_index_test.exs"
+           ]
   end
 
   test "Decree.Store.TagIndex.bootstrap/3's doc has one example, the one the README test runs" do

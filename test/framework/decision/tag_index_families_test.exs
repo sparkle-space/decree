@@ -55,21 +55,21 @@ defmodule Decree.Decision.TagIndexFamiliesTest do
       Application.delete_env(:decree, @key)
 
       assert Index.requirements(false, [[tags: ["tenant_slug:acme"]]], %{}) ==
-               {:ok, MapSet.new([{"entity", nil}])}
+               {:ok, ["entity"]}
     end
 
     test "put a configured kind in its own family" do
       Application.put_env(:decree, @key, ["tenant_slug"])
 
       assert Index.requirements(false, [[tags: ["tenant_slug:acme"]]], %{}) ==
-               {:ok, MapSet.new([{"tenant_slug", nil}])}
+               {:ok, ["tenant_slug"]}
     end
 
     test "keep decree's own kinds in their own families with none configured" do
       Application.delete_env(:decree, @key)
 
       assert Index.requirements(true, [[tags: ["correlation:x", "command_kind:Y"]]], %{}) ==
-               {:ok, MapSet.new([{"command", nil}, {"correlation", nil}, {"command_kind", nil}])}
+               {:ok, ["command", "correlation", "command_kind"]}
     end
   end
 end
