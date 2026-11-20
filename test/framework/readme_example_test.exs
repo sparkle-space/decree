@@ -121,4 +121,46 @@ defmodule Decree.ReadmeExampleTest do
 
     assert {:history, _binding} = Code.eval_string(empty_store_check)
   end
+
+  # `Decree.Store.TagIndex`'s moduledoc, read from its compiled docs. Its empty-store check
+  # runs in the test above, on the README's store; its other two blocks run here. Every block
+  # opens with one of the three, so a new example cannot go unchecked.
+  test "Decree.Store.TagIndex's state tag and named families read as written" do
+    doc = DocBlocks.doc!(Decree.Store.TagIndex)
+
+    state_tag = "tag_index_state:<family>:<key or ->:<enabled|disabled>"
+    assert String.trim(DocBlocks.block!(doc, state_tag)) == state_tag
+
+    assert Decree.Store.TagIndex.state_tag("tenant_slug", nil, :enabled) ==
+             "tag_index_state:tenant_slug:-:enabled"
+
+    assert Decree.Store.TagIndex.state_tag("tenant_slug", "a1", :disabled) ==
+             "tag_index_state:tenant_slug:a1:disabled"
+
+    named_families = ~s(config :decree, :tag_index_named_families, ["tenant_slug", "plan_slug"])
+
+    assert [decree: [tag_index_named_families: families]] =
+             Config.Reader.eval!(
+               "config/config.exs",
+               "import Config\n" <> DocBlocks.block!(doc, named_families)
+             )
+
+    previous = Application.fetch_env(:decree, :tag_index_named_families)
+    Application.put_env(:decree, :tag_index_named_families, families)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:decree, :tag_index_named_families, value)
+        :error -> Application.delete_env(:decree, :tag_index_named_families)
+      end
+    end)
+
+    assert Enum.take(Decree.Store.TagIndex.named_families(), -2) == families
+
+    selectors = [state_tag, named_families, "case MyApp.EventStore.stream_info(:all) do"]
+    first_lines = DocBlocks.first_lines(doc)
+
+    assert length(first_lines) == 3
+    assert Enum.reject(first_lines, &(&1 in selectors)) == []
+  end
 end

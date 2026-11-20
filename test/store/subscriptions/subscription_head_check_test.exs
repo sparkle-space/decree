@@ -121,42 +121,75 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
     end
   end
 
-  test "wake-ups delivered as usual are never counted as missed", %{
+  test "every wake-up is delivered, and only a late one is counted as missed", %{
     subscription_name: subscription_name
   } do
     # Checks 250 to 500 ms apart: a wake-up still on its way at one check has that long
-    # to arrive before the next, so a stall on a loaded host is not taken for a loss.
+    # to arrive before the next. One that takes longer is counted as missed: a stall on a
+    # loaded host can hold the publisher's read past a whole check period
+    # (sparkle-space/sparklespace#8608), and a late wake-up then looks like a lost one.
     interval = 1_000
+    gap = div(interval, 4)
 
     subscription = subscribe("$all", subscription_name, head_check_interval: interval)
+
+    # The publisher's wake-ups, traced as the subscription receives them.
+    1 = :erlang.trace(subscription, true, [:receive])
 
     count = 60
     test = self()
 
     # One append every 50 ms, across three check periods: some checks read a head whose
-    # wake-up is still on its way.
+    # wake-up is still on its way. Each append is the next event in `$all`, timed before
+    # the call, so its commit is no earlier.
     appender =
       spawn_link(fn ->
-        for _append <- 1..count do
-          :ok = EventStore.append_to_stream(UUID.uuid4(), 0, EventFactory.create_events(1))
+        appended_at =
+          Map.new(1..count, fn event_number ->
+            appended_at = now()
+            :ok = EventStore.append_to_stream(UUID.uuid4(), 0, EventFactory.create_events(1))
 
-          # Pacing the appends, not waiting for a condition.
-          Process.sleep(50)
-        end
+            # Pacing the appends, not waiting for a condition.
+            Process.sleep(50)
 
-        send(test, {:appended, self()})
+            {event_number, appended_at}
+          end)
+
+        send(test, {:appended, self(), appended_at})
       end)
 
-    assert receive_and_ack(subscription, count, 5_000) == Enum.to_list(1..count)
-    assert_receive {:appended, ^appender}
+    received = receive_and_time(subscription, count, 5_000)
+    assert Enum.map(received, &elem(&1, 0)) == Enum.to_list(1..count)
+    received_at = Map.new(received)
+
+    assert_receive {:appended, ^appender, appended_at}
 
     # The checks ran while the events were appended.
     data = fsm(subscription).data
     assert is_integer(Map.get(data, :head_seen))
     assert Map.get(data, :head_seen) > 0
 
-    refute_receive {:telemetry, @missed_wake_up, _measurements, _metadata}, interval
-    refute_received {:telemetry, @catch_up_error, _measurements, _metadata}
+    # The last wake-up is confirmed missed, if at all, within a period of its append.
+    refute_receive {:telemetry, @catch_up_error, _measurements, _metadata}, interval
+
+    # A missed wake-up names the last event received at the check that confirmed it. The
+    # next event's commit was seen at the check before, at least `gap` earlier, and it had
+    # not arrived: it reached the test at least `gap` after its append. One that arrived
+    # sooner was counted as missed though its wake-up came as usual.
+    for %{last_received: last_received} <- collect_missed_wake_ups() do
+      late = last_received + 1
+      latency = received_at[late] - appended_at[late]
+
+      assert latency >= gap,
+             "event #{late} arrived #{latency}ms after its append, inside one check " <>
+               "gap (#{gap}ms), yet its wake-up was counted as missed"
+    end
+
+    # The publisher's wake-up for every event reaches the subscription, a late one
+    # included: a missed wake-up above is a late one, never a lost one.
+    assert receive_wake_ups(subscription, count, 5_000) == MapSet.new(1..count)
+
+    1 = :erlang.trace(subscription, false, [:receive])
   end
 
   # Driven end to end: `$all`'s `stream_version` is never lowered by a hard delete, so
@@ -491,6 +524,34 @@ defmodule Decree.Store.Subscriptions.SubscriptionHeadCheckTest do
 
     Enum.map(events, & &1.event_number) ++
       receive_and_ack(subscription, count - length(events), timeout)
+  end
+
+  # Receive and ack events until `count` have been received; in order, each event number and
+  # the monotonic time, in milliseconds, it was received at.
+  defp receive_and_time(_subscription, count, _timeout) when count <= 0, do: []
+
+  defp receive_and_time(subscription, count, timeout) do
+    assert_receive {:events, events}, timeout
+    received_at = now()
+
+    %RecordedEvent{event_number: last} = List.last(events)
+    :ok = Subscription.ack(subscription, last)
+
+    Enum.map(events, &{&1.event_number, received_at}) ++
+      receive_and_time(subscription, count - length(events), timeout)
+  end
+
+  # The event numbers of the `{:events, _}` wake-ups the traced subscription receives, until
+  # `count` have been seen.
+  defp receive_wake_ups(subscription, count, timeout, seen \\ MapSet.new()) do
+    if MapSet.size(seen) >= count do
+      seen
+    else
+      assert_receive {:trace, ^subscription, :receive, {:events, events}}, timeout
+
+      seen = Enum.into(events, seen, & &1.event_number)
+      receive_wake_ups(subscription, count, timeout, seen)
+    end
   end
 
   # Append `count` events with the wake-up dropped: in a transaction where the `streams`

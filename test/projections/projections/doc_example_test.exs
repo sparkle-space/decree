@@ -3,8 +3,9 @@ defmodule Decree.Projections.DocExampleTest do
   # repo and its config, the migration on a database of its own, the OTP application started,
   # an event projected. The test supplies what the examples take from the README's minimal
   # application, `MyApp.App` and `MyApp.AccountRegistered`, and the suite's own connection
-  # settings. `MyApp` is renamed, so the README test's `MyApp` modules in the same VM are left
-  # alone.
+  # settings. Every code block in a checked doc opens with a line the test runs, so a new
+  # example cannot go unchecked. `MyApp` is renamed, so the README test's `MyApp` modules in
+  # the same VM are left alone.
   use ExUnit.Case, async: false
 
   alias Decree.DocBlocks
@@ -33,6 +34,15 @@ defmodule Decree.Projections.DocExampleTest do
 
   defp example(doc, first_line) do
     doc |> DocBlocks.block!(first_line) |> String.replace("MyApp", @namespace)
+  end
+
+  # `doc` has `count` code blocks, and each opens with one of `selectors`, so a new example
+  # cannot go unchecked.
+  defp assert_covered(doc, selectors, count) do
+    first_lines = DocBlocks.first_lines(doc)
+
+    assert length(first_lines) == count
+    assert Enum.reject(first_lines, &(&1 in selectors)) == []
   end
 
   defp compile!(doc, first_line) do
@@ -137,6 +147,19 @@ defmodule Decree.Projections.DocExampleTest do
                @repo,
                "SELECT projection_name, last_seen_event_number FROM projection_versions"
              )
+
+    # Each of the five blocks above, once.
+    assert_covered(
+      moduledoc,
+      [
+        "# config/config.exs",
+        "# lib/my_app/repo.ex",
+        "# lib/my_app/accounts.ex",
+        "# priv/repo/migrations/20261120000000_create_accounts.exs",
+        "# lib/my_app/application.ex"
+      ],
+      5
+    )
   end
 
   test "the after_update/3 example compiles as written, on the moduledoc's read model" do
@@ -153,6 +176,8 @@ defmodule Decree.Projections.DocExampleTest do
 
     # Compiled from the doc at run time, so called through apply/3.
     assert :ok = apply(@projector, :after_update, [event, %{}, %{account: row}])
+
+    assert_covered(doc, ["# lib/my_app/accounts.ex"], 1)
   end
 
   test "the project/2 and project/3 examples project as written" do
@@ -163,6 +188,7 @@ defmodule Decree.Projections.DocExampleTest do
     for {arity, event_number} <- [{2, 1}, {3, 2}] do
       doc = DocBlocks.doc!(Decree.Projections.Ecto, {:macro, :project, arity})
       assert @projector in compile!(doc, "# lib/my_app/accounts.ex")
+      assert_covered(doc, ["# lib/my_app/accounts.ex"], 1)
 
       account_id = Decree.UUID.uuid4()
       handle = "ada-#{arity}"

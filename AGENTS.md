@@ -49,6 +49,8 @@ Flag these on a decree PR:
 - Style differences from upstream in copied code, unless the change is behavioural.
 - Missing docs on internal modules.
 - A missing `UPSTREAM.md` row for a documentation-only edit (doc strings and comments) to a file copied from Commanded or EventStore. It needs none (founder ruling, 2026-11-20: "Merge; no UPSTREAM row"). Any code change to a copied file still needs its row.
+- No committed fence for a test-only flake fix. When the change is the flaky test itself, a recorded forced interleaving that fails before the fix and passes after satisfies red-first; the PR links the recording (founder ruling on decree#60, 2026-11-20: "Merge, accept all").
+- A bundle of several issues in one PR that the founder authorized. It is exempt from the one-child-per-PR rule in "Pins and the PR chain"; the PR quotes the authorization (founder ruling on decree#60, 2026-11-20: "Merge, accept all").
 
 ## Issue references
 

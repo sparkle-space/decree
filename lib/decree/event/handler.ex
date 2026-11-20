@@ -246,7 +246,7 @@ defmodule Decree.Event.Handler do
   ## Event handler state
 
   An event handler can define and update state which is held in the `GenServer`
-  process memory. It is passed to the `handle/2` (or handle_batch/1) function as part of the
+  process memory. It is passed to the `handle/2` (or `handle_batch/1`) function as part of the
   metadata using the `:state` key. The state is transient and will be lost
   whenever the process restarts.
 
@@ -261,7 +261,7 @@ defmodule Decree.Event.Handler do
       Supervisor.start_link([{MyApp.ExampleHandler, state: initial_state}], strategy: :one_for_one)
 
   State can be updated by returning `{:ok, new_state}` from any `handle/2`
-  (or `handle_batch/2`) function. Returning an `:ok` reply will keep the state unchanged.
+  (or `handle_batch/1`) function. Returning an `:ok` reply will keep the state unchanged.
 
   Handler state is also included in the `Decree.Event.FailureContext` struct
   passed to the `error/3` callback function.
@@ -567,9 +567,9 @@ defmodule Decree.Event.Handler do
 
   ### Example
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: "ExampleHandler"
 
         # Optional initialisation
@@ -578,7 +578,7 @@ defmodule Decree.Event.Handler do
           {:ok, new_handler_state}
         end
 
-        def handle(%AnEvent{..}, _metadata) do
+        def handle(%MyApp.AccountRegistered{}, _metadata) do
           # Process the event ...
           :ok
         end
@@ -601,9 +601,10 @@ defmodule Decree.Event.Handler do
   ### Example
 
   The `c:init/1` function is used to define the handler's application and name
-  based upon a value provided at runtime:
+  based upon a value provided at runtime, here a tenant's application started as
+  in "Dynamic application" above:
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler
 
         def init(config) do
@@ -611,7 +612,7 @@ defmodule Decree.Event.Handler do
 
           config =
             config
-            |> Keyword.put(:application, Module.concat([ExampleApp, tenant]))
+            |> Keyword.put(:application, tenant)
             |> Keyword.put(:name, Module.concat([__MODULE__, tenant]))
 
           {:ok, config}
@@ -620,7 +621,7 @@ defmodule Decree.Event.Handler do
 
   Usage:
 
-      {:ok, _pid} = ExampleHandler.start_link(tenant: :tenant1)
+      {:ok, _pid} = MyApp.ExampleHandler.start_link(tenant: :tenant1)
 
   """
   @callback init(config :: Keyword.t()) :: {:ok, Keyword.t()}
@@ -710,21 +711,25 @@ defmodule Decree.Event.Handler do
 
   ### Example error handling
 
-      defmodule ExampleHandler do
+      defmodule MyApp.ExampleHandler do
         use Decree.Event.Handler,
-          application: ExampleApp,
+          application: MyApp.App,
           name: __MODULE__
 
         require Logger
 
         alias Decree.Event.FailureContext
 
-        def handle(%AnEvent{}, _metadata) do
+        def handle(%MyApp.AccountRegistered{}, _metadata) do
           # simulate event handling failure
           {:error, :failed}
         end
 
-        def error({:error, :failed}, %AnEvent{} = event, %FailureContext{context: context}) do
+        def error(
+              {:error, :failed},
+              %MyApp.AccountRegistered{} = event,
+              %FailureContext{context: context}
+            ) do
           context = record_failure(context)
 
           case Map.get(context, :failures) do
@@ -850,7 +855,7 @@ defmodule Decree.Event.Handler do
       ### Example
 
           Supervisor.start_link([
-            {ExampleHandler, []}
+            {MyApp.ExampleHandler, []}
           ], strategy: :one_for_one)
 
       """
@@ -994,7 +999,7 @@ defmodule Decree.Event.Handler do
           |> Keyword.update(:subscription_opts, [buffer_size: size], fn opts ->
             Keyword.put(opts, :buffer_size, size)
           end)
-          # Delegate to `handle_batch/2` when `batch_size` is specified
+          # Delegate to `handle_batch/1` when `batch_size` is specified
           |> Keyword.put(:handler_callback, :batch)
           |> Keyword.put(:batch_size, size)
           |> Keyword.put(:batch_timeout, batch_timeout)
