@@ -4,6 +4,8 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+## 0.1.1 (2026-11-20)
+
 Documentation only: no API, behaviour or store schema change.
 
 - **The `projection_versions` table.** `Decree.Projections.Ecto` now says that decree ships no migration for it, and gives one: the table a projector records its last projected event in, created in your repo's database before any projector starts. With `schema_prefix:`, each schema needs the table.
