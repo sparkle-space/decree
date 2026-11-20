@@ -321,10 +321,12 @@ defmodule Decree.Store.Storage.StorageLogTermsTest do
 
       ack_through(subscription, 2)
 
-      # Held, with its checkpoint written: only now is the table swapped.
+      # Held, with its checkpoint written: only now is the table swapped, in one transaction.
+      # Committed statement by statement, a probe between the rename and the view found no
+      # `subscriptions` and failed as `:undefined_table` (sparkle-space/sparklespace#8528).
       {_held, seen} = await_logged("is held before event 3")
 
-      refuse(conn, schema, {:view, "subscriptions"})
+      {:ok, _} = Postgrex.transaction(conn, &refuse(&1, schema, {:view, "subscriptions"}))
 
       {line, seen} = await_logged("the probe failed due to", seen)
 
