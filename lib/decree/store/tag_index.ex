@@ -59,7 +59,25 @@ defmodule Decree.Store.TagIndex do
 
     - **A fresh store.** The application's release step appends the enabling batch only when
       `$all` is empty, so the facts sit from position 1 and every later event is covered by
-      them.
+      them. `stream_info(:all)` on the application's `Decree.Store` module tells: `$all`'s
+      `stream_version` is the number of the last event appended to the store, and 0 when
+      none has been.
+
+          case MyApp.EventStore.stream_info(:all) do
+            {:ok, %Decree.Store.Streams.StreamInfo{stream_version: 0}} -> :empty
+            {:ok, %Decree.Store.Streams.StreamInfo{}} -> :history
+          end
+
+      The check and the enable are two steps, with no guard between them: run both before
+      any other writer starts, because an event appended between them is not checked.
+
+      The check is the application's: decree accepts an enabling fact on a store with
+      history, and the dispatch that appends it answers `:ok`. An enable states that its
+      family's tag rows are complete for every event in the store, those before it too. On a
+      store with history nothing has checked those rows: events appended before the
+      application tagged a kind lack its tags. A decision then trusts a family whose rows are
+      missing, so a condition can miss an earlier event that matches it, and a command its
+      rule should refuse is accepted.
     - **A store with history.** The same step does nothing, and every decision refuses
       `{:error, :tag_index_not_enabled}` until a family is repaired and enabled.
     - **Repair.** A disable for repair, the repair writing the tag rows, then an enable under

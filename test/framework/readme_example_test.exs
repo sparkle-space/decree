@@ -6,6 +6,8 @@ defmodule Decree.ReadmeExampleTest do
 
   import ExUnit.CaptureLog
 
+  alias Decree.DocBlocks
+
   @readme Path.expand("../../README.md", __DIR__)
 
   @connection [:username, :password, :hostname, :port, :database, :pool_size]
@@ -96,6 +98,15 @@ defmodule Decree.ReadmeExampleTest do
     assert {{:error, :tag_index_not_enabled}, _binding} =
              Code.eval_string("MyApp.App.dispatch(command)", command: command)
 
+    # `Decree.Store.TagIndex`'s empty-store check, on the README's store: empty until the
+    # enabling fact, which the README's next block appends after the same check.
+    empty_store_check =
+      Decree.Store.TagIndex
+      |> DocBlocks.doc!()
+      |> DocBlocks.block!("case MyApp.EventStore.stream_info(:all) do")
+
+    assert {:empty, _binding} = Code.eval_string(empty_store_check)
+
     log =
       capture_log(fn ->
         Code.eval_string(block!("# On a fresh store, before anything else is appended"))
@@ -107,5 +118,7 @@ defmodule Decree.ReadmeExampleTest do
 
     assert log =~ "welcome, @ada"
     assert log =~ "welcome, @grace"
+
+    assert {:history, _binding} = Code.eval_string(empty_store_check)
   end
 end

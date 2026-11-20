@@ -165,11 +165,14 @@ defmodule Decree.ReleaseScriptTest do
     test "bumps decree's own mix.exs and CHANGELOG.md", %{tmp_dir: dir} do
       File.cp!(Path.join(@root, "mix.exs"), Path.join(dir, "mix.exs"))
 
+      # The Unreleased section's body, whatever main holds there, becomes one known entry.
       changelog =
-        @root
-        |> Path.join("CHANGELOG.md")
-        |> File.read!()
-        |> String.replace("## Unreleased\n", "## Unreleased\n\n- An entry.\n", global: false)
+        Regex.replace(
+          ~r/^## Unreleased\n.*?(?=^## )/ms,
+          @root |> Path.join("CHANGELOG.md") |> File.read!(),
+          "## Unreleased\n\n- An entry.\n\n",
+          global: false
+        )
 
       File.write!(Path.join(dir, "CHANGELOG.md"), changelog)
       [major, minor, patch] = Mix.Project.config()[:version] |> String.split(".")
