@@ -5,10 +5,12 @@ defmodule Decree.Store.Subscriptions do
   alias Decree.Store.Subscriptions.Subscription
   alias Decree.Store.Subscriptions.Supervisor, as: SubscriptionsSupervisor
 
-  def subscribe_to_stream(subscriber, opts \\ []) do
+  def subscribe_to_stream(subscriber, opts \\ []), do: subscribe(subscriber, opts, true)
+
+  defp subscribe(subscriber, opts, retry?) do
     case SubscriptionsSupervisor.start_subscription(opts) do
       {:ok, subscription} ->
-        Subscription.connect(subscription, subscriber, opts)
+        connect(subscription, subscriber, opts, retry?)
 
       {:error, {:already_started, subscription}} ->
         case Keyword.get(opts, :concurrency_limit) do
@@ -16,9 +18,26 @@ defmodule Decree.Store.Subscriptions do
             {:error, :subscription_already_exists}
 
           concurrency_limit when is_number(concurrency_limit) ->
-            Subscription.connect(subscription, subscriber, opts)
+            connect(subscription, subscriber, opts, retry?)
         end
     end
+  end
+
+  # A subscription stops when its last subscriber goes down, and stays registered until it
+  # has, so a connect can reach one that is stopping or gone (or `:undefined`, when it died
+  # between its registration and the lookup of its pid). Its call then exits with the
+  # other subscriber's reason, or `:noproc`; once the subscription is dead, the subscribe
+  # starts over, once, and meets a new one. An exit from a live subscription (a timeout),
+  # or a second exit, stands: a subscription that crashes on a connect does not loop here.
+  defp connect(subscription, subscriber, opts, retry?) do
+    Subscription.connect(subscription, subscriber, opts)
+  catch
+    :exit, reason ->
+      if retry? and not (is_pid(subscription) and Process.alive?(subscription)) do
+        subscribe(subscriber, opts, false)
+      else
+        :erlang.raise(:exit, reason, __STACKTRACE__)
+      end
   end
 
   defdelegate unsubscribe_from_stream(event_store, stream_uuid, name), to: SubscriptionsSupervisor
