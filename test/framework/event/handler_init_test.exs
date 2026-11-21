@@ -59,16 +59,14 @@ defmodule Decree.Event.HandlerInitTest do
       assert_receive {:init, :tenant1}
 
       # The handler running now, on a subscription other than the one that stopped. A
-      # restart racing that shutdown gets `:noproc` and inits once more, so the inits up
-      # to here are not counted; from here nothing is left to restart.
+      # restart that reaches that subscription while it stops subscribes again, so the
+      # handler inits once only (sparkle-space/sparklespace#8683).
       Wait.until(@settle_timeout, fn ->
         replacement = current_handler(:tenant1)
 
         assert is_pid(replacement) and replacement != handler
         assert assert_subscribed(replacement) != subscription
       end)
-
-      flush_inits(:tenant1)
 
       refute_receive {:init, :tenant1}
     end
@@ -155,14 +153,6 @@ defmodule Decree.Event.HandlerInitTest do
     subscription
   catch
     :exit, reason -> flunk("stopped while read: " <> inspect(reason))
-  end
-
-  defp flush_inits(tenant) do
-    receive do
-      {:init, ^tenant} -> flush_inits(tenant)
-    after
-      0 -> :ok
-    end
   end
 
   defp assert_handler_application(handler, expected_application) do
