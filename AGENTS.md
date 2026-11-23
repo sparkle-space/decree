@@ -37,7 +37,7 @@ Flag these on a decree PR:
 - **A version or CHANGELOG release section changed by hand.** Only the Prepare release PR changes `@version` in `mix.exs` or adds a `## X.Y.Z` heading. A breaking change in a release whose bump is a patch is the finding.
 - **A user-visible change with no entry under "Unreleased".** Changes to tests, CI and docs alone need none.
 - **A wider release workflow.** These are findings in `prepare-release.yml` or `publish.yml`:
-  - a job given a permission it does not use. `id-token: write` belongs to the publish job only. `contents: write` belongs to the publish job, which tags and creates the release, and to the prepare job, which pushes the release branch;
+  - a job given a permission it does not use. `id-token: write` belongs to the publish job only. `contents: write` belongs to the publish job, which tags and creates the release, and to the prepare job's release App token (contents and pull-requests write, minted in the `release-pr` environment), which pushes the release branch and opens the PR. The prepare job's own token reads only;
   - a stored Hex key or `HEX_API_KEY`;
   - the publish job without the `hex-publish` environment;
   - an action not pinned to a full commit SHA with its version as a comment;
