@@ -1,17 +1,16 @@
 defmodule Decree.Store.Notifications.Connection do
   @moduledoc """
-  **Temporary.** This module stands in for `Postgrex.Notifications` because Postgrex
-  0.22.4, the newest release on Hex, drops a notification that arrives while its idle ping
-  runs. The fix, elixir-ecto/postgrex#795 (commit `bd402a5310`), is in no release yet.
-  Remove this module, and go back to `Postgrex.Notifications`, at the first Hex Postgrex
-  release that contains `bd402a5310` (expected to be 0.23). sparkle-space/sparklespace#8532
-  tracks that clean-up. Before removing it, check that the release's
-  `Postgrex.Notifications` also covers what 0.22.4's lacks besides the ping:
-    * it answers a failed `LISTEN` `{:ok, ref}` and never listens on that channel;
-    * a `LISTEN` it issues on a reconnect that loses its connection strands it: 0.22.4's
-      `SimpleConnection` drops the reconnect after a query issued from `handle_connect/1`
-      disconnects;
-    * a query waits for its answer with no timeout.
+  decree listens on this module rather than `Postgrex.Notifications`. Checked at Postgrex
+  0.23.0 (sparkle-space/sparklespace#8532), stock `Postgrex.Notifications` still:
+    * answers a `LISTEN` the server refuses `{:ok, ref}`, never listens on that channel and
+      never tries again, so a store whose server refuses a `LISTEN` (a hot standby) waits
+      for notifications that never come;
+    * waits for a `LISTEN` with no timeout: a `SimpleConnection` query takes none, so a
+      `LISTEN` that never answers blocks the connection for good.
+
+  0.23.0 fixed the other two reasons this module was written for, both in 0.22.4: the idle
+  ping dropped a notification that arrived while it ran (elixir-ecto/postgrex#795), and a
+  query issued from `handle_connect/1` that lost its connection stopped the reconnects.
 
   The event store's `LISTEN` connection, a `Postgrex.SimpleConnection` that listens on one
   channel and sends each notification to the `Decree.Store.Notifications.Listener` as
