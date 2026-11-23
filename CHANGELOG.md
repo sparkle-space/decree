@@ -4,6 +4,8 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+## 0.2.1 (2026-11-23)
+
 - **A subscriber no longer inherits a stopping subscription's exit.** A connect to a running subscription (`concurrency_limit:` set) that reached it while it stopped, after its last subscriber went down, exited with that subscriber's reason, so an event handler restarted under its old subscription stopped with the old handler's reason and restarted once more. The subscribe now starts over once that subscription is dead, and meets a new one.
 - **`Decree.Application`'s `dispatch/2` example compiles as written.** It names `MyApp.App` and the README's `MyApp.RegisterAccount`, in place of upstream's `BankApp` and `%OpenAccount{}`, and a test now runs it.
 
