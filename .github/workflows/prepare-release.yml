@@ -3,7 +3,15 @@ name: Prepare release
 # Opens the release PR: mix.exs's version bumped, the CHANGELOG's Unreleased section moved
 # under it and, on a minor or major bump, the version references in README.md, SECURITY.md
 # and the CHANGELOG preamble moved (scripts/release.exs bump). Merging it starts the Publish workflow.
-# CONTRIBUTING.md, "Releases", describes the flow and the pre-1.0 version rules.
+# CONTRIBUTING.md, "Releases", describes the flow, the release App and the pre-1.0 version rules.
+#
+# GitHub starts no workflow on a pull request that a workflow's own GITHUB_TOKEN opened, so
+# the release branch is pushed and the PR opened with an installation token of decree's
+# release GitHub App, and CI runs on the PR. The token is minted for this run only, with
+# contents and pull-requests write on this repository, and revoked when the job ends. The
+# App's Client ID (variable RELEASE_APP_CLIENT_ID) and private key (secret
+# RELEASE_APP_PRIVATE_KEY) live in the release-pr environment, which only main can use.
+# Without them the run stops at its first step; it does not fall back to GITHUB_TOKEN.
 on:
   workflow_dispatch:
     inputs:
@@ -29,11 +37,29 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: release-pr
+    # The job's own token only reads. The App's token pushes the branch and opens the PR.
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
 
     steps:
+      # The key's value stays out of this step: it sees only whether the secret is set.
+      - name: Check that the release App is configured
+        env:
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          HAS_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          missing=0
+          if [ -z "$CLIENT_ID" ]; then
+            echo "::error::the variable RELEASE_APP_CLIENT_ID is not set in the release-pr environment. Set it to the release GitHub App's Client ID (CONTRIBUTING.md, \"Releases\")."
+            missing=1
+          fi
+          if [ "$HAS_PRIVATE_KEY" != "true" ]; then
+            echo "::error::the secret RELEASE_APP_PRIVATE_KEY is not set in the release-pr environment. Set it to a private key of the release GitHub App (CONTRIBUTING.md, \"Releases\")."
+            missing=1
+          fi
+          exit "$missing"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -81,7 +107,7 @@ jobs:
             echo
             echo "Before merging:"
             echo
-            echo "- CI does not start on a PR that the workflow's token opens. Close and reopen this PR to run it."
+            echo "- Wait for CI to pass. It starts by itself: the workflow opened this PR with the release App's token."
             echo "- Check the notes below. They become the GitHub release body."
             echo
             echo "Merging starts the Publish workflow. It runs the gates, then waits for approval in the \`hex-publish\` environment before it tags v$VERSION and publishes to Hex."
@@ -92,9 +118,20 @@ jobs:
           } > "$RUNNER_TEMP/body.md"
           cat "$RUNNER_TEMP/body.md"
 
+      # Minted after the bump, so the token lives only for the push and the PR. The action
+      # masks it in the log and revokes it when the job ends.
+      - name: Mint the release App's token
+        id: app-token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Push the release branch and open the PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
           branch="release/v$VERSION"

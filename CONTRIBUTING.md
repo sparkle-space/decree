@@ -46,12 +46,26 @@ A merge to `main` publishes nothing by itself. A release is a pull request that 
    - SECURITY.md's supported series, "X.Y.x today".
 
    A patch moves none of them, since `~> X.Y.0` takes it. `test/framework/readme_example_test.exs` reads the requirement and the series from `mix.exs`'s version, so the release PR passes as generated. The workflow then commits `mix.exs`, `CHANGELOG.md`, `README.md` and `SECURITY.md` and opens a pull request from `release/vX.Y.Z`. An empty "Unreleased" section, or a reference the bump cannot find or finds twice, stops it before it writes anything. A version that is already tagged stops it before it pushes.
-2. **Review the release PR.** GitHub starts no CI on a pull request that a workflow's token opened, so close and reopen the PR to run it. At 1.0.0, rewrite the README's pre-1.0 Status and its sentence on `~> X.Y.0` in the same PR: the bump moves their versions, not their meaning. The CHANGELOG section becomes the GitHub release body. Merge it like any PR.
+2. **Review the release PR.** CI starts on it by itself, because the workflow opens it with the release App's token ("The release App", below); a pull request that a workflow's own `GITHUB_TOKEN` opens starts no CI. Wait for CI to pass. The CHANGELOG section becomes the GitHub release body. Merge it like any PR. At 1.0.0, rewrite three pre-1.0 passages by hand in the same PR, since the bump moves their versions, not their meaning:
+   - README.md's Status section, "decree is pre-1.0 (version X.Y.x)", and what it says a minor version may change;
+   - README.md's sentence that `~> X.Y.0` takes patch versions only, since a minor version may break;
+   - SECURITY.md's "decree is pre-1.0" line on the supported series.
 3. **Publish.** The merge starts the "Publish" workflow:
    - "Release check" goes on only when the merge changed `mix.exs`'s version and that version is not the latest `v*` tag. A later merge that lands while the release waits for approval does not release again.
    - "Gates" runs the CI workflow's jobs again on the commit to publish.
    - "Publish to Hex" waits for approval in the `hex-publish` environment. It then tags `vX.Y.Z`, creates the GitHub release and runs `mix hex.publish` (package and docs). It authenticates with Hex Workload Identity, so no Hex key is stored. Last, it reads the release back from hex.pm.
 4. **If a step fails,** re-run the failed jobs of that run. Each step first checks what is already done: a tag at this commit, an existing release, or the version already on Hex with its docs is skipped. A version on Hex without its docs gets its docs. A tag at another commit stops the run. If the release's run cannot finish because a fix had to land first, run "Publish" by hand on `main` (Actions, "Publish", "Run workflow"). A manual run releases main's commit when its version is not the latest `v*` tag.
+
+### The release App
+
+The Prepare release workflow pushes `release/vX.Y.Z` and opens its PR with an installation token of a GitHub App, so that CI runs on the PR. The App has no webhook, is installed on `sparkle-space/decree` only, and has two repository permissions: Contents read and write, and Pull requests read and write (Metadata read-only comes with them). Each run mints a token after the bump, with those two permissions on this repository only, and the token is revoked when the job ends. The job's own `GITHUB_TOKEN` only reads.
+
+The App's credentials live in the `release-pr` environment, whose deployment branch policy allows `main` only:
+
+- the variable `RELEASE_APP_CLIENT_ID`, the App's Client ID (not its numeric App ID);
+- the secret `RELEASE_APP_PRIVATE_KEY`, a private key generated on the App's settings page.
+
+Without either, for example on a fork, the run stops at its first step with an error that names the missing one. It does not fall back to `GITHUB_TOKEN`, whose PR would run no CI. To rotate the key, generate a new one, replace the secret, then delete the old key on the App's settings page.
 
 ## Licence
 
