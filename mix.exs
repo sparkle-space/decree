@@ -81,10 +81,9 @@ defmodule Decree.MixProject do
       # Store layer
       {:fsm, "~> 0.3"},
       {:gen_stage, "~> 1.2"},
-      # Below 0.23 until a released 0.23 passes the notification fences. decree's own
-      # LISTEN connection stands in for the unreleased idle-ping fix, temporarily
-      # (UPSTREAM.md, Dependency pins; sparkle-space/sparklespace#8532).
-      {:postgrex, "~> 0.22.4"},
+      # The series CI runs the notification fences on; the store listens on its own
+      # connection, not Postgrex.Notifications (UPSTREAM.md, Departures).
+      {:postgrex, "~> 0.23.0"},
 
       # Framework layer
       {:backoff, "~> 1.1"},

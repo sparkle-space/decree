@@ -4,6 +4,14 @@ decree follows [Semantic Versioning](https://semver.org). Until 1.0, a minor ver
 
 ## Unreleased
 
+Postgrex 0.23 replaces 0.22, so this is a minor release.
+
+- **decree requires Postgrex 0.23.** The requirement moves from `~> 0.22.4` to `~> 0.23.0`, the one series CI runs decree's suite on. The store still listens on its own connection, `Decree.Store.Notifications.Connection`: 0.23.0 fixed the notification lost during the idle ping, but its `Postgrex.Notifications` still reports a refused `LISTEN` as a success and waits for a `LISTEN` with no timeout (`UPSTREAM.md`, Departures).
+
+### Upgrading from 0.2.x
+
+Move Postgrex to 0.23 with decree: `mix deps.update decree postgrex`. A project that pins Postgrex itself widens that pin to `~> 0.23.0`. Nothing else changes: no decree API and no store schema.
+
 ## 0.2.1 (2026-11-23)
 
 - **A subscriber no longer inherits a stopping subscription's exit.** A connect to a running subscription (`concurrency_limit:` set) that reached it while it stopped, after its last subscriber went down, exited with that subscriber's reason, so an event handler restarted under its old subscription stopped with the old handler's reason and restarted once more. The subscribe now starts over once that subscription is dead, and meets a new one.
