@@ -16,4 +16,4 @@ Include what you can of:
 
 ## Supported versions
 
-decree is pre-1.0. Fixes land on `main` and ship in the next patch release of the latest minor version, 0.2.x today. Older versions are not maintained.
+decree is pre-1.0. Fixes land on `main` and ship in the next patch release of the latest minor version, 0.3.x today. Older versions are not maintained.
